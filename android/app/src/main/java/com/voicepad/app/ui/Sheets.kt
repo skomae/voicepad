@@ -231,8 +231,9 @@ fun SettingsSheet(controller: RecordingController, state: RecordingController.Ui
                 }
             }
             Text(
-                "For Mandarin choose SenseVoice or a multilingual Whisper; Parakeet v3 covers French, " +
-                    "Spanish and other European languages but not Chinese. " +
+                "Use Auto: Western for English and European languages, Auto: Asian + English when " +
+                    "you speak Mandarin, Cantonese, Japanese or Korean (and English). Both pick the " +
+                    "model per sentence. " +
                     "Models run entirely on the device and are downloaded once on first use. " +
                     "Recording starts immediately; text catches up once the model is ready.",
                 style = MaterialTheme.typography.bodySmall,

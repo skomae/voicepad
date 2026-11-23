@@ -45,6 +45,30 @@ object WavFile {
     fun durationSeconds(file: File): Double =
         if (file.length() <= HEADER_BYTES) 0.0 else (file.length() - HEADER_BYTES) / 2 / SAMPLE_RATE.toDouble()
 
+    /** Number of samples in the file (from its size, so a torn header doesn't matter). */
+    fun sampleCount(file: File): Int =
+        if (file.length() <= HEADER_BYTES) 0 else ((file.length() - HEADER_BYTES) / 2).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+
+    /**
+     * Reads samples [from, to) without loading the whole file, so hour-long
+     * recordings can be processed in small pieces.
+     */
+    fun readRange(file: File, from: Int, to: Int): FloatArray {
+        val total = sampleCount(file)
+        val lower = from.coerceIn(0, total)
+        val upper = to.coerceIn(lower, total)
+        val bytes = ByteArray((upper - lower) * 2)
+        RandomAccessFile(file, "r").use {
+            it.seek(HEADER_BYTES + lower * 2L)
+            it.readFully(bytes)
+        }
+        return FloatArray(upper - lower) { i ->
+            val lo = bytes[2 * i].toInt() and 0xff
+            val hi = bytes[2 * i + 1].toInt()
+            ((hi shl 8) or lo).toShort() / 32768f
+        }
+    }
+
     /** Reads samples as floats in -1..1, ignoring the header's size fields. */
     fun read(file: File): FloatArray {
         val bytes = file.readBytes()

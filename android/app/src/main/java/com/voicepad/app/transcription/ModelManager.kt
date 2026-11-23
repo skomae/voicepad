@@ -18,13 +18,25 @@ class ModelManager(context: Context) {
 
     fun directory(choice: EngineChoice) = File(modelsDir, choice.archive)
 
-    fun isInstalled(choice: EngineChoice) = File(directory(choice), ".complete").exists()
+    fun isInstalled(choice: EngineChoice) = choice.components.all { File(directory(it), ".complete").exists() }
+
+    /** Deletes [choice]'s model folders (e.g. after they failed to load) so they download fresh. */
+    fun discard(choice: EngineChoice) = choice.components.forEach { directory(it).deleteRecursively() }
+
+    /** Downloads every archive [choice] needs; [progress] reports 0..1 across all of them. */
+    suspend fun install(choice: EngineChoice, progress: (Double) -> Unit) {
+        val parts = choice.components
+        parts.forEachIndexed { i, part ->
+            installOne(part) { p -> progress((i + p) / parts.size) }
+        }
+        progress(1.0)
+    }
 
     /**
      * Streams the .tar.bz2 straight into the model folder, keeping only the
      * int8 weights and token files. [progress] reports 0..1.
      */
-    suspend fun install(choice: EngineChoice, progress: (Double) -> Unit) = withContext(Dispatchers.IO) {
+    private suspend fun installOne(choice: EngineChoice, progress: (Double) -> Unit) = withContext(Dispatchers.IO) {
         if (isInstalled(choice)) return@withContext
         val target = directory(choice)
         target.deleteRecursively()

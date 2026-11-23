@@ -17,10 +17,15 @@ import com.voicepad.app.data.RevisionSource
 import com.voicepad.app.data.TranscriptionStatus
 import com.voicepad.app.data.TranslationStatus
 import com.voicepad.app.data.withRevision
+import com.voicepad.app.transcription.AutoEngine
+import com.voicepad.app.transcription.ChunkPlanner
+import com.voicepad.app.transcription.ChunkPlanner.Span
 import com.voicepad.app.transcription.EngineChoice
 import com.voicepad.app.transcription.EnglishTranslator
 import com.voicepad.app.transcription.ModelManager
 import com.voicepad.app.transcription.SherpaEngine
+import com.voicepad.app.transcription.SpeechDetector
+import com.voicepad.app.transcription.SpeechEngine
 import com.voicepad.app.transcription.Transcript
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,11 +55,13 @@ import kotlin.coroutines.cancellation.CancellationException
  * becomes ready (up to [MAX_AUTO_ATTEMPTS] times, so a model that crashes the
  * app can't trap it in a loop) or on demand from the UI.
  *
- * Live transcription works on chunks of up to [CHUNK_SECONDS]. While a chunk is
- * open it is re-transcribed every [TICK_MS] so the bubble updates as you speak.
- * Once it is long enough it is cut at the quietest nearby moment, its text is
- * committed and a new chunk starts, so each model call stays short no matter
- * how long the recording runs.
+ * Audio reaches the model in pieces chosen by a voice-activity detector
+ * (Silero): silence is skipped, and pieces end at pauses (see [ChunkPlanner]).
+ * While recording, each finished utterance is transcribed and committed as
+ * soon as the pause after it is detected, and the utterance still being
+ * spoken is re-transcribed every [TICK_MS] for the live preview. Committed
+ * audio is dropped from memory (it is in the WAV), and saved recordings are
+ * read from disk piece by piece, so length is limited only by storage.
  */
 class RecordingController(
     private val context: Context,
@@ -86,8 +93,14 @@ class RecordingController(
     )
 
     companion object {
-        private const val CHUNK_SECONDS = 25.0
-        private const val MIN_CUT_SECONDS = 18.0
+        /** Longest audio one model call gets (Whisper's window is 30 s). */
+        private const val MAX_CHUNK_SECONDS = 25.0
+        /** With Whisper, utterances are batched until about this long before committing. */
+        private const val WHISPER_BATCH_SECONDS = 15.0
+        /** Context kept either side of detected speech. */
+        private const val PAD_SECONDS = 0.25
+        private val MAX_CHUNK = (MAX_CHUNK_SECONDS * AudioRecorder.SAMPLE_RATE).toInt()
+        private val PAD = (PAD_SECONDS * AudioRecorder.SAMPLE_RATE).toInt()
         private const val TICK_MS = 1200L
         const val MAX_AUTO_ATTEMPTS = 3
     }
@@ -115,7 +128,7 @@ class RecordingController(
     /** Live input level 0..1, polled by the UI. */
     val level: Float get() = recorder.level
 
-    private var engine: SherpaEngine? = null
+    private var engine: SpeechEngine? = null
     private var loadJob: Job? = null
     private var liveJob: Job? = null
     private var queueJob: Job? = null
@@ -124,11 +137,20 @@ class RecordingController(
     private val translationTried = mutableSetOf<String>()
     private val translator by lazy { EnglishTranslator() }
 
+    // Live state for the recording in progress.
     private var committedText = ""
-    private var chunkStart = 0
-    /** Languages the model reported for this recording's committed chunks. */
+    /** Recording position up to which text is committed. */
+    private var committedUpTo = 0
+    /** Recording position fed to the speech detector so far. */
+    private var detectedUpTo = 0
+    /** Last position at which the detector heard no speech; the current utterance began after it. */
+    private var quietAt = 0
+    private var detector: SpeechDetector? = null
+    /** Finished utterances not yet committed. */
+    private val pendingSpeech = mutableListOf<Span>()
+    /** Language / model reported for each committed piece. */
     private val chunkLanguages = mutableListOf<String>()
-    private var tailLanguage: String? = null
+    private val chunkEngines = mutableListOf<String>()
 
     init {
         // Before anything records: repair what a crash or kill left behind.
@@ -190,7 +212,7 @@ class RecordingController(
                     scope.launch { if (_state.value.engineChoice == choice) setStatus(EngineStatus.Loading(p, true)) }
                 }
                 setStatus(EngineStatus.Loading(1.0, false))
-                val loaded = withContext(Dispatchers.Default) { SherpaEngine(choice, models.directory(choice)) }
+                val loaded = withContext(Dispatchers.Default) { createEngine(choice) }
                 engineMutex.withLock { engine = loaded }
                 setStatus(EngineStatus.Ready)
                 processQueue()
@@ -198,11 +220,27 @@ class RecordingController(
                 throw e
             } catch (e: Throwable) {
                 // A broken download should not stick around.
-                models.directory(choice).deleteRecursively()
+                models.discard(choice)
                 setStatus(EngineStatus.Failed(e.message ?: e.toString()))
             }
         }
     }
+
+    private fun createEngine(choice: EngineChoice): SpeechEngine =
+        if (choice.kind == EngineChoice.Kind.AUTO) {
+            AutoEngine(
+                parakeet = SherpaEngine(EngineChoice.PARAKEET_V3, models.directory(EngineChoice.PARAKEET_V3)),
+                senseVoice = SherpaEngine(EngineChoice.SENSE_VOICE, models.directory(EngineChoice.SENSE_VOICE)),
+            )
+        } else {
+            SherpaEngine(choice, models.directory(choice))
+        }
+
+    /** The bundled voice-activity detector, or null if it can't load (then whole stretches are used). */
+    private fun newDetector(): SpeechDetector? =
+        runCatching { SpeechDetector(context.assets) }.getOrNull()
+
+    private val grouping get() = engine?.grouping ?: ChunkPlanner.Grouping.UTTERANCES
 
     private fun setStatus(status: EngineStatus) = _state.update { it.copy(engineStatus = status) }
 
@@ -254,9 +292,14 @@ class RecordingController(
         val note = Note(audioFileName = fileName, status = TranscriptionStatus.RECORDING)
         store.add(note)
         committedText = ""
-        chunkStart = 0
+        committedUpTo = 0
+        detectedUpTo = 0
+        quietAt = 0
+        pendingSpeech.clear()
         chunkLanguages.clear()
-        tailLanguage = null
+        chunkEngines.clear()
+        detector?.release()
+        detector = newDetector()
         _state.update {
             it.copy(
                 isRecording = true,
@@ -269,7 +312,7 @@ class RecordingController(
         liveJob = scope.launch {
             while (isActive) {
                 delay(TICK_MS)
-                if (engineReady) processChunks(noteId = note.id)
+                if (engineReady) processLive(noteId = note.id)
             }
         }
     }
@@ -303,43 +346,71 @@ class RecordingController(
             store.update(noteId) {
                 it.copy(status = TranscriptionStatus.IN_PROGRESS, durationSeconds = duration, attempts = it.attempts + 1)
             }
-            val error = processChunks(noteId = noteId, final = true)
+            val error = processLive(noteId = noteId, final = true)
             val text = _state.value.liveText
-            val engineName = _state.value.engineChoice.shortName
+            val engineName = engineLabel(chunkEngines)
             store.update(noteId) {
                 if (error == null) {
-                    it.withRevision(text, RevisionSource.TRANSCRIPTION, engineName, mostCommon(chunkLanguages + listOfNotNull(tailLanguage)))
+                    it.withRevision(text, RevisionSource.TRANSCRIPTION, engineName, mostCommon(chunkLanguages))
                         .copy(status = TranscriptionStatus.DONE, lastError = null, partialText = null)
                 } else {
                     it.copy(status = TranscriptionStatus.FAILED, lastError = error, partialText = text.ifBlank { null })
                 }
             }
         }
+        detector?.release()
+        detector = null
         _state.update { it.copy(recordingNoteId = null, liveText = "") }
         processQueue()
     }
 
     /**
-     * Commits every full chunk, then transcribes the open tail. Returns null on
-     * success or the error message. Failed chunks are not skipped: the chunk
-     * start only advances after success, so the next pass retries them.
+     * One live step: finds newly finished utterances, commits the ones that
+     * are ready, and refreshes the preview of speech still in progress.
+     * Returns null on success or the error message. Nothing is skipped on
+     * failure: utterances are only removed from [pendingSpeech] once their
+     * text is committed, so the next pass retries them.
      */
-    private suspend fun processChunks(noteId: String, final: Boolean = false): String? {
-        val chunkLength = (CHUNK_SECONDS * AudioRecorder.SAMPLE_RATE).toInt()
+    private suspend fun processLive(noteId: String, final: Boolean = false): String? {
         return try {
-            while (recorder.sampleCount - chunkStart >= chunkLength) {
-                val cut = quietestCut(chunkStart)
-                val result = transcribe(recorder.samples(chunkStart, cut))
-                committedText = join(committedText, result.text)
-                result.language?.let { chunkLanguages += it }
-                chunkStart = cut
-                _state.update { it.copy(liveText = committedText) }
-                // Keep committed text on disk in case the app dies.
-                store.update(noteId) { it.copy(partialText = committedText.ifBlank { null }) }
+            val now = recorder.sampleCount
+            val vad = detector
+            if (vad != null) {
+                if (now > detectedUpTo) {
+                    pendingSpeech += vad.feed(recorder.samples(detectedUpTo, now))
+                    detectedUpTo = now
+                    if (!vad.inSpeech) quietAt = now
+                }
+                if (final) pendingSpeech += vad.flush()
+            } else if (final || now - committedUpTo >= MAX_CHUNK) {
+                // No detector: treat everything as speech; the planner cuts at quiet points.
+                pendingSpeech.clear()
+                pendingSpeech += Span(committedUpTo, now)
             }
-            val tail = transcribe(recorder.samples(chunkStart, recorder.sampleCount))
-            tailLanguage = tail.language
-            _state.update { it.copy(liveText = join(committedText, tail.text)) }
+
+            val batchReady = when {
+                final -> true
+                grouping == ChunkPlanner.Grouping.UTTERANCES -> true
+                else -> pendingSpeech.isNotEmpty() &&
+                    now - pendingSpeech.first().start >= (WHISPER_BATCH_SECONDS * AudioRecorder.SAMPLE_RATE).toInt()
+            }
+            if (batchReady && pendingSpeech.isNotEmpty()) commit(noteId, now)
+
+            if (!final) {
+                // Preview: whatever is still uncommitted, but only while there's speech.
+                val speaking = vad?.inSpeech ?: true
+                val tail = if (speaking || pendingSpeech.isNotEmpty()) {
+                    // The detector confirms speech ~0.25 s after it starts; back up a second.
+                    val openStart = if (vad == null) committedUpTo else quietAt - AudioRecorder.SAMPLE_RATE
+                    val from = minOf(pendingSpeech.firstOrNull()?.start?.minus(PAD) ?: openStart, openStart)
+                    transcribe(recorder.samples(maxOf(from, committedUpTo, now - MAX_CHUNK), now)).text
+                } else {
+                    ""
+                }
+                _state.update { it.copy(liveText = join(committedText, tail)) }
+            } else {
+                _state.update { it.copy(liveText = committedText) }
+            }
             null
         } catch (e: CancellationException) {
             if (final) throw e
@@ -351,15 +422,34 @@ class RecordingController(
         }
     }
 
-    /** Quietest 100 ms between MIN_CUT and CHUNK seconds after [start]. */
-    private fun quietestCut(start: Int): Int {
-        val rate = AudioRecorder.SAMPLE_RATE
-        val lower = start + (MIN_CUT_SECONDS * rate).toInt()
-        val upper = start + (CHUNK_SECONDS * rate).toInt()
-        val window = recorder.samples(lower, upper)
-        val frame = rate / 10
-        if (window.size < frame) return upper
-        var best = upper
+    /** Transcribes and commits every pending utterance, chunk by chunk. */
+    private suspend fun commit(noteId: String, audioEnd: Int) {
+        val chunks = ChunkPlanner.plan(pendingSpeech, audioEnd, MAX_CHUNK, PAD, grouping) { from, to ->
+            quietestPoint(recorder.samples(from, to), from)
+        }
+        for (chunk in chunks) {
+            val audio = join(chunk.map { recorder.samples(it.start, it.end) })
+            val result = transcribe(audio)
+            committedText = join(committedText, result.text)
+            result.language?.let { chunkLanguages += it }
+            result.engine?.let { chunkEngines += it }
+            val end = chunk.last().end
+            pendingSpeech.removeAll { it.end <= end }
+            // A hard cut inside one long utterance: keep its unsent remainder.
+            pendingSpeech.replaceAll { if (it.start < end) Span(end, it.end) else it }
+            committedUpTo = maxOf(committedUpTo, end)
+            _state.update { it.copy(liveText = committedText) }
+            // Keep committed text on disk in case the app dies, and free the audio.
+            store.update(noteId) { it.copy(partialText = committedText.ifBlank { null }) }
+            recorder.discardBefore(committedUpTo - PAD)
+        }
+    }
+
+    /** Position (in the recording) of the quietest 100 ms in [window], which starts at [start]. */
+    private fun quietestPoint(window: FloatArray, start: Int): Int {
+        val frame = AudioRecorder.SAMPLE_RATE / 10
+        if (window.size < frame) return start + window.size
+        var best = start + window.size
         var bestEnergy = Float.MAX_VALUE
         var offset = 0
         while (offset + frame <= window.size) {
@@ -367,12 +457,24 @@ class RecordingController(
             for (i in offset until offset + frame) energy += window[i] * window[i]
             if (energy < bestEnergy) {
                 bestEnergy = energy
-                best = lower + offset + frame / 2
+                best = start + offset + frame / 2
             }
             offset += frame
         }
         return best
     }
+
+    private fun join(parts: List<FloatArray>): FloatArray {
+        if (parts.size == 1) return parts[0]
+        val out = FloatArray(parts.sumOf { it.size })
+        var at = 0
+        for (p in parts) { System.arraycopy(p, 0, out, at, p.size); at += p.size }
+        return out
+    }
+
+    /** "Parakeet v3", or "Parakeet v3 + SenseVoice" when Auto used both. */
+    private fun engineLabel(engines: List<String>): String =
+        engines.distinct().joinToString(" + ").ifBlank { _state.value.engineChoice.shortName }
 
     private fun join(a: String, b: String) = listOf(a, b).filter { it.isNotEmpty() }.joinToString(" ")
 
@@ -432,28 +534,52 @@ class RecordingController(
         }
         val hadText = note.status == TranscriptionStatus.DONE && note.revisions.isNotEmpty()
         val source = if (note.revisions.isEmpty()) RevisionSource.TRANSCRIPTION else RevisionSource.RETRANSCRIPTION
-        val engineName = _state.value.engineChoice.shortName
 
         store.update(noteId) { it.copy(status = TranscriptionStatus.IN_PROGRESS, attempts = it.attempts + 1) }
         try {
-            val samples = withContext(Dispatchers.IO) { WavFile.read(file) }
-            val chunkLength = (CHUNK_SECONDS * AudioRecorder.SAMPLE_RATE).toInt()
+            val total = withContext(Dispatchers.IO) { WavFile.sampleCount(file) }
+            // Find the speech by streaming the file through the detector in
+            // 10 s blocks, so memory stays small however long it is.
+            val speech = withContext(Dispatchers.Default) {
+                val vad = newDetector()
+                if (vad == null) {
+                    listOf(Span(0, total))
+                } else {
+                    try {
+                        val found = mutableListOf<Span>()
+                        val block = AudioRecorder.SAMPLE_RATE * 10
+                        var at = 0
+                        while (at < total) {
+                            found += vad.feed(WavFile.readRange(file, at, at + block))
+                            at += block
+                        }
+                        found += vad.flush()
+                        found
+                    } finally {
+                        vad.release()
+                    }
+                }
+            }
+            val chunks = ChunkPlanner.plan(speech, total, MAX_CHUNK, PAD, grouping) { from, to ->
+                quietestPoint(WavFile.readRange(file, from, to), from)
+            }
             var text = ""
             val languages = mutableListOf<String>()
-            var start = 0
-            while (start < samples.size) {
-                val end = minOf(start + chunkLength, samples.size)
-                val result = transcribe(samples.copyOfRange(start, end))
+            val engines = mutableListOf<String>()
+            for (chunk in chunks) {
+                val audio = withContext(Dispatchers.IO) { join(chunk.map { WavFile.readRange(file, it.start, it.end) }) }
+                val result = transcribe(audio)
                 text = join(text, result.text)
                 result.language?.let { languages += it }
-                start = end
+                result.engine?.let { engines += it }
             }
+            val engineName = engineLabel(engines)
             store.update(noteId) {
                 it.withRevision(text, source, engineName, mostCommon(languages)).copy(
                     status = TranscriptionStatus.DONE,
                     lastError = null,
                     partialText = null,
-                    durationSeconds = if (it.durationSeconds > 0) it.durationSeconds else samples.size / WavFile.SAMPLE_RATE.toDouble(),
+                    durationSeconds = if (it.durationSeconds > 0) it.durationSeconds else total / WavFile.SAMPLE_RATE.toDouble(),
                 )
             }
         } catch (e: Throwable) {

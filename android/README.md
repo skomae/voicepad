@@ -6,12 +6,23 @@ copied, edited, re-transcribed and rolled back through its revision history.
 
 - **Models** (Settings → Transcription model), all run on-device through
   [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx):
-  Parakeet TDT v3 (default; 25 European languages), Parakeet TDT v2 (English),
-  SenseVoice (Mandarin, Cantonese, English, Japanese, Korean),
-  Whisper tiny.en / base.en / small.en, Whisper small (multilingual) and
-  large-v3 turbo (multilingual).
-  Each is downloaded once on first use (≈120–640 MB). Recording starts
-  immediately; text catches up once the model is ready.
+  - **Auto: Western** (default) — Parakeet TDT v3: English, French, Spanish,
+    German and 21 more European languages, switching per sentence.
+  - **Auto: Asian + English** — per sentence, SenseVoice decides: Mandarin,
+    Cantonese, Japanese and Korean keep SenseVoice's text; English goes to
+    Parakeet.
+  - Single models: Parakeet v2 (English), SenseVoice, Whisper tiny.en /
+    base.en / small.en, Whisper small (multilingual), large-v3 turbo.
+
+  Each downloads once on first use. Recording starts immediately; text
+  catches up once the model is ready.
+- **Silence trimming and pause-based splitting**: a bundled Silero
+  voice-activity detector finds speech. Silence never reaches the model (no
+  Whisper hallucinations on quiet stretches, less battery); Parakeet and
+  SenseVoice get one call per utterance, and Whisper gets utterances packed
+  into ≤25 s chunks split at the **longest pauses**. Committed audio is
+  dropped from memory and saved recordings are streamed from disk, so
+  recording length is limited only by storage.
 - **Background recording** continues via a foreground service with an
   ongoing notification.
 - **Recordings are never lost to a model failure.** Every note saves its

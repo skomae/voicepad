@@ -13,8 +13,13 @@ enum class EngineChoice(
 ) {
     PARAKEET_V3(
         "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
-        "Parakeet TDT v3 (multilingual)", "Parakeet v3", "~490 MB download", Kind.TRANSDUCER,
-        "25 European languages incl. English, French, Spanish, German — not Chinese",
+        "Auto: Western (Parakeet v3)", "Parakeet v3", "~490 MB download", Kind.TRANSDUCER,
+        "English, French, Spanish, German and 21 more European languages, switching per sentence — not Chinese",
+    ),
+    AUTO_ASIAN(
+        "",
+        "Auto: Asian + English (SenseVoice + Parakeet)", "Auto Asian", "~655 MB download", Kind.AUTO,
+        "Mandarin, Cantonese, Japanese, Korean via SenseVoice and English via Parakeet, picked per sentence",
     ),
     PARAKEET_V2(
         "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8",
@@ -52,7 +57,11 @@ enum class EngineChoice(
         "~100 languages incl. Mandarin, French, Spanish (best accuracy, slowest)",
     );
 
-    enum class Kind { TRANSDUCER, WHISPER, SENSE_VOICE }
+    enum class Kind { TRANSDUCER, WHISPER, SENSE_VOICE, AUTO }
+
+    /** The model archives this choice needs (Auto needs two). */
+    val components: List<EngineChoice>
+        get() = if (kind == Kind.AUTO) listOf(PARAKEET_V3, SENSE_VOICE) else listOf(this)
 
     val downloadUrl: String
         get() = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$archive.tar.bz2"

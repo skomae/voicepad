@@ -28,6 +28,11 @@ class AudioRecorder {
     private val lock = Any()
     private var samples = FloatArray(SAMPLE_RATE * 60)
     private var count = 0
+    /**
+     * Position (in the whole recording) of samples[0]. Audio already
+     * transcribed is dropped from memory with [discardBefore]; it's on disk.
+     */
+    private var offset = 0
 
     @Volatile var level: Float = 0f
         private set
@@ -51,13 +56,27 @@ class AudioRecorder {
     private var wav: RandomAccessFile? = null
     private var wavDataBytes = 0L
 
-    val sampleCount: Int get() = synchronized(lock) { count }
+    /** Samples recorded so far (including ones discarded from memory). */
+    val sampleCount: Int get() = synchronized(lock) { offset + count }
 
-    /** Copy of captured samples in [from, to), clamped to what exists. */
+    /** Copy of captured samples in [from, to) (recording positions), clamped to what is still in memory. */
     fun samples(from: Int, to: Int): FloatArray = synchronized(lock) {
-        val lower = from.coerceIn(0, count)
-        val upper = to.coerceIn(lower, count)
+        val lower = (from - offset).coerceIn(0, count)
+        val upper = (to - offset).coerceIn(lower, count)
         samples.copyOfRange(lower, upper)
+    }
+
+    /**
+     * Frees memory for audio before [position] (it's already transcribed and
+     * saved in the WAV), so hour-long recordings don't fill RAM.
+     */
+    fun discardBefore(position: Int) = synchronized(lock) {
+        val drop = (position - offset).coerceIn(0, count)
+        if (drop < SAMPLE_RATE * 30) return@synchronized // not worth copying yet
+        System.arraycopy(samples, drop, samples, 0, count - drop)
+        count -= drop
+        offset += drop
+        if (samples.size > SAMPLE_RATE * 120 && count < samples.size / 4) samples = samples.copyOf(samples.size / 2)
     }
 
     @SuppressLint("MissingPermission") // Checked by the caller.
@@ -80,7 +99,7 @@ class AudioRecorder {
             Handler(Looper.getMainLooper()),
         )
 
-        synchronized(lock) { count = 0 }
+        synchronized(lock) { count = 0; offset = 0 }
         level = 0f
         writeError = null
         wav = RandomAccessFile(file, "rw").apply {

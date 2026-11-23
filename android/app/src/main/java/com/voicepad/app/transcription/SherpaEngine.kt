@@ -10,11 +10,26 @@ import com.k2fsa.sherpa.onnx.OfflineWhisperModelConfig
 import com.voicepad.app.audio.AudioRecorder
 import java.io.File
 
-/** Text plus the spoken language the model reported (e.g. "zh"), if it reports one. */
-data class Transcript(val text: String, val language: String?)
+/**
+ * Text plus the spoken language the model reported (e.g. "zh"), if it reports
+ * one, and which model produced it.
+ */
+data class Transcript(val text: String, val language: String?, val engine: String? = null)
 
-/** Speech-to-text over 16 kHz mono float samples, backed by sherpa-onnx. */
-class SherpaEngine(choice: EngineChoice, modelDir: File) {
+/** Speech-to-text over 16 kHz mono float samples. Not thread-safe; callers serialise access. */
+interface SpeechEngine {
+    /** How long audio should be grouped before it reaches [transcribe]. */
+    val grouping: ChunkPlanner.Grouping
+    fun transcribe(samples: FloatArray): Transcript
+    fun release()
+}
+
+/** One sherpa-onnx model. */
+class SherpaEngine(private val choice: EngineChoice, modelDir: File) : SpeechEngine {
+    override val grouping =
+        if (choice.kind == EngineChoice.Kind.WHISPER) ChunkPlanner.Grouping.LONGEST_PAUSES
+        else ChunkPlanner.Grouping.UTTERANCES
+
     private val recognizer: OfflineRecognizer
 
     init {
@@ -49,6 +64,7 @@ class SherpaEngine(choice: EngineChoice, modelDir: File) {
                 modelType = "sense_voice",
                 numThreads = threads,
             )
+            EngineChoice.Kind.AUTO -> error("Auto combines two engines; see AutoEngine.")
             EngineChoice.Kind.WHISPER -> OfflineModelConfig(
                 whisper = OfflineWhisperModelConfig(
                     encoder = find("encoder"),
@@ -70,8 +86,7 @@ class SherpaEngine(choice: EngineChoice, modelDir: File) {
         )
     }
 
-    /** Not thread-safe; callers serialise access. */
-    fun transcribe(samples: FloatArray): Transcript {
+    override fun transcribe(samples: FloatArray): Transcript {
         // Very short clips just produce noise or hallucinations.
         if (samples.size < AudioRecorder.SAMPLE_RATE / 2) return Transcript("", null)
         val stream = recognizer.createStream()
@@ -79,11 +94,11 @@ class SherpaEngine(choice: EngineChoice, modelDir: File) {
             stream.acceptWaveform(samples, AudioRecorder.SAMPLE_RATE)
             recognizer.decode(stream)
             val result = recognizer.getResult(stream)
-            return Transcript(result.text.trim(), LanguageTags.fromModel(result.lang))
+            return Transcript(result.text.trim(), LanguageTags.fromModel(result.lang), choice.shortName)
         } finally {
             stream.release()
         }
     }
 
-    fun release() = recognizer.release()
+    override fun release() = recognizer.release()
 }

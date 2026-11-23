@@ -27,7 +27,24 @@ val downloadSherpaOnnx by tasks.registering {
         tmp.renameTo(target)
     }
 }
-tasks.named("preBuild") { dependsOn(downloadSherpaOnnx) }
+// Silero voice-activity detector (MIT, ~640 KB), bundled so silence trimming
+// and pause detection work offline from the very first recording.
+val sileroVad = layout.projectDirectory.file("src/main/assets/silero_vad.onnx")
+val downloadSileroVad by tasks.registering {
+    description = "Downloads the Silero VAD model into assets."
+    val target = sileroVad.asFile
+    outputs.file(target)
+    onlyIf { !target.exists() }
+    doLast {
+        target.parentFile.mkdirs()
+        val url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx"
+        logger.lifecycle("Downloading $url")
+        val tmp = File(target.path + ".part")
+        URI(url).toURL().openStream().use { input -> tmp.outputStream().use { input.copyTo(it) } }
+        tmp.renameTo(target)
+    }
+}
+tasks.named("preBuild") { dependsOn(downloadSherpaOnnx, downloadSileroVad) }
 
 // Release signing comes from environment variables (set by CI from repo
 // secrets). Without them the release build falls back to the debug key.
