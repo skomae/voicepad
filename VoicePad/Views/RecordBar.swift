@@ -91,5 +91,8 @@ struct EngineStatusBadge: View {
         }
         .font(.caption)
         .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .fixedSize()
+        .padding(.horizontal, 6)
     }
 }
