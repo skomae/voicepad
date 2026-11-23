@@ -1,0 +1,59 @@
+name: iOS build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build for simulator
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project VoicePad.xcodeproj \
+            -scheme VoicePad \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tee build.log | grep -E "error:|warning: .*VoicePad/|BUILD (SUCCEEDED|FAILED)" || true
+          grep -q "BUILD SUCCEEDED" build.log
+
+      - name: Build unsigned device app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project VoicePad.xcodeproj \
+            -scheme VoicePad \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            build > device.log 2>&1 || (grep -E "error:" device.log; exit 1)
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/VoicePad.app Payload/
+          zip -qr VoicePad-unsigned.ipa Payload
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VoicePad-unsigned-ipa
+          path: VoicePad-unsigned.ipa
