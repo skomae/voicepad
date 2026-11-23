@@ -43,10 +43,6 @@ android {
         targetSdk = 36
         versionCode = (System.getenv("VOICEPAD_VERSION_CODE") ?: "1").toInt()
         versionName = System.getenv("VOICEPAD_VERSION_NAME") ?: "0.1.0"
-        ndk {
-            // Phones are arm64; x86_64 keeps the emulator working.
-            abiFilters += listOf("arm64-v8a", "x86_64")
-        }
     }
 
     signingConfigs {
@@ -61,7 +57,13 @@ android {
     }
 
     buildTypes {
+        debug {
+            // x86_64 keeps the emulator working during development.
+            ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        }
         release {
+            // Every current phone is arm64; leaving out the emulator ABI halves the APK.
+            ndk { abiFilters += listOf("arm64-v8a") }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
@@ -103,6 +105,10 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("org.apache.commons:commons-compress:1.28.0")
+    implementation("com.google.mlkit:translate:17.0.3")
+    implementation("com.google.mlkit:language-id:17.0.6")
 
     testImplementation("junit:junit:4.13.2")
+    // Same ICU transforms Android ships, for testing romanisation on the JVM.
+    testImplementation("com.ibm.icu:icu4j:78.1")
 }

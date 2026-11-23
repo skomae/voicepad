@@ -6,8 +6,10 @@ copied, edited, re-transcribed and rolled back through its revision history.
 
 - **Models** (Settings → Transcription model), all run on-device through
   [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx):
-  Parakeet TDT v3 (default, multilingual), Parakeet TDT v2 (English),
-  Whisper tiny.en / base.en / small.en / large-v3 turbo.
+  Parakeet TDT v3 (default; 25 European languages), Parakeet TDT v2 (English),
+  SenseVoice (Mandarin, Cantonese, English, Japanese, Korean),
+  Whisper tiny.en / base.en / small.en, Whisper small (multilingual) and
+  large-v3 turbo (multilingual).
   Each is downloaded once on first use (≈120–640 MB). Recording starts
   immediately; text catches up once the model is ready.
 - **Background recording** continues via a foreground service with an
@@ -22,6 +24,18 @@ copied, edited, re-transcribed and rolled back through its revision history.
   next launch.
 - **Play or share** any recording (share sends the WAV plus its transcript,
   e.g. to Drive or email). Deleting asks for confirmation.
+- **Auto-translation to English** (Settings, on by default): the spoken
+  language is detected (from the speech model, falling back to ML Kit's text
+  language ID) and non-English notes show the English translation next to
+  the original — side by side when there's room, stacked on a phone held
+  upright — plus **pinyin with tone marks** for Mandarin (with corrections
+  for common words ICU reads character-by-character, e.g. 银行 *yín háng*)
+  and Latin transliteration for other non-Latin scripts. Translation runs on
+  the phone with Google ML Kit; each language's pack (~30 MB) downloads once.
+  Translations are saved per revision, redone when the text is edited,
+  retried like transcriptions if they fail, and included in search.
+  For Mandarin use SenseVoice or a multilingual Whisper — Parakeet doesn't
+  understand Chinese.
 - **Microphone choice** (Settings → Microphone): see every connected mic
   (built-in, wired, USB, Bluetooth headset), which one is recording right
   now, and pick one — or leave it on *Automatic*. The choice is remembered;
@@ -44,7 +58,7 @@ Requires JDK 17+ and the Android SDK (platform 36).
 cd android
 ./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
 ./gradlew assembleRelease      # signed with the debug key unless the env vars below are set
-./gradlew testDebugUnitTest    # recovery, search and pinning tests
+./gradlew testDebugUnitTest    # recovery, search, pinning, mic naming, pinyin and translation tests
 ```
 
 The sherpa-onnx library (`app/libs/sherpa-onnx-2.0.3.aar`) is downloaded

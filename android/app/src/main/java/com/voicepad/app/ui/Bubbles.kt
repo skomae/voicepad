@@ -8,6 +8,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -29,8 +32,11 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -57,6 +63,9 @@ import com.voicepad.app.data.Note
 import com.voicepad.app.data.NoteSearch
 import com.voicepad.app.data.RevisionSource
 import com.voicepad.app.data.TranscriptionStatus
+import com.voicepad.app.data.NoteTranslation
+import com.voicepad.app.data.TranslationStatus
+import com.voicepad.app.transcription.LanguageTags
 
 private val BubbleShape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp)
 
@@ -83,6 +92,8 @@ fun NoteBubble(
     highlightTerms: List<String> = emptyList(),
     /** The search matched an earlier version, not the current text. */
     matchedInEarlierRevision: Boolean = false,
+    onTranslate: () -> Unit = {},
+    onCopyText: (String) -> Unit = {},
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
@@ -103,8 +114,9 @@ fun NoteBubble(
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
                 val textColor = if (solid) colors.onPrimary else colors.onSurfaceVariant
+                val translation = note.currentTranslation.takeIf { hasText }
                 if (bodyText.isNotEmpty()) {
-                    Text(highlighted(bodyText, highlightTerms), color = textColor)
+                    TextWithTranslation(bodyText, translation, textColor, highlightTerms, onTranslate)
                 } else if (note.status == TranscriptionStatus.DONE) {
                     Text("No speech detected", color = textColor.copy(alpha = 0.8f), fontStyle = FontStyle.Italic)
                 }
@@ -123,6 +135,15 @@ fun NoteBubble(
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 MenuItem("Copy", Icons.Default.ContentCopy) { menuOpen = false; onCopy() }
+                val translated = note.currentTranslation?.takeIf { it.status == TranslationStatus.DONE }
+                if (translated != null) {
+                    MenuItem("Copy translation", Icons.Default.Translate) {
+                        menuOpen = false
+                        onCopyText(listOfNotNull(translated.romanization, translated.english).joinToString("\n"))
+                    }
+                } else if (hasText) {
+                    MenuItem("Translate to English", Icons.Default.Translate) { menuOpen = false; onTranslate() }
+                }
                 MenuItem(if (note.pinned) "Unpin" else "Pin", Icons.Default.PushPin) { menuOpen = false; onTogglePin() }
                 MenuItem("Edit", Icons.Default.Edit) { menuOpen = false; onEdit() }
                 MenuItem("Revision history", Icons.Default.History) { menuOpen = false; onHistory() }
@@ -156,6 +177,91 @@ fun NoteBubble(
                 Text("${note.revisions.size}", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
             }
         }
+    }
+}
+
+/**
+ * The transcript and, for speech that wasn't English, its romanisation
+ * (pinyin for Mandarin) and English translation. Side by side when there's
+ * room (landscape, tablets), stacked on a phone held upright.
+ */
+@Composable
+private fun TextWithTranslation(
+    text: String,
+    translation: NoteTranslation?,
+    color: Color,
+    highlightTerms: List<String>,
+    onRetry: () -> Unit,
+) {
+    if (translation == null || translation.status == TranslationStatus.NOT_NEEDED) {
+        Text(highlighted(text, highlightTerms), color = color)
+        return
+    }
+    val original: @Composable () -> Unit = {
+        Column {
+            translation.language?.let { LanguageLabel(LanguageTags.displayName(it), color) }
+            Text(highlighted(text, highlightTerms), color = color)
+            translation.romanization?.let {
+                Text(
+                    highlighted(it, highlightTerms),
+                    color = color.copy(alpha = 0.85f),
+                    fontStyle = FontStyle.Italic,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+        }
+    }
+    val english: @Composable () -> Unit = {
+        Column {
+            LanguageLabel("English", color)
+            when (translation.status) {
+                TranslationStatus.DONE -> Text(highlighted(translation.english.orEmpty(), highlightTerms), color = color)
+                TranslationStatus.PENDING -> Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(12.dp), color = color, strokeWidth = 2.dp)
+                    Spacer(Modifier.width(6.dp))
+                    Text("Translating…", color = color, fontStyle = FontStyle.Italic, style = MaterialTheme.typography.bodyMedium)
+                }
+                TranslationStatus.FAILED -> Column {
+                    Text(
+                        translation.error ?: "Translation failed.",
+                        color = color.copy(alpha = 0.85f),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 3,
+                    )
+                    TextButton(onClick = onRetry, contentPadding = PaddingValues(0.dp)) {
+                        Icon(Icons.Default.Refresh, null, Modifier.size(16.dp), tint = color)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Retry translation", color = color)
+                    }
+                }
+                TranslationStatus.NOT_NEEDED -> {}
+            }
+        }
+    }
+    BoxWithConstraints {
+        if (maxWidth >= 480.dp) {
+            Row(Modifier.height(IntrinsicSize.Min)) {
+                Box(Modifier.weight(1f)) { original() }
+                VerticalDivider(Modifier.padding(horizontal = 12.dp), color = color.copy(alpha = 0.3f))
+                Box(Modifier.weight(1f)) { english() }
+            }
+        } else {
+            Column {
+                original()
+                HorizontalDivider(Modifier.padding(vertical = 8.dp), color = color.copy(alpha = 0.3f))
+                english()
+            }
+        }
+    }
+}
+
+@Composable
+private fun LanguageLabel(name: String, color: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 2.dp)) {
+        Icon(Icons.Default.Translate, null, Modifier.size(12.dp), tint = color.copy(alpha = 0.7f))
+        Spacer(Modifier.width(4.dp))
+        Text(name.uppercase(), color = color.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall)
     }
 }
 

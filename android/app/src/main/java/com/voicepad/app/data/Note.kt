@@ -39,6 +39,26 @@ data class Revision(
     val source: RevisionSource,
     /** Model that produced the text, when it came from a model. */
     val engine: String? = null,
+    /** Spoken language the model reported (e.g. "zh"), if any. */
+    val language: String? = null,
+)
+
+@Serializable
+enum class TranslationStatus { PENDING, DONE, FAILED, NOT_NEEDED }
+
+/** English translation (and romanisation) of one revision of a note. */
+@Serializable
+data class NoteTranslation(
+    /** The revision this was made from; a newer revision makes it stale. */
+    val revisionId: String,
+    val status: TranslationStatus,
+    /** Detected language code, e.g. "zh", "fr", "es". */
+    val language: String? = null,
+    val english: String? = null,
+    /** Pinyin for Mandarin, Latin letters for other non-Latin scripts. */
+    val romanization: String? = null,
+    val attempts: Int = 0,
+    val error: String? = null,
 )
 
 /** A recording plus the full history of its transcript. */
@@ -60,8 +80,26 @@ data class Note(
     val pinned: Boolean = false,
     /** When it was pinned; pinned notes are listed most recently pinned first. */
     val pinnedAt: Long? = null,
+    val translation: NoteTranslation? = null,
 ) {
     val currentText: String get() = revisions.lastOrNull()?.text ?: ""
+
+    /** The translation, if it matches the current text. */
+    val currentTranslation: NoteTranslation?
+        get() = translation?.takeIf { it.revisionId == revisions.lastOrNull()?.id }
+
+    /**
+     * True when the current text has no finished translation yet. Stops
+     * retrying a failing translation after [maxAttempts].
+     */
+    fun needsTranslation(maxAttempts: Int): Boolean {
+        val current = revisions.lastOrNull() ?: return false
+        if (current.text.isBlank()) return false
+        val t = translation
+        return t == null || t.revisionId != current.id ||
+            (t.status == TranslationStatus.PENDING) ||
+            (t.status == TranslationStatus.FAILED && t.attempts < maxAttempts)
+    }
 
     /** True when this note's audio still needs a successful model run. */
     val needsTranscription: Boolean

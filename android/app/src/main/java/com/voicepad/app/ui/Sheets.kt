@@ -190,6 +190,21 @@ fun SettingsSheet(controller: RecordingController, state: RecordingController.Ui
             Spacer(Modifier.height(16.dp))
             MicrophoneSection(state, onSelect = controller::setInputDevice)
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Translate to English automatically")
+                    Text(
+                        "Detects the spoken language (e.g. Mandarin, French, Spanish) and shows the English " +
+                            "translation, plus pinyin for Mandarin. Runs on the phone; each language's " +
+                            "translation pack (~30 MB) downloads once.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = state.autoTranslate, onCheckedChange = controller::setAutoTranslate)
+            }
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
             Text("Transcription model", style = MaterialTheme.typography.titleSmall)
             EngineChoice.entries.forEach { choice ->
                 Row(
@@ -208,7 +223,7 @@ fun SettingsSheet(controller: RecordingController, state: RecordingController.Ui
                     Column {
                         Text(choice.displayName)
                         Text(
-                            choice.approximateSize,
+                            "${choice.languages} · ${choice.approximateSize}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -216,7 +231,9 @@ fun SettingsSheet(controller: RecordingController, state: RecordingController.Ui
                 }
             }
             Text(
-                "Models run entirely on the device and are downloaded once on first use. " +
+                "For Mandarin choose SenseVoice or a multilingual Whisper; Parakeet v3 covers French, " +
+                    "Spanish and other European languages but not Chinese. " +
+                    "Models run entirely on the device and are downloaded once on first use. " +
                     "Recording starts immediately; text catches up once the model is ready.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

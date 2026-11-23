@@ -3,8 +3,9 @@ package com.voicepad.app.data
 import java.text.Normalizer
 
 /**
- * Full-text search over notes: current text, text recovered from unfinished
- * transcriptions, and every earlier revision.
+ * Full-text search over notes: current text, its English translation and
+ * pinyin, text recovered from unfinished transcriptions, and every earlier
+ * revision.
  *
  * The query is split into terms; "quoted phrases" stay together. A note
  * matches when every term appears somewhere in it. Matching ignores case and
@@ -28,7 +29,11 @@ object NoteSearch {
         val terms = terms(query)
         if (terms.isEmpty()) return emptyList()
         return notes.mapNotNull { note ->
-            val current = fold(listOfNotNull(note.currentText, note.partialText).joinToString("\n"))
+            val translation = note.currentTranslation
+            val current = fold(
+                listOfNotNull(note.currentText, note.partialText, translation?.english, translation?.romanization)
+                    .joinToString("\n")
+            )
             val everything = fold((note.revisions.map { it.text } + listOfNotNull(note.partialText)).joinToString("\n"))
             when {
                 terms.all { it in current } -> Result(note, MatchedIn.CURRENT, score(current, terms))

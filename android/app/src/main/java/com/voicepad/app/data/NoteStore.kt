@@ -38,7 +38,7 @@ class NoteStore(baseDir: File) {
         update(id) { note -> note.withRevision(text, source, engine) }
 
     fun restore(id: String, revision: Revision) =
-        addRevision(id, revision.text, RevisionSource.RESTORE, revision.engine)
+        update(id) { it.withRevision(revision.text, RevisionSource.RESTORE, revision.engine, revision.language) }
 
     fun setPinned(id: String, pinned: Boolean) = update(id) {
         it.copy(pinned = pinned, pinnedAt = if (pinned) System.currentTimeMillis() else null)
@@ -119,8 +119,8 @@ class NoteStore(baseDir: File) {
     }
 }
 
-fun Note.withRevision(text: String, source: RevisionSource, engine: String?): Note {
+fun Note.withRevision(text: String, source: RevisionSource, engine: String?, language: String? = null): Note {
     val trimmed = text.trim()
     if (revisions.isNotEmpty() && currentText == trimmed) return this
-    return copy(revisions = revisions + Revision(text = trimmed, source = source, engine = engine))
+    return copy(revisions = revisions + Revision(text = trimmed, source = source, engine = engine, language = language))
 }

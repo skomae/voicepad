@@ -12,12 +12,16 @@ import com.voicepad.app.audio.RecordingService
 import com.voicepad.app.audio.WavFile
 import com.voicepad.app.data.Note
 import com.voicepad.app.data.NoteStore
+import com.voicepad.app.data.NoteTranslation
 import com.voicepad.app.data.RevisionSource
 import com.voicepad.app.data.TranscriptionStatus
+import com.voicepad.app.data.TranslationStatus
 import com.voicepad.app.data.withRevision
 import com.voicepad.app.transcription.EngineChoice
+import com.voicepad.app.transcription.EnglishTranslator
 import com.voicepad.app.transcription.ModelManager
 import com.voicepad.app.transcription.SherpaEngine
+import com.voicepad.app.transcription.Transcript
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -71,6 +75,7 @@ class RecordingController(
         val engineStatus: EngineStatus = EngineStatus.Idle,
         val engineChoice: EngineChoice = EngineChoice.PARAKEET_V3,
         val autoRecordOnOpen: Boolean = true,
+        val autoTranslate: Boolean = true,
         val errorMessage: String? = null,
         /** Microphones currently connected. */
         val inputDevices: List<InputDevice> = emptyList(),
@@ -100,6 +105,7 @@ class RecordingController(
                 ?.let { runCatching { EngineChoice.valueOf(it) }.getOrNull() }
                 ?: EngineChoice.PARAKEET_V3,
             autoRecordOnOpen = prefs.getBoolean("autoRecord", true),
+            autoTranslate = prefs.getBoolean("autoTranslate", true),
             inputDevices = inputs.devices.value,
             selectedInputKey = prefs.getString("inputDevice", null),
         )
@@ -113,9 +119,16 @@ class RecordingController(
     private var loadJob: Job? = null
     private var liveJob: Job? = null
     private var queueJob: Job? = null
+    private var translateJob: Job? = null
+    /** Notes already attempted since the app was last opened; failures wait for the next open. */
+    private val translationTried = mutableSetOf<String>()
+    private val translator by lazy { EnglishTranslator() }
 
     private var committedText = ""
     private var chunkStart = 0
+    /** Languages the model reported for this recording's committed chunks. */
+    private val chunkLanguages = mutableListOf<String>()
+    private var tailLanguage: String? = null
 
     init {
         // Before anything records: repair what a crash or kill left behind.
@@ -134,6 +147,9 @@ class RecordingController(
         recorder.onRoutingChanged = {
             _state.update { it.copy(activeInputName = recorder.routedDeviceName) }
         }
+
+        // Translate whenever a note gets new text (transcription, edit, restore).
+        scope.launch { store.notes.collect { processTranslations() } }
     }
 
     // region Microphone
@@ -193,7 +209,7 @@ class RecordingController(
     private val engineReady get() = _state.value.engineStatus == EngineStatus.Ready
 
     /** Runs one model call at a time on a background thread. */
-    private suspend fun transcribe(samples: FloatArray): String = engineMutex.withLock {
+    private suspend fun transcribe(samples: FloatArray): Transcript = engineMutex.withLock {
         val current = engine ?: throw IllegalStateException("The model isn't loaded.")
         withContext(Dispatchers.Default) { current.transcribe(samples) }
     }
@@ -204,6 +220,8 @@ class RecordingController(
 
     /** Called whenever the app comes to the foreground. */
     fun appBecameActive() {
+        translationTried.clear()
+        processTranslations()
         if (engine == null && loadJob?.isActive != true) loadEngine() else processQueue()
         val s = _state.value
         if (s.autoRecordOnOpen && !s.isRecording && s.recordingNoteId == null) start()
@@ -237,6 +255,8 @@ class RecordingController(
         store.add(note)
         committedText = ""
         chunkStart = 0
+        chunkLanguages.clear()
+        tailLanguage = null
         _state.update {
             it.copy(
                 isRecording = true,
@@ -288,7 +308,7 @@ class RecordingController(
             val engineName = _state.value.engineChoice.shortName
             store.update(noteId) {
                 if (error == null) {
-                    it.withRevision(text, RevisionSource.TRANSCRIPTION, engineName)
+                    it.withRevision(text, RevisionSource.TRANSCRIPTION, engineName, mostCommon(chunkLanguages + listOfNotNull(tailLanguage)))
                         .copy(status = TranscriptionStatus.DONE, lastError = null, partialText = null)
                 } else {
                     it.copy(status = TranscriptionStatus.FAILED, lastError = error, partialText = text.ifBlank { null })
@@ -309,15 +329,17 @@ class RecordingController(
         return try {
             while (recorder.sampleCount - chunkStart >= chunkLength) {
                 val cut = quietestCut(chunkStart)
-                val text = transcribe(recorder.samples(chunkStart, cut))
-                committedText = join(committedText, text)
+                val result = transcribe(recorder.samples(chunkStart, cut))
+                committedText = join(committedText, result.text)
+                result.language?.let { chunkLanguages += it }
                 chunkStart = cut
                 _state.update { it.copy(liveText = committedText) }
                 // Keep committed text on disk in case the app dies.
                 store.update(noteId) { it.copy(partialText = committedText.ifBlank { null }) }
             }
             val tail = transcribe(recorder.samples(chunkStart, recorder.sampleCount))
-            _state.update { it.copy(liveText = join(committedText, tail)) }
+            tailLanguage = tail.language
+            _state.update { it.copy(liveText = join(committedText, tail.text)) }
             null
         } catch (e: CancellationException) {
             if (final) throw e
@@ -353,6 +375,9 @@ class RecordingController(
     }
 
     private fun join(a: String, b: String) = listOf(a, b).filter { it.isNotEmpty() }.joinToString(" ")
+
+    private fun mostCommon(languages: List<String>): String? =
+        languages.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key
 
     // endregion
 
@@ -414,14 +439,17 @@ class RecordingController(
             val samples = withContext(Dispatchers.IO) { WavFile.read(file) }
             val chunkLength = (CHUNK_SECONDS * AudioRecorder.SAMPLE_RATE).toInt()
             var text = ""
+            val languages = mutableListOf<String>()
             var start = 0
             while (start < samples.size) {
                 val end = minOf(start + chunkLength, samples.size)
-                text = join(text, transcribe(samples.copyOfRange(start, end)))
+                val result = transcribe(samples.copyOfRange(start, end))
+                text = join(text, result.text)
+                result.language?.let { languages += it }
                 start = end
             }
             store.update(noteId) {
-                it.withRevision(text, source, engineName).copy(
+                it.withRevision(text, source, engineName, mostCommon(languages)).copy(
                     status = TranscriptionStatus.DONE,
                     lastError = null,
                     partialText = null,
@@ -437,6 +465,66 @@ class RecordingController(
             if (hadText) showError("Re-transcription failed: $message")
             if (e is CancellationException) throw e
         }
+    }
+
+    // endregion
+
+    // region Translation
+
+    fun setAutoTranslate(enabled: Boolean) {
+        prefs.edit { putBoolean("autoTranslate", enabled) }
+        _state.update { it.copy(autoTranslate = enabled) }
+        if (enabled) processTranslations()
+    }
+
+    /** Translates one note now, even if automatic translation is off or gave up. */
+    fun translateNow(noteId: String) {
+        scope.launch { translateNote(noteId) }
+    }
+
+    /** Works through notes whose current text has no translation yet, one at a time. */
+    private fun processTranslations() {
+        if (!_state.value.autoTranslate || translateJob?.isActive == true) return
+        translateJob = scope.launch {
+            while (_state.value.autoTranslate) {
+                val next = store.notes.value.firstOrNull {
+                    val key = it.id + ":" + it.revisions.lastOrNull()?.id
+                    key !in translationTried && it.status == TranscriptionStatus.DONE && it.needsTranslation(MAX_AUTO_ATTEMPTS)
+                } ?: break
+                translationTried += next.id + ":" + next.revisions.lastOrNull()?.id
+                translateNote(next.id)
+            }
+        }
+    }
+
+    private suspend fun translateNote(noteId: String) {
+        val note = store.note(noteId) ?: return
+        val revision = note.revisions.lastOrNull()?.takeIf { it.text.isNotBlank() } ?: return
+        val previousAttempts = note.translation?.takeIf { it.revisionId == revision.id }?.attempts ?: 0
+        store.update(noteId) {
+            it.copy(translation = NoteTranslation(revision.id, TranslationStatus.PENDING, attempts = previousAttempts + 1))
+        }
+        val outcome = try {
+            val result = translator.translate(revision.text, revision.language)
+            NoteTranslation(
+                revisionId = revision.id,
+                status = if (result.english == null) TranslationStatus.NOT_NEEDED else TranslationStatus.DONE,
+                language = result.language,
+                english = result.english,
+                romanization = result.romanization,
+                attempts = previousAttempts + 1,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            NoteTranslation(
+                revision.id, TranslationStatus.FAILED,
+                attempts = previousAttempts + 1,
+                error = e.message ?: "Translation failed.",
+            )
+        }
+        // Only store it if the text didn't change while translating.
+        store.update(noteId) { if (it.revisions.lastOrNull()?.id == revision.id) it.copy(translation = outcome) else it }
     }
 
     // endregion

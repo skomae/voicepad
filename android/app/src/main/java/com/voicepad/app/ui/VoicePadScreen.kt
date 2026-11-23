@@ -124,6 +124,8 @@ fun VoicePadScreen(controller: RecordingController) {
             onPlay = { player.toggle(context, note.id, controller.store.audioFile(note)) },
             onShare = { shareRecording(context, controller.store.audioFile(note), note.currentText) },
             onDelete = { confirmDeleteId = note.id },
+            onTranslate = { controller.translateNow(note.id) },
+            onCopyText = ::copy,
         )
     }
 
