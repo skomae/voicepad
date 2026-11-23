@@ -19,6 +19,8 @@ struct NoteBubble: View {
     let onPlay: () -> Void
     let onShare: () -> Void
     let onDelete: () -> Void
+    var onTranslate: () -> Void = {}
+    var onCopyText: (String) -> Void = { _ in }
 
     private var hasText: Bool { !note.currentText.isEmpty }
     private var working: Bool { note.status == .inProgress }
@@ -40,8 +42,13 @@ struct NoteBubble: View {
     private var bubble: some View {
         VStack(alignment: .leading, spacing: 4) {
             if !bodyText.isEmpty {
-                Text(highlighted(bodyText))
-                    .foregroundStyle(textColor)
+                TextWithTranslation(
+                    text: bodyText,
+                    translation: hasText ? note.currentTranslation : nil,
+                    color: textColor,
+                    highlight: highlighted,
+                    onRetry: onTranslate
+                )
             } else if note.status == .done {
                 Text("No speech detected")
                     .italic()
@@ -76,6 +83,13 @@ struct NoteBubble: View {
     @ViewBuilder
     private var menu: some View {
         Button("Copy", systemImage: "doc.on.doc", action: onCopy)
+        if let translated = note.currentTranslation, translated.status == .done {
+            Button("Copy Translation", systemImage: "translate") {
+                onCopyText([translated.romanization, translated.english].compactMap { $0 }.joined(separator: "\n"))
+            }
+        } else if hasText {
+            Button("Translate to English", systemImage: "translate", action: onTranslate)
+        }
         Button(note.pinned ? "Unpin" : "Pin", systemImage: note.pinned ? "pin.slash" : "pin", action: onTogglePin)
         Button("Edit", systemImage: "pencil", action: onEdit)
         Button("Revision History", systemImage: "clock.arrow.circlepath", action: onHistory)
@@ -233,5 +247,92 @@ struct BubbleShape: Shape {
         Path(roundedRect: rect, cornerRadii: RectangleCornerRadii(
             topLeading: 18, bottomLeading: 18, bottomTrailing: 4, topTrailing: 18
         ))
+    }
+}
+
+/// The transcript and, for speech that wasn't English, its romanisation
+/// (pinyin for Mandarin) and English translation. Side by side when there's
+/// room (landscape, iPad), stacked on a phone held upright.
+private struct TextWithTranslation: View {
+    let text: String
+    let translation: NoteTranslation?
+    let color: Color
+    let highlight: (String) -> AttributedString
+    let onRetry: () -> Void
+
+    var body: some View {
+        if let translation, translation.status != .notNeeded {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 12) {
+                    original(translation).frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
+                    Rectangle().fill(color.opacity(0.3)).frame(width: 1)
+                    english(translation).frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    original(translation)
+                    Rectangle().fill(color.opacity(0.3)).frame(height: 1)
+                    english(translation)
+                }
+            }
+        } else {
+            Text(highlight(text)).foregroundStyle(color)
+        }
+    }
+
+    private func original(_ translation: NoteTranslation) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if let language = translation.language {
+                LanguageLabel(name: LanguageTags.displayName(language), color: color)
+            }
+            Text(highlight(text)).foregroundStyle(color)
+            if let romanization = translation.romanization {
+                Text(highlight(romanization))
+                    .font(.callout)
+                    .italic()
+                    .foregroundStyle(color.opacity(0.85))
+                    .padding(.top, 2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func english(_ translation: NoteTranslation) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            LanguageLabel(name: "English", color: color)
+            switch translation.status {
+            case .done:
+                Text(highlight(translation.english ?? "")).foregroundStyle(color)
+            case .pending:
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini).tint(color)
+                    Text("Translating…").italic().font(.callout)
+                }
+                .foregroundStyle(color)
+            case .failed:
+                Text(translation.error ?? "Translation failed.")
+                    .font(.caption)
+                    .foregroundStyle(color.opacity(0.85))
+                    .lineLimit(3)
+                Button(action: onRetry) {
+                    Label("Retry translation", systemImage: "arrow.clockwise").font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.borderless)
+                .tint(color)
+            case .notNeeded:
+                EmptyView()
+            }
+        }
+    }
+}
+
+private struct LanguageLabel: View {
+    let name: String
+    let color: Color
+
+    var body: some View {
+        Label(name.uppercased(), systemImage: "translate")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(color.opacity(0.7))
+            .padding(.bottom, 2)
     }
 }

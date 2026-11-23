@@ -33,6 +33,26 @@ struct Revision: Identifiable, Codable, Equatable {
     var source: Source
     /// Engine/model that produced the text, when it came from a model.
     var engine: String?
+    /// Spoken language the model reported (e.g. "zh"), if any.
+    var language: String?
+}
+
+enum TranslationStatus: String, Codable {
+    case pending, done, failed, notNeeded
+}
+
+/// English translation (and romanisation) of one revision of a note.
+struct NoteTranslation: Codable, Equatable {
+    /// The revision this was made from; a newer revision makes it stale.
+    var revisionID: UUID
+    var status: TranslationStatus
+    /// Detected language code, e.g. "zh", "fr", "es".
+    var language: String?
+    var english: String?
+    /// Pinyin for Mandarin, Latin letters for other non-Latin scripts.
+    var romanization: String?
+    var attempts = 0
+    var error: String?
 }
 
 /// Where a note's audio is in the transcription pipeline. Saved with the note
@@ -69,18 +89,33 @@ struct Note: Identifiable, Codable, Equatable {
     var pinned = false
     /// When it was pinned; pinned notes are listed most recently pinned first.
     var pinnedAt: Date?
+    var translation: NoteTranslation?
 
     var currentText: String { revisions.last?.text ?? "" }
+
+    /// The translation, if it matches the current text.
+    var currentTranslation: NoteTranslation? {
+        guard let translation, translation.revisionID == revisions.last?.id else { return nil }
+        return translation
+    }
+
+    /// True when the current text has no finished translation yet. Stops
+    /// retrying a failing translation after `maxAttempts`.
+    func needsTranslation(maxAttempts: Int) -> Bool {
+        guard let current = revisions.last, !current.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        guard let t = translation, t.revisionID == current.id else { return true }
+        return t.status == .pending || (t.status == .failed && t.attempts < maxAttempts)
+    }
 
     /// True when this note's audio still needs a successful model run.
     var needsTranscription: Bool { status == .pending || status == .failed }
 
     /// Returns the note with a new revision appended, unless the text is unchanged.
-    func withRevision(_ text: String, source: Revision.Source, engine: String?) -> Note {
+    func withRevision(_ text: String, source: Revision.Source, engine: String?, language: String? = nil) -> Note {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if !revisions.isEmpty, currentText == trimmed { return self }
         var copy = self
-        copy.revisions.append(Revision(text: trimmed, source: source, engine: engine))
+        copy.revisions.append(Revision(text: trimmed, source: source, engine: engine, language: language))
         return copy
     }
 
@@ -94,7 +129,7 @@ struct Note: Identifiable, Codable, Equatable {
     // Notes saved by older versions lack the newer fields; default them rather
     // than failing to decode (which would lose every note).
     enum CodingKeys: String, CodingKey {
-        case id, createdAt, duration, audioFileName, revisions, status, attempts, lastError, partialText, pinned, pinnedAt
+        case id, createdAt, duration, audioFileName, revisions, status, attempts, lastError, partialText, pinned, pinnedAt, translation
     }
 
     init(from decoder: Decoder) throws {
@@ -110,5 +145,6 @@ struct Note: Identifiable, Codable, Equatable {
         partialText = try c.decodeIfPresent(String.self, forKey: .partialText)
         pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         pinnedAt = try c.decodeIfPresent(Date.self, forKey: .pinnedAt)
+        translation = try? c.decodeIfPresent(NoteTranslation.self, forKey: .translation)
     }
 }

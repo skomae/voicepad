@@ -50,6 +50,14 @@ final class RecordingController {
         didSet { UserDefaults.standard.set(autoRecordOnOpen, forKey: Self.autoRecordKey) }
     }
 
+    /// Detect non-English speech and add an English translation (and pinyin).
+    var autoTranslate: Bool {
+        didSet {
+            UserDefaults.standard.set(autoTranslate, forKey: Self.autoTranslateKey)
+            if autoTranslate { processTranslations() }
+        }
+    }
+
     /// Chosen microphone's id; nil means iOS picks (automatic).
     var selectedInputID: String? {
         didSet {
@@ -59,12 +67,14 @@ final class RecordingController {
     }
 
     let inputs = AudioInputs()
+    let translator = EnglishTranslator()
 
     // MARK: Private
 
     private static let engineKey = "engineChoice"
     private static let autoRecordKey = "autoRecordOnOpen"
     private static let inputKey = "inputDevice"
+    private static let autoTranslateKey = "autoTranslate"
     private let chunkSeconds: Double = 25
     private let minCutSeconds: Double = 18
     private let tickSeconds: Double = 1.2
@@ -81,6 +91,12 @@ final class RecordingController {
 
     @ObservationIgnored private var committedText = ""
     @ObservationIgnored private var chunkStart = 0
+    /// Languages the model reported for this recording's committed chunks.
+    @ObservationIgnored private var chunkLanguages: [String] = []
+    @ObservationIgnored private var tailLanguage: String?
+    @ObservationIgnored private var translating = false
+    /// Note+revision pairs already attempted since the app was last opened; failures wait for the next open.
+    @ObservationIgnored private var translationTried = Set<String>()
 
     init(store: NoteStore) {
         self.store = store
@@ -88,9 +104,12 @@ final class RecordingController {
         engineChoice = saved ?? .parakeetV3
         autoRecordOnOpen = UserDefaults.standard.object(forKey: Self.autoRecordKey) as? Bool ?? true
         selectedInputID = UserDefaults.standard.string(forKey: Self.inputKey)
+        autoTranslate = UserDefaults.standard.object(forKey: Self.autoTranslateKey) as? Bool ?? true
 
         // Before anything records: repair what a crash or kill left behind.
         store.recoverAfterRestart()
+        // Translate whenever a note gets new text (transcription, edit, restore).
+        store.onChange = { [weak self] in self?.processTranslations() }
 
         inputs.onDevicesChanged = { [weak self] before in
             // The chosen mic was just plugged back in: switch to it.
@@ -140,10 +159,10 @@ final class RecordingController {
     }
 
     /// Runs model calls one at a time; engines are not re-entrant.
-    private func transcribeSerially(_ samples: [Float]) async throws -> String {
+    private func transcribeSerially(_ samples: [Float]) async throws -> Transcript {
         guard let engine else { throw TranscriptionError.modelNotLoaded }
         let previous = serialTail
-        let task = Task { @MainActor () async throws -> String in
+        let task = Task { @MainActor () async throws -> Transcript in
             await previous?.value
             return try await engine.transcribe(samples)
         }
@@ -155,6 +174,8 @@ final class RecordingController {
 
     /// Called whenever the app comes to the foreground.
     func appBecameActive() async {
+        translationTried.removeAll()
+        processTranslations()
         if engine == nil, case .idle = engineStatus { loadEngine() } else { processQueue() }
         guard autoRecordOnOpen, !isRecording, recordingNoteID == nil else { return }
         await start()
@@ -188,6 +209,8 @@ final class RecordingController {
         committedText = ""
         liveText = ""
         chunkStart = 0
+        chunkLanguages = []
+        tailLanguage = nil
         startedAt = .now
         isRecording = true
 
@@ -250,13 +273,14 @@ final class RecordingController {
             let error = await processChunks(noteID: noteID, final: true)
             let text = liveText
             let engineName = engineChoice.shortName
+            let language = Self.mostCommon(chunkLanguages + [tailLanguage].compactMap { $0 })
             store.update(noteID) {
                 if let error {
                     $0.status = .failed
                     $0.lastError = error
                     $0.partialText = text.isEmpty ? nil : text
                 } else {
-                    $0 = $0.withRevision(text, source: .transcription, engine: engineName)
+                    $0 = $0.withRevision(text, source: .transcription, engine: engineName, language: language)
                     $0.status = .done
                     $0.lastError = nil
                     $0.partialText = nil
@@ -281,8 +305,9 @@ final class RecordingController {
             while recorder.sampleCount - chunkStart >= chunkLength {
                 if !final, Task.isCancelled { return nil }
                 let cut = quietestCut(from: chunkStart)
-                let text = try await transcribeSerially(recorder.samples(in: chunkStart..<cut))
-                committedText = join(committedText, text)
+                let result = try await transcribeSerially(recorder.samples(in: chunkStart..<cut))
+                committedText = join(committedText, result.text)
+                if let language = result.language { chunkLanguages.append(language) }
                 chunkStart = cut
                 liveText = committedText
                 // Keep committed text on disk in case the app dies.
@@ -291,7 +316,8 @@ final class RecordingController {
             }
             if !final, Task.isCancelled { return nil }
             let tail = try await transcribeSerially(recorder.samples(in: chunkStart..<recorder.sampleCount))
-            liveText = join(committedText, tail)
+            tailLanguage = tail.language
+            liveText = join(committedText, tail.text)
             return nil
         } catch {
             if final { errorMessage = "Transcription failed — the recording is saved and can be retried." }
@@ -325,6 +351,10 @@ final class RecordingController {
 
     private func join(_ a: String, _ b: String) -> String {
         [a, b].filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    private static func mostCommon(_ languages: [String]) -> String? {
+        Dictionary(languages.map { ($0, 1) }, uniquingKeysWith: +).max { $0.value < $1.value }?.key
     }
 
     // MARK: Saved-audio transcription and retries
@@ -393,14 +423,18 @@ final class RecordingController {
             let samples = try await Task.detached { try WavFile.read(url) }.value
             let chunkLength = Int(chunkSeconds * AudioRecorder.sampleRate)
             var text = ""
+            var languages: [String] = []
             var start = 0
             while start < samples.count {
                 let end = min(start + chunkLength, samples.count)
-                text = join(text, try await transcribeSerially(Array(samples[start..<end])))
+                let result = try await transcribeSerially(Array(samples[start..<end]))
+                text = join(text, result.text)
+                if let language = result.language { languages.append(language) }
                 start = end
             }
+            let language = Self.mostCommon(languages)
             store.update(noteID) {
-                $0 = $0.withRevision(text, source: source, engine: engineName)
+                $0 = $0.withRevision(text, source: source, engine: engineName, language: language)
                 $0.status = .done
                 $0.lastError = nil
                 $0.partialText = nil
@@ -415,6 +449,68 @@ final class RecordingController {
             }
             if hadText { errorMessage = "Re-transcription failed: \(message)" }
         }
+    }
+}
+
+extension RecordingController {
+    // MARK: Translation
+
+    /// Translates one note now, even if automatic translation is off or gave up.
+    func translateNow(_ noteID: Note.ID) {
+        Task { await translateNote(noteID) }
+    }
+
+    /// Works through notes whose current text has no translation yet, one at a time.
+    fileprivate func processTranslations() {
+        guard autoTranslate, !translating else { return }
+        translating = true
+        Task {
+            defer { translating = false }
+            while autoTranslate {
+                guard let next = store.notes.first(where: {
+                    !translationTried.contains(Self.translationKey($0)) && $0.status == .done &&
+                        $0.needsTranslation(maxAttempts: Self.maxAutoAttempts)
+                }) else { break }
+                translationTried.insert(Self.translationKey(next))
+                await translateNote(next.id)
+            }
+        }
+    }
+
+    private static func translationKey(_ note: Note) -> String {
+        "\(note.id):\(note.revisions.last?.id.uuidString ?? "")"
+    }
+
+    private func translateNote(_ noteID: Note.ID) async {
+        guard let note = store.note(id: noteID), let revision = note.revisions.last,
+              !revision.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let previousAttempts = note.translation?.revisionID == revision.id ? note.translation?.attempts ?? 0 : 0
+        store.update(noteID) {
+            $0.translation = NoteTranslation(revisionID: revision.id, status: .pending, attempts: previousAttempts + 1)
+        }
+        var outcome: NoteTranslation
+        do {
+            let result = try await translator.translate(revision.text, modelLanguage: revision.language)
+            outcome = NoteTranslation(
+                revisionID: revision.id,
+                status: result.english == nil ? .notNeeded : .done,
+                language: result.language,
+                english: result.english,
+                romanization: result.romanization,
+                attempts: previousAttempts + 1
+            )
+        } catch {
+            let failure = error as? TranslationFailure
+            outcome = NoteTranslation(
+                revisionID: revision.id, status: .failed,
+                language: failure?.language,
+                romanization: failure?.romanization,
+                attempts: previousAttempts + 1,
+                error: error.localizedDescription
+            )
+        }
+        // Only store it if the text didn't change while translating.
+        store.update(noteID) { if $0.revisions.last?.id == revision.id { $0.translation = outcome } }
     }
 }
 

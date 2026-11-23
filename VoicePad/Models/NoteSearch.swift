@@ -1,7 +1,8 @@
 import Foundation
 
-/// Full-text search over notes: current text, text recovered from unfinished
-/// transcriptions, and every earlier revision.
+/// Full-text search over notes: current text, its English translation and
+/// pinyin, text recovered from unfinished transcriptions, and every earlier
+/// revision.
 ///
 /// The query is split into terms; "quoted phrases" stay together. A note
 /// matches when every term appears somewhere in it. Matching ignores case and
@@ -30,7 +31,11 @@ enum NoteSearch {
         let terms = terms(query)
         guard !terms.isEmpty else { return [] }
         return notes.compactMap { note -> Result? in
-            let current = fold([note.currentText, note.partialText].compactMap { $0 }.joined(separator: "\n"))
+            let translation = note.currentTranslation
+            let current = fold(
+                [note.currentText, note.partialText, translation?.english, translation?.romanization]
+                    .compactMap { $0 }.joined(separator: "\n")
+            )
             let everything = fold((note.revisions.map(\.text) + [note.partialText].compactMap { $0 }).joined(separator: "\n"))
             if terms.allSatisfy({ current.contains($0) }) {
                 return Result(note: note, matchedIn: .current, score: score(current, terms))

@@ -12,6 +12,12 @@ struct SettingsView: View {
                     Toggle("Record when app opens", isOn: $controller.autoRecordOnOpen)
                 }
 
+                Section {
+                    Toggle("Translate to English automatically", isOn: $controller.autoTranslate)
+                } footer: {
+                    Text("Detects the spoken language (e.g. Mandarin, French, Spanish) and shows the English translation, plus pinyin for Mandarin. Runs on the device; iOS asks before downloading each language's translation pack once. Needs iOS 18.")
+                }
+
                 MicrophoneSection()
 
                 Section {
@@ -19,7 +25,7 @@ struct SettingsView: View {
                         ForEach(EngineChoice.allCases) { choice in
                             VStack(alignment: .leading) {
                                 Text(choice.displayName)
-                                Text(choice.approximateSize).font(.caption).foregroundStyle(.secondary)
+                                Text("\(choice.languages) · \(choice.approximateSize)").font(.caption).foregroundStyle(.secondary)
                             }
                             .tag(choice)
                         }
@@ -29,7 +35,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Transcription model")
                 } footer: {
-                    Text("Models run entirely on device. Each is downloaded once on first use. Recording starts immediately; text catches up once the model is ready.")
+                    Text("For Mandarin choose SenseVoice or a multilingual Whisper; Parakeet v3 covers French, Spanish and other European languages but not Chinese. Models run entirely on device. Each is downloaded once on first use. Recording starts immediately; text catches up once the model is ready.")
                 }
 
                 Section("Status") {

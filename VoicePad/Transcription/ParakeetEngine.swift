@@ -20,12 +20,13 @@ final class ParakeetEngine: TranscriptionEngine {
         progress(1)
     }
 
-    func transcribe(_ samples: [Float]) async throws -> String {
-        guard let manager else { return "" }
+    func transcribe(_ samples: [Float]) async throws -> Transcript {
+        guard let manager else { return .empty }
         // Parakeet needs at least ~1 s of audio.
-        guard samples.count >= Int(AudioRecorder.sampleRate) else { return "" }
+        guard samples.count >= Int(AudioRecorder.sampleRate) else { return .empty }
         var state = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
         let result = try await manager.transcribe(samples, decoderState: &state)
-        return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Parakeet doesn't report a language; the text is identified later.
+        return Transcript(text: result.text.trimmingCharacters(in: .whitespacesAndNewlines), language: nil)
     }
 }

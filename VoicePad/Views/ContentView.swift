@@ -50,6 +50,7 @@ struct ContentView: View {
             }
             .overlay(alignment: .top) { ToastView(text: toast) }
         }
+        .background { TranslationHost(translator: controller.translator) }
     }
 
     private var bubbleActions: BubbleActions {
@@ -71,7 +72,9 @@ struct ContentView: View {
                 if !note.currentText.isEmpty { items.append(note.currentText) }
                 shareItem = ShareItem(items: items)
             },
-            delete: { confirmDeleteID = $0.id }
+            delete: { confirmDeleteID = $0.id },
+            translate: { controller.translateNow($0.id) },
+            copyText: { copy($0) }
         )
     }
 
@@ -98,6 +101,8 @@ struct BubbleActions {
     let play: (Note) -> Void
     let share: (Note) -> Void
     let delete: (Note) -> Void
+    let translate: (Note) -> Void
+    let copyText: (String) -> Void
 }
 
 /// The scrolling list: search results, or the Pinned and All notes sections
@@ -193,7 +198,9 @@ private struct NotesList: View {
             onTogglePin: { a.togglePin(note) },
             onPlay: { a.play(note) },
             onShare: { a.share(note) },
-            onDelete: { a.delete(note) }
+            onDelete: { a.delete(note) },
+            onTranslate: { a.translate(note) },
+            onCopyText: a.copyText
         )
     }
 }

@@ -13,6 +13,9 @@ final class NoteStore {
 
     private(set) var notes: [Note] = []
 
+    /// Called after every saved change (used to translate new text).
+    @ObservationIgnored var onChange: (() -> Void)?
+
     let recordingsURL: URL
     private let indexURL: URL
     private var backupURL: URL { indexURL.appendingPathExtension("bak") }
@@ -54,7 +57,7 @@ final class NoteStore {
     }
 
     func restore(noteID: Note.ID, revision: Revision) {
-        addRevision(to: noteID, text: revision.text, source: .restore, engine: revision.engine)
+        update(noteID) { $0 = $0.withRevision(revision.text, source: .restore, engine: revision.engine, language: revision.language) }
     }
 
     func setPinned(_ id: Note.ID, _ pinned: Bool) {
@@ -115,6 +118,7 @@ final class NoteStore {
         transform(&updated)
         save(updated)
         notes = updated
+        onChange?()
     }
 
     private func load() -> [Note] {

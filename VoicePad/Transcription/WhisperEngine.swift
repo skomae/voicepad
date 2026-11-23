@@ -4,10 +4,12 @@ import WhisperKit
 /// Whisper via WhisperKit (CoreML, runs on the Neural Engine).
 final class WhisperEngine: TranscriptionEngine {
     private let model: String
+    private let multilingual: Bool
     private var whisperKit: WhisperKit?
 
-    init(model: String) {
+    init(model: String, multilingual: Bool) {
         self.model = model
+        self.multilingual = multilingual
     }
 
     func load(progress: @escaping @Sendable (Double) -> Void) async throws {
@@ -26,21 +28,25 @@ final class WhisperEngine: TranscriptionEngine {
         progress(1)
     }
 
-    func transcribe(_ samples: [Float]) async throws -> String {
-        guard let whisperKit else { return "" }
+    func transcribe(_ samples: [Float]) async throws -> Transcript {
+        guard let whisperKit else { return .empty }
         // Whisper hallucinates on near-silence; skip very short clips.
-        guard samples.count > Int(AudioRecorder.sampleRate * 0.5) else { return "" }
+        guard samples.count > Int(AudioRecorder.sampleRate * 0.5) else { return .empty }
         let options = DecodingOptions(
             task: .transcribe,
             temperatureFallbackCount: 2,
+            // Without this WhisperKit assumes English, so multilingual models
+            // would never hear (or report) another language.
+            detectLanguage: multilingual,
             skipSpecialTokens: true,
             withoutTimestamps: true,
             chunkingStrategy: .vad
         )
         let results = try await whisperKit.transcribe(audioArray: samples, decodeOptions: options)
-        return results
+        let text = results
             .map(\.text)
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        return Transcript(text: text, language: multilingual ? LanguageTags.fromModel(results.first?.language) : "en")
     }
 }
