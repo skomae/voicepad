@@ -1,71 +1,134 @@
 import SwiftUI
 
-/// A finished note: transcript bubble with copy / edit / history actions.
+/// A saved note. Shows its transcript, or where its audio is in the
+/// transcription pipeline, with copy / edit / history / pin / play / share
+/// actions and a Retry button when a model run failed.
 struct NoteBubble: View {
     let note: Note
-    let isBusy: Bool
-    let canRetranscribe: Bool
+    let engineStatus: RecordingController.EngineStatus
+    let isPlaying: Bool
+    /// Search terms to highlight (already folded by NoteSearch).
+    var highlightTerms: [String] = []
+    /// The search matched an earlier version, not the current text.
+    var matchedInEarlierRevision = false
     let onCopy: () -> Void
     let onEdit: () -> Void
     let onHistory: () -> Void
     let onRetranscribe: () -> Void
+    let onTogglePin: () -> Void
+    let onPlay: () -> Void
+    let onShare: () -> Void
     let onDelete: () -> Void
+
+    private var hasText: Bool { !note.currentText.isEmpty }
+    private var working: Bool { note.status == .inProgress }
+    /// Text in a failed or waiting note is only what was recovered so far.
+    private var bodyText: String { hasText ? note.currentText : note.partialText ?? "" }
+    private var solid: Bool { hasText || note.status == .done }
+    private var textColor: Color { solid ? .white : .primary }
+    private var engineReady: Bool { engineStatus == .ready }
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 6) {
-            Group {
-                if note.currentText.isEmpty {
-                    Text(isBusy ? "Transcribing…" : "No speech detected")
-                        .italic()
-                        .foregroundStyle(.white.opacity(0.8))
-                } else {
-                    Text(note.currentText)
-                        .foregroundStyle(.white)
-                        .textSelection(.enabled)
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(Color.accentColor, in: BubbleShape())
-            .overlay(alignment: .topLeading) {
-                if isBusy {
-                    ProgressView().tint(.white).scaleEffect(0.7).padding(4)
-                }
-            }
-            .contextMenu {
-                Button("Copy", systemImage: "doc.on.doc", action: onCopy)
-                Button("Edit", systemImage: "pencil", action: onEdit)
-                Button("Revision History", systemImage: "clock.arrow.circlepath", action: onHistory)
-                Button("Re-transcribe", systemImage: "arrow.clockwise", action: onRetranscribe)
-                    .disabled(!canRetranscribe || isBusy)
-                Divider()
-                Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
-            }
-            .onTapGesture(perform: onEdit)
-
-            HStack(spacing: 14) {
-                Text(metadata)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Button(action: onCopy) { Image(systemName: "doc.on.doc") }
-                    .accessibilityLabel("Copy")
-                Button(action: onEdit) { Image(systemName: "pencil") }
-                    .accessibilityLabel("Edit")
-                Button(action: onHistory) {
-                    HStack(spacing: 2) {
-                        Image(systemName: "clock.arrow.circlepath")
-                        if note.revisions.count > 1 {
-                            Text("\(note.revisions.count)").font(.caption2.monospacedDigit())
-                        }
-                    }
-                }
-                .accessibilityLabel("Revision history")
-            }
-            .font(.caption)
-            .buttonStyle(.borderless)
+            bubble
+            actionRow
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.leading, 40)
+    }
+
+    private var bubble: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if !bodyText.isEmpty {
+                Text(highlighted(bodyText))
+                    .foregroundStyle(textColor)
+            } else if note.status == .done {
+                Text("No speech detected")
+                    .italic()
+                    .foregroundStyle(textColor.opacity(0.8))
+            }
+            if !hasText || working {
+                StatusLine(note: note, engineStatus: engineStatus, color: textColor, onRetry: onRetranscribe)
+            }
+            if matchedInEarlierRevision {
+                Button(action: onHistory) {
+                    Text("Matched an earlier version · open history")
+                        .font(.caption2)
+                        .italic()
+                        .foregroundStyle(textColor.opacity(0.8))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(solid ? Color.accentColor : Color(.secondarySystemBackground), in: BubbleShape())
+        .overlay {
+            if note.status == .failed {
+                BubbleShape().stroke(Color.red, lineWidth: 1.5)
+            }
+        }
+        .contentShape(BubbleShape())
+        .onTapGesture(perform: onEdit)
+        .contextMenu { menu }
+    }
+
+    @ViewBuilder
+    private var menu: some View {
+        Button("Copy", systemImage: "doc.on.doc", action: onCopy)
+        Button(note.pinned ? "Unpin" : "Pin", systemImage: note.pinned ? "pin.slash" : "pin", action: onTogglePin)
+        Button("Edit", systemImage: "pencil", action: onEdit)
+        Button("Revision History", systemImage: "clock.arrow.circlepath", action: onHistory)
+        Button(isPlaying ? "Stop Playback" : "Play Recording", systemImage: isPlaying ? "stop.fill" : "play.fill", action: onPlay)
+        Button("Share Recording", systemImage: "square.and.arrow.up", action: onShare)
+        Button(hasText ? "Re-transcribe" : "Retry Transcription", systemImage: "arrow.clockwise", action: onRetranscribe)
+            .disabled(!engineReady || working)
+        Divider()
+        Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
+    }
+
+    private var actionRow: some View {
+        HStack(spacing: 14) {
+            Text(metadata)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Button(action: onTogglePin) {
+                Image(systemName: note.pinned ? "pin.fill" : "pin")
+                    .foregroundStyle(note.pinned ? Color.accentColor : .secondary)
+            }
+            .accessibilityLabel(note.pinned ? "Unpin" : "Pin")
+            Button(action: onPlay) { Image(systemName: isPlaying ? "stop.fill" : "play.fill") }
+                .accessibilityLabel(isPlaying ? "Stop" : "Play")
+            Button(action: onCopy) { Image(systemName: "doc.on.doc") }
+                .accessibilityLabel("Copy")
+            Button(action: onEdit) { Image(systemName: "pencil") }
+                .accessibilityLabel("Edit")
+            Button(action: onHistory) {
+                HStack(spacing: 2) {
+                    Image(systemName: "clock.arrow.circlepath")
+                    if note.revisions.count > 1 {
+                        Text("\(note.revisions.count)").font(.caption2.monospacedDigit())
+                    }
+                }
+            }
+            .accessibilityLabel("Revision history")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .buttonStyle(.borderless)
+    }
+
+    /// `text` with every search-term match emphasised.
+    private func highlighted(_ text: String) -> AttributedString {
+        var attributed = AttributedString(text)
+        for range in NoteSearch.matchRanges(in: text, terms: highlightTerms) {
+            guard let lower = AttributedString.Index(range.lowerBound, within: attributed),
+                  let upper = AttributedString.Index(range.upperBound, within: attributed) else { continue }
+            attributed[lower..<upper].backgroundColor = Color.yellow.opacity(0.6)
+            attributed[lower..<upper].foregroundColor = .black
+            attributed[lower..<upper].font = .body.weight(.semibold)
+        }
+        return attributed
     }
 
     private var metadata: String {
@@ -73,6 +136,56 @@ struct NoteBubble: View {
         if note.duration > 0 { parts.append(Duration.seconds(note.duration).formatted(.time(pattern: .minuteSecond))) }
         if let last = note.revisions.last, last.source != .transcription { parts.append(last.source.label.lowercased()) }
         return parts.joined(separator: " · ")
+    }
+}
+
+/// "Waiting for model", "Transcribing…" or "Failed · Retry" under a bubble's text.
+private struct StatusLine: View {
+    let note: Note
+    let engineStatus: RecordingController.EngineStatus
+    let color: Color
+    let onRetry: () -> Void
+
+    var body: some View {
+        switch note.status {
+        case .inProgress:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini).tint(color)
+                Text("Transcribing…").italic()
+            }
+            .font(.caption)
+            .foregroundStyle(color)
+        case .pending, .recording:
+            Label("Audio saved · waiting (\(waitReason))", systemImage: "clock")
+                .font(.caption)
+                .foregroundStyle(color)
+        case .failed:
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Transcription failed · audio saved")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+                if let error = note.lastError {
+                    Text(error).font(.caption2).foregroundStyle(color).lineLimit(2)
+                }
+                Button(action: onRetry) {
+                    Label(engineStatus == .ready ? "Retry" : "Retry when model is ready", systemImage: "arrow.clockwise")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.borderless)
+                .disabled(engineStatus != .ready)
+                .padding(.top, 2)
+            }
+        case .done:
+            EmptyView()
+        }
+    }
+
+    private var waitReason: String {
+        switch engineStatus {
+        case .loading(let p): return p > 0 ? "model downloading \(Int(p * 100))%" : "model loading"
+        case .failed: return "model failed to load"
+        default: return "queued"
+        }
     }
 }
 
@@ -108,7 +221,7 @@ struct LiveBubble: View {
         if !controller.liveText.isEmpty { return controller.liveText }
         switch controller.engineStatus {
         case .ready: return "Listening…"
-        case .loading(let p): return "Recording… model loading \(Int(p * 100))%"
+        case .loading(let p): return p > 0 ? "Recording… downloading model \(Int(p * 100))%" : "Recording… loading model"
         case .failed: return "Recording… (model unavailable)"
         case .idle: return "Recording…"
         }

@@ -44,3 +44,25 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_PREVIEWS: YES
+  VoicePadTests:
+    type: bundle.unit-test
+    platform: iOS
+    # Compiles the pure model code directly (no host app), so tests never
+    # launch the app, start recording or download a model.
+    sources:
+      - VoicePadTests
+      - VoicePad/Models
+      - VoicePad/Audio/WavFile.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.voicepad.tests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  VoicePad:
+    build:
+      targets:
+        VoicePad: all
+        VoicePadTests: [test]
+    test:
+      targets:
+        - VoicePadTests

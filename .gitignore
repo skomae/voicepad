@@ -7,3 +7,4 @@ xcuserdata/
 .DS_Store
 Payload/
 *.ipa
+VoicePad/Info.plist

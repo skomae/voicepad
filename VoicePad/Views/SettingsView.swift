@@ -12,6 +12,8 @@ struct SettingsView: View {
                     Toggle("Record when app opens", isOn: $controller.autoRecordOnOpen)
                 }
 
+                MicrophoneSection()
+
                 Section {
                     Picker("Model", selection: $controller.engineChoice) {
                         ForEach(EngineChoice.allCases) { choice in
@@ -33,7 +35,12 @@ struct SettingsView: View {
                 Section("Status") {
                     switch controller.engineStatus {
                     case .idle: Text("Not loaded")
-                    case .loading(let p): ProgressView(value: p) { Text("Downloading / loading…") }
+                    case .loading(let p):
+                        if p > 0 {
+                            ProgressView(value: p) { Text("Downloading model…") }
+                        } else {
+                            ProgressView { Text("Loading model…") }
+                        }
                     case .ready: Label("Ready", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                     case .failed(let message):
                         VStack(alignment: .leading, spacing: 8) {
@@ -52,5 +59,86 @@ struct SettingsView: View {
                 }
             }
         }
+        .onAppear { controller.inputs.refresh() }
+    }
+}
+
+/// Lists connected microphones, shows which one is live, and lets you pick one.
+private struct MicrophoneSection: View {
+    @Environment(RecordingController.self) private var controller
+
+    var body: some View {
+        let inputs = controller.inputs
+        let selected = controller.selectedInputID
+        let selectedDevice = inputs.devices.first { $0.id == selected }
+
+        Section {
+            Label {
+                Text(statusText(selected: selected, selectedDevice: selectedDevice, active: inputs.activeInputName))
+            } icon: {
+                Image(systemName: controller.isRecording ? "mic.fill" : "mic")
+                    .foregroundStyle(controller.isRecording ? .red : .secondary)
+            }
+
+            MicOption(
+                title: "Automatic",
+                subtitle: "Let iOS choose (usually the newest headset, else the built-in mic)",
+                selected: selected == nil
+            ) { controller.selectedInputID = nil }
+
+            ForEach(inputs.devices) { device in
+                MicOption(
+                    title: device.name,
+                    subtitle: device.kind + (device.isBluetooth ? " · uses the headset's call audio" : ""),
+                    selected: device.id == selected
+                ) { controller.selectedInputID = device.id }
+            }
+
+            if selected != nil, selectedDevice == nil {
+                MicOption(
+                    title: "Previously chosen mic",
+                    subtitle: "Not connected — reconnect it and VoicePad switches back automatically",
+                    selected: true,
+                    enabled: false
+                ) {}
+            }
+            if inputs.devices.isEmpty {
+                Text("No microphones detected.").font(.caption).foregroundStyle(.red)
+            }
+        } header: {
+            Text("Microphone")
+        }
+    }
+
+    private func statusText(selected: String?, selectedDevice: InputDevice?, active: String?) -> String {
+        if controller.isRecording { return "Recording from: \(active ?? "detecting…")" }
+        if let selectedDevice { return "Will record from: \(selectedDevice.name)" }
+        if selected != nil { return "Chosen mic isn't connected — the default will be used" }
+        return "iOS picks the microphone"
+    }
+}
+
+private struct MicOption: View {
+    let title: String
+    let subtitle: String
+    let selected: Bool
+    var enabled = true
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).foregroundStyle(.primary)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if selected {
+                    Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
+                }
+            }
+        }
+        .disabled(!enabled)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

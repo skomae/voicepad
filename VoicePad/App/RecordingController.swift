@@ -3,7 +3,13 @@ import Foundation
 import Observation
 import SwiftUI
 
-/// Owns the recorder and the speech engine, and turns live audio into text.
+/// Owns the recorder and the speech engine, and turns audio into text.
+///
+/// Recordings are never thrown away because a model failed. Every note carries
+/// a saved `TranscriptionStatus`; the audio stays on disk until it has text,
+/// and notes that still need text are retried automatically whenever a model
+/// becomes ready (up to `maxAutoAttempts` times, so a model that crashes the
+/// app can't trap it in a loop) or on demand from the UI.
 ///
 /// Live transcription works on chunks of up to `chunkSeconds`. While a chunk is
 /// open it is re-transcribed every `tickSeconds` so the bubble updates as you
@@ -20,6 +26,8 @@ final class RecordingController {
         case failed(String)
     }
 
+    static let maxAutoAttempts = 3
+
     // MARK: Observable state
 
     private(set) var isRecording = false
@@ -27,10 +35,8 @@ final class RecordingController {
     private(set) var startedAt: Date?
     private(set) var liveText = ""
     private(set) var engineStatus: EngineStatus = .idle
-    private(set) var errorMessage: String?
+    var errorMessage: String?
     private(set) var recordingNoteID: Note.ID?
-    /// Notes currently being (re)transcribed from their audio file.
-    private(set) var busyNoteIDs: Set<Note.ID> = []
 
     var engineChoice: EngineChoice {
         didSet {
@@ -44,31 +50,55 @@ final class RecordingController {
         didSet { UserDefaults.standard.set(autoRecordOnOpen, forKey: Self.autoRecordKey) }
     }
 
+    /// Chosen microphone's id; nil means iOS picks (automatic).
+    var selectedInputID: String? {
+        didSet {
+            UserDefaults.standard.set(selectedInputID, forKey: Self.inputKey)
+            inputs.apply(selectedInputID)
+        }
+    }
+
+    let inputs = AudioInputs()
+
     // MARK: Private
 
     private static let engineKey = "engineChoice"
     private static let autoRecordKey = "autoRecordOnOpen"
+    private static let inputKey = "inputDevice"
     private let chunkSeconds: Double = 25
     private let minCutSeconds: Double = 18
     private let tickSeconds: Double = 1.2
 
     private let store: NoteStore
-    private let recorder = AudioRecorder()
-    private var engine: TranscriptionEngine?
-    private var engineLoadID = UUID()
-    private var liveTask: Task<Void, Never>?
-    private var meterTask: Task<Void, Never>?
-    private var serialTail: Task<Void, Never>?
+    @ObservationIgnored private let recorder = AudioRecorder()
+    @ObservationIgnored private var engine: TranscriptionEngine?
+    @ObservationIgnored private var engineLoadID = UUID()
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
+    @ObservationIgnored private var liveTask: Task<Void, Never>?
+    @ObservationIgnored private var meterTask: Task<Void, Never>?
+    @ObservationIgnored private var queueTask: Task<Void, Never>?
+    @ObservationIgnored private var serialTail: Task<Void, Never>?
 
-    private var committedText = ""
-    private var pendingText = ""
-    private var chunkStart = 0
+    @ObservationIgnored private var committedText = ""
+    @ObservationIgnored private var chunkStart = 0
 
     init(store: NoteStore) {
         self.store = store
         let saved = UserDefaults.standard.string(forKey: Self.engineKey).flatMap(EngineChoice.init(rawValue:))
         engineChoice = saved ?? .parakeetV3
         autoRecordOnOpen = UserDefaults.standard.object(forKey: Self.autoRecordKey) as? Bool ?? true
+        selectedInputID = UserDefaults.standard.string(forKey: Self.inputKey)
+
+        // Before anything records: repair what a crash or kill left behind.
+        store.recoverAfterRestart()
+
+        inputs.onDevicesChanged = { [weak self] before in
+            // The chosen mic was just plugged back in: switch to it.
+            guard let self, let id = self.selectedInputID, !before.contains(id),
+                  self.inputs.devices.contains(where: { $0.id == id }) else { return }
+            self.inputs.apply(id)
+        }
+        inputs.apply(selectedInputID)
 
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
@@ -81,6 +111,8 @@ final class RecordingController {
 
     // MARK: Engine
 
+    var isEngineReady: Bool { engineStatus == .ready && engine != nil }
+
     func loadEngine() {
         let choice = engineChoice
         let loadID = UUID()
@@ -88,18 +120,18 @@ final class RecordingController {
         engine = nil
         engineStatus = .loading(0)
         let newEngine = choice.makeEngine()
-        Task {
+        loadTask = Task {
             do {
                 try await newEngine.load { fraction in
-                    Task { @MainActor [weak self] in
-                        guard let self, self.engineLoadID == loadID, fraction < 1 else { return }
+                    Task { @MainActor in
+                        guard self.engineLoadID == loadID, fraction < 1 else { return }
                         self.engineStatus = .loading(fraction)
                     }
                 }
                 guard engineLoadID == loadID else { return }
                 engine = newEngine
                 engineStatus = .ready
-                await transcribeUntranscribedNotes()
+                processQueue()
             } catch {
                 guard engineLoadID == loadID else { return }
                 engineStatus = .failed(error.localizedDescription)
@@ -109,7 +141,7 @@ final class RecordingController {
 
     /// Runs model calls one at a time; engines are not re-entrant.
     private func transcribeSerially(_ samples: [Float]) async throws -> String {
-        guard let engine else { return "" }
+        guard let engine else { throw TranscriptionError.modelNotLoaded }
         let previous = serialTail
         let task = Task { @MainActor () async throws -> String in
             await previous?.value
@@ -123,13 +155,13 @@ final class RecordingController {
 
     /// Called whenever the app comes to the foreground.
     func appBecameActive() async {
-        if engine == nil, case .idle = engineStatus { loadEngine() }
-        guard autoRecordOnOpen, !isRecording else { return }
+        if engine == nil, case .idle = engineStatus { loadEngine() } else { processQueue() }
+        guard autoRecordOnOpen, !isRecording, recordingNoteID == nil else { return }
         await start()
     }
 
     func start() async {
-        guard !isRecording else { return }
+        guard !isRecording, recordingNoteID == nil else { return }
         errorMessage = nil
 
         guard await AVAudioApplication.requestRecordPermission() else {
@@ -138,21 +170,22 @@ final class RecordingController {
         }
 
         let fileName = "\(UUID().uuidString).wav"
-        let url = NoteStore.recordingsURL.appendingPathComponent(fileName)
+        let url = store.recordingsURL.appendingPathComponent(fileName)
         do {
             try recorder.start(writingTo: url)
         } catch {
             errorMessage = error.localizedDescription
             return
         }
+        // Activating the session can reset the route; re-apply the chosen mic.
+        inputs.apply(selectedInputID)
 
-        var note = Note()
-        note.audioFileName = fileName
+        // Saved before any audio arrives, so a crash can always find it.
+        let note = Note(audioFileName: fileName, status: .recording)
         store.add(note)
         recordingNoteID = note.id
 
         committedText = ""
-        pendingText = ""
         liveText = ""
         chunkStart = 0
         startedAt = .now
@@ -165,8 +198,13 @@ final class RecordingController {
                 try? await Task.sleep(for: .milliseconds(50))
             }
         }
+        let noteID = note.id
         liveTask = Task { [weak self] in
-            await self?.liveLoop()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(self?.tickSeconds ?? 1.2))
+                guard let self, !Task.isCancelled else { return }
+                if self.isEngineReady { _ = await self.processChunks(noteID: noteID, final: false) }
+            }
         }
     }
 
@@ -175,67 +213,89 @@ final class RecordingController {
         recorder.stop()
         isRecording = false
         level = 0
+        startedAt = nil
         meterTask?.cancel()
         liveTask?.cancel()
         await liveTask?.value
         liveTask = nil
+        inputs.refresh()
+        if let writeError = recorder.writeError {
+            errorMessage = "Part of this recording couldn't be saved: \(writeError)"
+        }
 
         let duration = Double(recorder.sampleCount) / AudioRecorder.sampleRate
-        startedAt = nil
         // Opening the app always starts a recording; drop ones that were
         // stopped before anything could have been said.
-        if duration < 1 {
+        if duration < NoteStore.minSeconds {
             store.delete(noteID)
             recordingNoteID = nil
             liveText = ""
             return
         }
-        store.setDuration(duration, for: noteID)
 
-        if engine != nil {
-            busyNoteIDs.insert(noteID)
-            await finishChunks(final: true)
-            busyNoteIDs.remove(noteID)
-            store.addRevision(to: noteID, text: liveText, source: .transcription, engine: engineChoice.shortName)
+        if !isEngineReady {
+            // Audio is safe on disk; it is transcribed once the model is ready.
+            let partial = liveText
+            store.update(noteID) {
+                $0.status = .pending
+                $0.duration = duration
+                $0.partialText = partial.isEmpty ? nil : partial
+            }
+        } else {
+            store.update(noteID) {
+                $0.status = .inProgress
+                $0.duration = duration
+                $0.attempts += 1
+            }
+            let error = await processChunks(noteID: noteID, final: true)
+            let text = liveText
+            let engineName = engineChoice.shortName
+            store.update(noteID) {
+                if let error {
+                    $0.status = .failed
+                    $0.lastError = error
+                    $0.partialText = text.isEmpty ? nil : text
+                } else {
+                    $0 = $0.withRevision(text, source: .transcription, engine: engineName)
+                    $0.status = .done
+                    $0.lastError = nil
+                    $0.partialText = nil
+                }
+            }
         }
-        // Without a ready engine the note keeps its audio and is transcribed
-        // automatically once the model finishes loading.
         recordingNoteID = nil
         liveText = ""
+        processQueue()
     }
 
     func toggle() async {
         if isRecording { await stop() } else { await start() }
     }
 
-    private func liveLoop() async {
-        while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(tickSeconds))
-            guard !Task.isCancelled, engine != nil else { continue }
-            await finishChunks(final: false)
-        }
-    }
-
-    /// Commits every full chunk, then transcribes the open tail.
-    private func finishChunks(final: Bool) async {
+    /// Commits every full chunk, then transcribes the open tail. Returns nil on
+    /// success or the error message. Failed chunks are not skipped: the chunk
+    /// start only advances after success, so the next pass retries them.
+    private func processChunks(noteID: Note.ID, final: Bool) async -> String? {
         let chunkLength = Int(chunkSeconds * AudioRecorder.sampleRate)
         do {
             while recorder.sampleCount - chunkStart >= chunkLength {
-                if !final, Task.isCancelled { return }
+                if !final, Task.isCancelled { return nil }
                 let cut = quietestCut(from: chunkStart)
                 let text = try await transcribeSerially(recorder.samples(in: chunkStart..<cut))
                 committedText = join(committedText, text)
                 chunkStart = cut
-                pendingText = ""
                 liveText = committedText
+                // Keep committed text on disk in case the app dies.
+                let committed = committedText
+                store.update(noteID) { $0.partialText = committed.isEmpty ? nil : committed }
             }
-            if !final, Task.isCancelled { return }
-            let end = recorder.sampleCount
-            let tail = try await transcribeSerially(recorder.samples(in: chunkStart..<end))
-            pendingText = tail
-            liveText = join(committedText, pendingText)
+            if !final, Task.isCancelled { return nil }
+            let tail = try await transcribeSerially(recorder.samples(in: chunkStart..<recorder.sampleCount))
+            liveText = join(committedText, tail)
+            return nil
         } catch {
-            errorMessage = "Transcription failed: \(error.localizedDescription)"
+            if final { errorMessage = "Transcription failed — the recording is saved and can be retried." }
+            return error.localizedDescription
         }
     }
 
@@ -267,40 +327,98 @@ final class RecordingController {
         [a, b].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
-    // MARK: File-based transcription
+    // MARK: Saved-audio transcription and retries
 
-    /// Re-runs the current model over a note's saved audio and stores the
-    /// result as a new revision.
-    func retranscribe(_ noteID: Note.ID) async {
-        guard let note = store.note(id: noteID), let url = store.audioURL(for: note), engine != nil else { return }
+    /// Re-runs the current model over a note's audio (manual retry or re-transcribe).
+    func retranscribe(_ noteID: Note.ID) {
+        Task { await transcribeSaved(noteID) }
+    }
+
+    /// Retries every recording that still needs text, ignoring the auto-retry limit.
+    func retryAll() {
+        Task {
+            for note in store.notes where note.needsTranscription && note.id != recordingNoteID {
+                await transcribeSaved(note.id)
+            }
+        }
+    }
+
+    /// Works through notes that still need text, oldest first. Skips ones that
+    /// already failed `maxAutoAttempts` times; those wait for a manual retry.
+    /// Runs only while not recording, so live text stays responsive.
+    private func processQueue() {
+        if queueRunning { return }
+        queueRunning = true
+        queueTask = Task {
+            defer { queueRunning = false }
+            // Each note gets at most one attempt per pass; the next pass comes
+            // with the next app launch, model load or finished recording.
+            var tried = Set<Note.ID>()
+            while isEngineReady, !isRecording {
+                guard let next = store.notes.first(where: {
+                    $0.needsTranscription && $0.attempts < Self.maxAutoAttempts &&
+                        $0.id != recordingNoteID && !tried.contains($0.id)
+                }) else { break }
+                tried.insert(next.id)
+                await transcribeSaved(next.id)
+            }
+        }
+    }
+
+    @ObservationIgnored private var queueRunning = false
+
+    private func transcribeSaved(_ noteID: Note.ID) async {
+        guard let note = store.note(id: noteID), note.status != .inProgress, note.status != .recording else { return }
+        guard let url = store.audioURL(for: note), FileManager.default.fileExists(atPath: url.path) else {
+            store.update(noteID) {
+                $0.status = .failed
+                $0.lastError = "The audio file is missing."
+            }
+            return
+        }
+        guard isEngineReady else {
+            store.update(noteID) { if $0.needsTranscription { $0.status = .pending } }
+            errorMessage = "The model isn't ready yet — the recording will be transcribed when it is."
+            return
+        }
+        let hadText = note.status == .done && !note.revisions.isEmpty
         let source: Revision.Source = note.revisions.isEmpty ? .transcription : .retranscription
-        busyNoteIDs.insert(noteID)
-        defer { busyNoteIDs.remove(noteID) }
+        let engineName = engineChoice.shortName
+
+        store.update(noteID) {
+            $0.status = .inProgress
+            $0.attempts += 1
+        }
         do {
-            let samples = try await Task.detached { try AudioFileLoader.loadSamples(from: url) }.value
-            let text = try await transcribeFile(samples)
-            store.addRevision(to: noteID, text: text, source: source, engine: engineChoice.shortName)
+            let samples = try await Task.detached { try WavFile.read(url) }.value
+            let chunkLength = Int(chunkSeconds * AudioRecorder.sampleRate)
+            var text = ""
+            var start = 0
+            while start < samples.count {
+                let end = min(start + chunkLength, samples.count)
+                text = join(text, try await transcribeSerially(Array(samples[start..<end])))
+                start = end
+            }
+            store.update(noteID) {
+                $0 = $0.withRevision(text, source: source, engine: engineName)
+                $0.status = .done
+                $0.lastError = nil
+                $0.partialText = nil
+                if $0.duration <= 0 { $0.duration = Double(samples.count) / AudioRecorder.sampleRate }
+            }
         } catch {
-            errorMessage = "Transcription failed: \(error.localizedDescription)"
+            let message = error is CancellationError ? "Transcription was interrupted." : error.localizedDescription
+            // A failed re-transcription keeps the existing text as current.
+            store.update(noteID) {
+                $0.status = hadText ? .done : .failed
+                $0.lastError = message
+            }
+            if hadText { errorMessage = "Re-transcription failed: \(message)" }
         }
     }
+}
 
-    private func transcribeFile(_ samples: [Float]) async throws -> String {
-        let chunkLength = Int(chunkSeconds * AudioRecorder.sampleRate)
-        var text = ""
-        var start = 0
-        while start < samples.count {
-            let end = min(start + chunkLength, samples.count)
-            text = join(text, try await transcribeSerially(Array(samples[start..<end])))
-            start = end
-        }
-        return text
-    }
-
-    private func transcribeUntranscribedNotes() async {
-        let pending = store.notes.filter { $0.revisions.isEmpty && $0.id != recordingNoteID && $0.audioFileName != nil }
-        for note in pending {
-            await retranscribe(note.id)
-        }
-    }
+enum TranscriptionError: LocalizedError {
+    case modelNotLoaded
+    var errorDescription: String? { "The model isn't loaded." }
 }

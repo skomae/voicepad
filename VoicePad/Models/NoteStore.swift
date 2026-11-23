@@ -1,26 +1,35 @@
 import Foundation
 import Observation
 
-/// Persists notes as JSON in Documents and audio files in Documents/Recordings.
+/// Persists notes as JSON and audio as WAV files under `baseURL`.
+///
+/// Every state change is written to disk immediately (atomically, with a
+/// `.bak` copy of the previous index), so after a crash `recoverAfterRestart`
+/// can tell exactly which recordings still need transcription.
 @MainActor
 @Observable
 final class NoteStore {
+    nonisolated static let minSeconds: Double = 1
+
     private(set) var notes: [Note] = []
 
-    static let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-    static let recordingsURL: URL = {
-        let url = documentsURL.appendingPathComponent("Recordings", isDirectory: true)
-        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
-        return url
-    }()
-    private let indexURL = NoteStore.documentsURL.appendingPathComponent("notes.json")
+    let recordingsURL: URL
+    private let indexURL: URL
+    private var backupURL: URL { indexURL.appendingPathExtension("bak") }
 
-    init() {
-        load()
+    nonisolated static var defaultBaseURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+
+    init(baseURL: URL = NoteStore.defaultBaseURL) {
+        recordingsURL = baseURL.appendingPathComponent("Recordings", isDirectory: true)
+        indexURL = baseURL.appendingPathComponent("notes.json")
+        try? FileManager.default.createDirectory(at: recordingsURL, withIntermediateDirectories: true)
+        notes = load()
     }
 
     func audioURL(for note: Note) -> URL? {
-        note.audioFileName.map { Self.recordingsURL.appendingPathComponent($0) }
+        note.audioFileName.map { recordingsURL.appendingPathComponent($0) }
     }
 
     func note(id: Note.ID) -> Note? {
@@ -28,50 +37,118 @@ final class NoteStore {
     }
 
     func add(_ note: Note) {
-        notes.append(note)
-        save()
+        mutate { $0.append(note) }
+    }
+
+    /// Applies `transform` to one note and saves.
+    func update(_ id: Note.ID, _ transform: (inout Note) -> Void) {
+        mutate { list in
+            guard let index = list.firstIndex(where: { $0.id == id }) else { return }
+            transform(&list[index])
+        }
     }
 
     /// Appends a new revision unless the text is unchanged.
     func addRevision(to id: Note.ID, text: String, source: Revision.Source, engine: String? = nil) {
-        guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if notes[index].currentText == trimmed, !notes[index].revisions.isEmpty { return }
-        notes[index].revisions.append(Revision(text: trimmed, source: source, engine: engine))
-        save()
-    }
-
-    func setDuration(_ duration: TimeInterval, for id: Note.ID) {
-        guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
-        notes[index].duration = duration
-        save()
+        update(id) { $0 = $0.withRevision(text, source: source, engine: engine) }
     }
 
     func restore(noteID: Note.ID, revision: Revision) {
         addRevision(to: noteID, text: revision.text, source: .restore, engine: revision.engine)
     }
 
+    func setPinned(_ id: Note.ID, _ pinned: Bool) {
+        update(id) {
+            $0.pinned = pinned
+            $0.pinnedAt = pinned ? .now : nil
+        }
+    }
+
+    /// Deletes the note and its audio file.
     func delete(_ id: Note.ID) {
-        guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
-        if let url = audioURL(for: notes[index]) {
+        if let note = note(id: id), let url = audioURL(for: note) {
             try? FileManager.default.removeItem(at: url)
         }
-        notes.remove(at: index)
-        save()
+        mutate { $0.removeAll { $0.id == id } }
     }
 
-    private func load() {
-        guard let data = try? Data(contentsOf: indexURL) else { return }
+    /// Run once at startup, before anything records or transcribes. Repairs
+    /// whatever an unexpected exit left behind:
+    /// - a note still `.recording`: the app died mid-recording, so fix the WAV
+    ///   header from what reached disk and queue it for transcription;
+    /// - a note still `.inProgress`: the app died during a model run (possibly
+    ///   the model crashed it), so mark it failed rather than silently
+    ///   retrying forever;
+    /// - an older note saved before statuses existed, with audio but no text:
+    ///   queue it.
+    func recoverAfterRestart() {
+        mutate { list in
+            list = list.compactMap { note in
+                var note = note
+                let audio = audioURL(for: note)
+                switch note.status {
+                case .recording:
+                    let duration = audio.map { WavFile.repair($0) } ?? 0
+                    if duration < Self.minSeconds, note.partialText?.trimmingCharacters(in: .whitespaces).isEmpty ?? true {
+                        if let audio { try? FileManager.default.removeItem(at: audio) }
+                        return nil // nothing was said before the app died
+                    }
+                    note.status = .pending
+                    note.duration = duration
+                case .inProgress:
+                    note.status = note.revisions.isEmpty ? .failed : .done
+                    note.lastError = "The app closed while transcribing this recording."
+                case .done where note.revisions.isEmpty && audio.map { FileManager.default.fileExists(atPath: $0.path) } == true:
+                    note.status = .pending
+                default:
+                    break
+                }
+                return note
+            }
+        }
+    }
+
+    // MARK: Persistence
+
+    private func mutate(_ transform: (inout [Note]) -> Void) {
+        var updated = notes
+        transform(&updated)
+        save(updated)
+        notes = updated
+    }
+
+    private func load() -> [Note] {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        notes = (try? decoder.decode([Note].self, from: data)) ?? []
+        for url in [indexURL, backupURL] {
+            guard let data = try? Data(contentsOf: url) else { continue }
+            // Corrupt: fall through to the backup rather than losing every note.
+            if let notes = try? decoder.decode([Note].self, from: data) { return notes }
+        }
+        return []
     }
 
-    private func save() {
+    private func save(_ notes: [Note]) {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted]
         guard let data = try? encoder.encode(notes) else { return }
-        try? data.write(to: indexURL, options: .atomic)
+        let tmp = indexURL.appendingPathExtension("tmp")
+        let fm = FileManager.default
+        do {
+            fm.createFile(atPath: tmp.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: tmp)
+            try handle.write(contentsOf: data)
+            try handle.synchronize()
+            try handle.close()
+            if fm.fileExists(atPath: indexURL.path) {
+                try? fm.removeItem(at: backupURL)
+                try? fm.copyItem(at: indexURL, to: backupURL)
+            }
+            _ = try fm.replaceItemAt(indexURL, withItemAt: tmp)
+        } catch {
+            // Last resort: a plain atomic write.
+            try? data.write(to: indexURL, options: .atomic)
+        }
     }
 }
