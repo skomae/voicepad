@@ -95,6 +95,8 @@ final class RecordingController {
     @ObservationIgnored private var chunkLanguages: [String] = []
     @ObservationIgnored private var tailLanguage: String?
     @ObservationIgnored private var translating = false
+    /// Notes the user asked to translate; handled before automatic ones.
+    @ObservationIgnored private var manualTranslations = Set<Note.ID>()
     /// Note+revision pairs already attempted since the app was last opened; failures wait for the next open.
     @ObservationIgnored private var translationTried = Set<String>()
 
@@ -456,23 +458,38 @@ extension RecordingController {
     // MARK: Translation
 
     /// Translates one note now, even if automatic translation is off or gave up.
+    /// Goes through the same queue so it never collides with a request in flight.
     func translateNow(_ noteID: Note.ID) {
-        Task { await translateNote(noteID) }
+        guard let note = store.note(id: noteID) else { return }
+        translationTried.remove(Self.translationKey(note))
+        manualTranslations.insert(noteID)
+        processTranslations()
     }
 
-    /// Works through notes whose current text has no translation yet, one at a time.
+    /// Works through notes whose current text has no translation yet, one at a
+    /// time: ones the user asked for first, then (if enabled) the rest.
     fileprivate func processTranslations() {
-        guard autoTranslate, !translating else { return }
+        guard autoTranslate || !manualTranslations.isEmpty, !translating else { return }
         translating = true
         Task {
             defer { translating = false }
-            while autoTranslate {
-                guard let next = store.notes.first(where: {
+            while true {
+                let next: Note.ID
+                if let manual = manualTranslations.first {
+                    manualTranslations.remove(manual)
+                    guard let note = store.note(id: manual) else { continue }
+                    translationTried.insert(Self.translationKey(note))
+                    next = manual
+                } else if autoTranslate, let note = store.notes.first(where: {
                     !translationTried.contains(Self.translationKey($0)) && $0.status == .done &&
                         $0.needsTranslation(maxAttempts: Self.maxAutoAttempts)
-                }) else { break }
-                translationTried.insert(Self.translationKey(next))
-                await translateNote(next.id)
+                }) {
+                    translationTried.insert(Self.translationKey(note))
+                    next = note.id
+                } else {
+                    break
+                }
+                await translateNote(next)
             }
         }
     }
