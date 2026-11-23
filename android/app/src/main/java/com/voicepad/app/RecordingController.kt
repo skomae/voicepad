@@ -5,7 +5,9 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
+import com.voicepad.app.audio.AudioInputs
 import com.voicepad.app.audio.AudioRecorder
+import com.voicepad.app.audio.InputDevice
 import com.voicepad.app.audio.RecordingService
 import com.voicepad.app.audio.WavFile
 import com.voicepad.app.data.Note
@@ -70,6 +72,12 @@ class RecordingController(
         val engineChoice: EngineChoice = EngineChoice.PARAKEET_V3,
         val autoRecordOnOpen: Boolean = true,
         val errorMessage: String? = null,
+        /** Microphones currently connected. */
+        val inputDevices: List<InputDevice> = emptyList(),
+        /** Chosen microphone's key; null means the phone picks (automatic). */
+        val selectedInputKey: String? = null,
+        /** Mic Android is actually recording from right now, if recording. */
+        val activeInputName: String? = null,
     )
 
     companion object {
@@ -84,6 +92,7 @@ class RecordingController(
     private val recorder = AudioRecorder()
     private val models = ModelManager(context)
     private val engineMutex = Mutex()
+    private val inputs = AudioInputs(context)
 
     private val _state = MutableStateFlow(
         UiState(
@@ -91,6 +100,8 @@ class RecordingController(
                 ?.let { runCatching { EngineChoice.valueOf(it) }.getOrNull() }
                 ?: EngineChoice.PARAKEET_V3,
             autoRecordOnOpen = prefs.getBoolean("autoRecord", true),
+            inputDevices = inputs.devices.value,
+            selectedInputKey = prefs.getString("inputDevice", null),
         )
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -109,7 +120,32 @@ class RecordingController(
     init {
         // Before anything records: repair what a crash or kill left behind.
         store.recoverAfterRestart()
+
+        inputs.onDevicesChanged = {
+            val before = _state.value.inputDevices.map { it.key }.toSet()
+            _state.update { it.copy(inputDevices = inputs.devices.value) }
+            // The chosen mic was just plugged back in mid-recording: switch to it.
+            val key = _state.value.selectedInputKey
+            val reconnected = key != null && key !in before && inputs.devices.value.any { it.key == key }
+            if (_state.value.isRecording && reconnected) {
+                recorder.setPreferredDevice(inputs.beginRecording(key))
+            }
+        }
+        recorder.onRoutingChanged = {
+            _state.update { it.copy(activeInputName = recorder.routedDeviceName) }
+        }
     }
+
+    // region Microphone
+
+    /** Chooses the mic to record from (null = automatic) and applies it immediately if recording. */
+    fun setInputDevice(key: String?) {
+        prefs.edit { putString("inputDevice", key) }
+        _state.update { it.copy(selectedInputKey = key) }
+        if (_state.value.isRecording) recorder.setPreferredDevice(inputs.beginRecording(key))
+    }
+
+    // endregion
 
     // region Engine
 
@@ -186,8 +222,11 @@ class RecordingController(
         }
         val fileName = "${UUID.randomUUID()}.wav"
         try {
-            recorder.start(File(store.recordingsDir, fileName))
+            // A chosen mic that isn't connected falls back to the phone's default.
+            val preferred = inputs.beginRecording(s.selectedInputKey)
+            recorder.start(File(store.recordingsDir, fileName), preferred)
         } catch (e: Throwable) {
+            inputs.endRecording()
             showError(e.message ?: "Could not start recording.")
             return
         }
@@ -219,8 +258,9 @@ class RecordingController(
         val noteId = _state.value.recordingNoteId ?: return
         if (!_state.value.isRecording) return
         recorder.stop()
+        inputs.endRecording()
         RecordingService.stop(context)
-        _state.update { it.copy(isRecording = false, startedAt = null) }
+        _state.update { it.copy(isRecording = false, startedAt = null, activeInputName = null) }
         liveJob?.cancelAndJoin()
         liveJob = null
         recorder.writeError?.let { showError("Part of this recording couldn't be saved: $it") }

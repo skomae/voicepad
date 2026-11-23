@@ -21,6 +21,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MicNone
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
@@ -48,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
@@ -185,6 +188,8 @@ fun SettingsSheet(controller: RecordingController, state: RecordingController.Ui
                 Switch(checked = state.autoRecordOnOpen, onCheckedChange = controller::setAutoRecord)
             }
             Spacer(Modifier.height(16.dp))
+            MicrophoneSection(state, onSelect = controller::setInputDevice)
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
             Text("Transcription model", style = MaterialTheme.typography.titleSmall)
             EngineChoice.entries.forEach { choice ->
                 Row(
@@ -238,6 +243,85 @@ fun SettingsSheet(controller: RecordingController, state: RecordingController.Ui
                 }
             }
             Spacer(Modifier.height(32.dp))
+        }
+    }
+}
+
+/** Lists connected microphones, shows which one is live, and lets you pick one. */
+@Composable
+private fun MicrophoneSection(state: RecordingController.UiState, onSelect: (String?) -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val selected = state.selectedInputKey
+    val selectedDevice = state.inputDevices.firstOrNull { it.key == selected }
+
+    Text("Microphone", style = MaterialTheme.typography.titleSmall)
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 6.dp)) {
+        Icon(
+            if (state.isRecording) Icons.Default.Mic else Icons.Default.MicNone,
+            contentDescription = null,
+            tint = if (state.isRecording) Color(0xFFE53935) else colors.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            when {
+                state.isRecording -> "Recording from: ${state.activeInputName ?: "detecting…"}"
+                selectedDevice != null -> "Will record from: ${selectedDevice.name}"
+                selected != null -> "Chosen mic isn't connected — the phone's default will be used"
+                else -> "The phone picks the microphone"
+            },
+            style = MaterialTheme.typography.bodyMedium,
+        )
+    }
+
+    MicOption(
+        title = "Automatic",
+        subtitle = "Let the phone choose (usually the newest headset, else the built-in mic)",
+        selected = selected == null,
+        onClick = { onSelect(null) },
+    )
+    state.inputDevices.forEach { device ->
+        MicOption(
+            title = device.name,
+            subtitle = device.kind + if (device.isBluetooth) " · uses the headset's call audio" else "",
+            selected = device.key == selected,
+            onClick = { onSelect(device.key) },
+        )
+    }
+    if (selected != null && selectedDevice == null) {
+        MicOption(
+            title = "Previously chosen mic",
+            subtitle = "Not connected — reconnect it and VoicePad switches back automatically",
+            selected = true,
+            enabled = false,
+            onClick = {},
+        )
+    }
+    if (state.inputDevices.isEmpty()) {
+        Text("No microphones detected.", color = colors.error, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun MicOption(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
+            .padding(vertical = 6.dp),
+    ) {
+        RadioButton(selected = selected, onClick = null, enabled = enabled)
+        Spacer(Modifier.width(12.dp))
+        Column {
+            Text(title)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }

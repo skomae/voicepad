@@ -1,9 +1,13 @@
 package com.voicepad.app.audio
 
 import android.annotation.SuppressLint
+import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.media.AudioRouting
 import android.media.MediaRecorder
+import android.os.Handler
+import android.os.Looper
 import java.io.File
 import java.io.RandomAccessFile
 import kotlin.math.log10
@@ -35,6 +39,13 @@ class AudioRecorder {
     @Volatile var writeError: String? = null
         private set
 
+    /** Name of the mic actually in use, as reported by Android's routing. */
+    @Volatile var routedDeviceName: String? = null
+        private set
+
+    /** Called (on the main thread) when Android moves recording to another mic. */
+    var onRoutingChanged: (() -> Unit)? = null
+
     private var record: AudioRecord? = null
     private var thread: Thread? = null
     private var wav: RandomAccessFile? = null
@@ -50,7 +61,7 @@ class AudioRecorder {
     }
 
     @SuppressLint("MissingPermission") // Checked by the caller.
-    fun start(file: File) {
+    fun start(file: File, preferredDevice: AudioDeviceInfo? = null) {
         if (isRunning) return
         val minBuffer = AudioRecord.getMinBufferSize(
             SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_FLOAT
@@ -63,6 +74,11 @@ class AudioRecorder {
             max(minBuffer, SAMPLE_RATE * 4 / 5), // ~200 ms of float samples
         )
         check(recorder.state == AudioRecord.STATE_INITIALIZED) { "Microphone is unavailable." }
+        recorder.setPreferredDevice(preferredDevice)
+        recorder.addOnRoutingChangedListener(
+            AudioRouting.OnRoutingChangedListener { updateRouting(it) },
+            Handler(Looper.getMainLooper()),
+        )
 
         synchronized(lock) { count = 0 }
         level = 0f
@@ -76,6 +92,7 @@ class AudioRecorder {
         recorder.startRecording()
         record = recorder
         isRunning = true
+        updateRouting(recorder)
         thread = Thread({ readLoop(recorder) }, "VoicePad-recorder").apply { start() }
     }
 
@@ -86,6 +103,7 @@ class AudioRecorder {
         thread = null
         record?.run { stop(); release() }
         record = null
+        routedDeviceName = null
         level = 0f
         wav?.let {
             runCatching {
@@ -95,6 +113,19 @@ class AudioRecorder {
             runCatching { it.close() }
         }
         wav = null
+    }
+
+    /** Switches the live recording to [device] (null = system default). */
+    fun setPreferredDevice(device: AudioDeviceInfo?) {
+        record?.setPreferredDevice(device)
+    }
+
+    private fun updateRouting(routing: AudioRouting) {
+        val device = routing.routedDevice
+        routedDeviceName = device?.let {
+            InputDeviceNaming.name(it.type, it.productName?.toString().orEmpty(), it.address)
+        }
+        onRoutingChanged?.invoke()
     }
 
     private fun readLoop(recorder: AudioRecord) {

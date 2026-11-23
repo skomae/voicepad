@@ -22,6 +22,11 @@ copied, edited, re-transcribed and rolled back through its revision history.
   next launch.
 - **Play or share** any recording (share sends the WAV plus its transcript,
   e.g. to Drive or email). Deleting asks for confirmation.
+- **Microphone choice** (Settings → Microphone): see every connected mic
+  (built-in, wired, USB, Bluetooth headset), which one is recording right
+  now, and pick one — or leave it on *Automatic*. The choice is remembered;
+  if that mic is unplugged the phone's default is used, and recording
+  switches back when it reconnects.
 - **Pin** notes to keep them in a *Pinned* section at the top.
 - **Full-text search** across every note — current text, every earlier
   revision and text recovered from unfinished transcriptions. All terms must
