@@ -36,6 +36,18 @@ jobs:
             build | tee build.log | grep -E "error:|warning: .*VoicePad/|BUILD (SUCCEEDED|FAILED)" || true
           grep -q "BUILD SUCCEEDED" build.log
 
+      - name: Unit tests
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project VoicePad.xcodeproj \
+            -scheme VoicePad \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -skipPackagePluginValidation \
+            -skipMacroValidation \
+            CODE_SIGNING_ALLOWED=NO > test.log 2>&1 || (grep -E "error:|failed" test.log; exit 1)
+          grep -E "Executed [0-9]+ tests" test.log | tail -1
+
       - name: Build unsigned device app
         run: |
           set -o pipefail

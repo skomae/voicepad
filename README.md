@@ -72,7 +72,7 @@ detection, translation state):
 
 ```sh
 xcodebuild test -project VoicePad.xcodeproj -scheme VoicePad \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
+  -destination 'platform=iOS Simulator,name=iPhone 18 Pro'
 ```
 
 CI (`.github/workflows/ios-build.yml`) builds for the simulator and produces
