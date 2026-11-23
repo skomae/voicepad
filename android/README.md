@@ -12,8 +12,24 @@ copied, edited, re-transcribed and rolled back through its revision history.
   immediately; text catches up once the model is ready.
 - **Background recording** continues via a foreground service with an
   ongoing notification.
-- Notes are stored in `notes.json` and audio as 16 kHz WAV files in the app's
-  private storage.
+- **Recordings are never lost to a model failure.** Every note saves its
+  transcription status (recording → pending → transcribing → done/failed).
+  Audio stays on disk until it has text; failed or waiting recordings show
+  *Retry* (and *Retry all*), and are retried automatically when a model
+  becomes ready — up to 3 times, so a model that crashes the app can't trap
+  it in a loop. The WAV header is checkpointed every ~5 s, so even a recording
+  interrupted by a crash or a killed app is repaired and transcribed on the
+  next launch.
+- **Play or share** any recording (share sends the WAV plus its transcript,
+  e.g. to Drive or email). Deleting asks for confirmation.
+- **Pin** notes to keep them in a *Pinned* section at the top.
+- **Full-text search** across every note — current text, every earlier
+  revision and text recovered from unfinished transcriptions. All terms must
+  match; `"quoted phrases"` match as written; case and accents are ignored.
+  Matches are highlighted.
+- Notes are stored in `notes.json` (with a `.bak` copy) and audio as 16 kHz
+  WAV files in the app's private storage. **Uninstalling the app deletes
+  them** — share anything you want to keep first.
 
 ## Build
 
@@ -23,6 +39,7 @@ Requires JDK 17+ and the Android SDK (platform 36).
 cd android
 ./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
 ./gradlew assembleRelease      # signed with the debug key unless the env vars below are set
+./gradlew testDebugUnitTest    # recovery, search and pinning tests
 ```
 
 The sherpa-onnx library (`app/libs/sherpa-onnx-2.0.3.aar`) is downloaded

@@ -31,6 +31,10 @@ class AudioRecorder {
     @Volatile var isRunning = false
         private set
 
+    /** Set if the audio file could not be written (e.g. storage full). */
+    @Volatile var writeError: String? = null
+        private set
+
     private var record: AudioRecord? = null
     private var thread: Thread? = null
     private var wav: RandomAccessFile? = null
@@ -62,9 +66,10 @@ class AudioRecorder {
 
         synchronized(lock) { count = 0 }
         level = 0f
+        writeError = null
         wav = RandomAccessFile(file, "rw").apply {
             setLength(0)
-            write(ByteArray(44)) // header is filled in on stop
+            write(WavFile.header(0))
         }
         wavDataBytes = 0
 
@@ -82,13 +87,20 @@ class AudioRecorder {
         record?.run { stop(); release() }
         record = null
         level = 0f
-        wav?.let { finishWav(it) }
+        wav?.let {
+            runCatching {
+                WavFile.writeHeader(it, wavDataBytes)
+                it.fd.sync()
+            }.onFailure { e -> writeError = e.message ?: "Could not save audio." }
+            runCatching { it.close() }
+        }
         wav = null
     }
 
     private fun readLoop(recorder: AudioRecord) {
         val buffer = FloatArray(SAMPLE_RATE / 10) // 100 ms
         val pcm = ByteArray(buffer.size * 2)
+        var buffersSinceCheckpoint = 0
         while (isRunning) {
             val read = recorder.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
             if (read <= 0) continue
@@ -110,36 +122,25 @@ class AudioRecorder {
                 System.arraycopy(buffer, 0, samples, count, read)
                 count += read
             }
-            wav?.write(pcm, 0, read * 2)
-            wavDataBytes += read * 2
-        }
-    }
-
-    private fun finishWav(file: RandomAccessFile) {
-        val byteRate = SAMPLE_RATE * 2
-        val header = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN).apply {
-            put("RIFF".toByteArray()); putInt((36 + wavDataBytes).toInt())
-            put("WAVE".toByteArray())
-            put("fmt ".toByteArray()); putInt(16); putShort(1); putShort(1)
-            putInt(SAMPLE_RATE); putInt(byteRate); putShort(2); putShort(16)
-            put("data".toByteArray()); putInt(wavDataBytes.toInt())
-        }
-        file.seek(0)
-        file.write(header.array())
-        file.close()
-    }
-}
-
-/** Reads a 16-bit mono 16 kHz WAV written by [AudioRecorder]. */
-object WavReader {
-    fun read(file: File): FloatArray {
-        val bytes = file.readBytes()
-        if (bytes.size <= 44) return FloatArray(0)
-        val n = (bytes.size - 44) / 2
-        return FloatArray(n) { i ->
-            val lo = bytes[44 + 2 * i].toInt() and 0xff
-            val hi = bytes[45 + 2 * i].toInt()
-            ((hi shl 8) or lo).toShort() / 32768f
+            if (writeError == null) wav?.let { file ->
+                try {
+                    file.write(pcm, 0, read * 2)
+                } catch (e: java.io.IOException) {
+                    // Keep capturing into memory so live text still works.
+                    writeError = e.message ?: "Could not save audio."
+                    return@let
+                }
+                wavDataBytes += read * 2
+                // Every ~5 s: fix up the header and flush to disk, so the
+                // file stays playable even if the app is killed right now.
+                if (++buffersSinceCheckpoint >= 50) {
+                    buffersSinceCheckpoint = 0
+                    runCatching {
+                        WavFile.writeHeader(file, wavDataBytes)
+                        file.fd.sync()
+                    }
+                }
+            }
         }
     }
 }

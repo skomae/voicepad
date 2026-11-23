@@ -9,6 +9,6 @@ class VoicePadApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        controller = RecordingController(this, NoteStore(this))
+        controller = RecordingController(this, NoteStore(filesDir))
     }
 }
