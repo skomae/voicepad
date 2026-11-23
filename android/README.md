@@ -23,6 +23,19 @@ copied, edited, re-transcribed and rolled back through its revision history.
   into ≤25 s chunks split at the **longest pauses**. Committed audio is
   dropped from memory and saved recordings are streamed from disk, so
   recording length is limited only by storage.
+- **Live translation**: while you speak, each finished utterance (detected
+  at its pause) is translated and the sentence still in progress is
+  re-translated as its text updates, so the live bubble shows original,
+  pinyin and English side by side. Mixed Mandarin/English recordings read
+  as one English text; the finished note keeps that translation.
+- **Split** (scissors next to the record button): like a stopwatch lap —
+  ends the current note and starts a new one at that instant without
+  stopping the microphone, so nothing is lost between them. The finished
+  part transcribes in the background while you keep talking.
+- **Clear recording state**: while recording, the top bar turns red with a
+  pulsing REC, elapsed time and part number, the screen gets a red frame,
+  and the bar under the button says "Recording — tap ■ to stop". When idle
+  it says "Not recording" and the button shows a red dot in a ring.
 - **Background recording** continues via a foreground service with an
   ongoing notification.
 - **Recordings are never lost to a model failure.** Every note saves its

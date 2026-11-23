@@ -1,6 +1,15 @@
 package com.voicepad.app.ui
 
 import android.text.format.DateUtils
+import android.view.HapticFeedbackConstants
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.border
+import androidx.compose.material.icons.filled.ContentCut
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -70,45 +79,91 @@ fun RecordBar(controller: RecordingController, state: RecordingController.UiStat
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
             ) {
-                Box(Modifier.width(56.dp)) {
+                Column(Modifier.width(72.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     val started = state.startedAt
-                    if (state.isRecording && started != null) {
-                        Text(
-                            DateUtils.formatElapsedTime(((now - started) / 1000).coerceAtLeast(0)),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    Text(
+                        if (state.isRecording && started != null) {
+                            DateUtils.formatElapsedTime(((now - started) / 1000).coerceAtLeast(0))
+                        } else {
+                            "--:--"
+                        },
+                        style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
+                        color = if (state.isRecording) RecordingRed else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    LevelMeter(if (state.isRecording) level else 0f, Modifier.padding(top = 4.dp))
                 }
 
-                val finishing = !state.isRecording && state.recordingNoteId != null
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .size(76.dp)
+                        .size(80.dp)
                         .semantics { contentDescription = if (state.isRecording) "Stop recording" else "Start recording" }
                         .clip(CircleShape)
-                        .clickable(enabled = !finishing) { controller.toggle() },
+                        .clickable { controller.toggle() },
                 ) {
-                    Box(
-                        Modifier
-                            .size(76.dp)
-                            .scale(if (state.isRecording) 1f + level * 0.3f else 1f)
-                            .background(Color.Red.copy(alpha = 0.18f), CircleShape)
-                    )
-                    Box(Modifier.size(62.dp).background(Color(0xFFE53935), CircleShape))
                     if (state.isRecording) {
-                        Box(Modifier.size(22.dp).background(Color.White, RoundedCornerShape(5.dp)))
+                        Box(
+                            Modifier
+                                .size(80.dp)
+                                .scale(1f + level * 0.3f)
+                                .background(RecordingRed.copy(alpha = 0.22f), CircleShape)
+                        )
+                        Box(Modifier.size(64.dp).background(RecordingRed, CircleShape))
+                        Box(Modifier.size(24.dp).background(Color.White, RoundedCornerShape(5.dp)))
                     } else {
-                        Icon(Icons.Default.Mic, contentDescription = null, tint = Color.White)
+                        // Idle looks clearly different: an outlined ring with a red dot, like a camera.
+                        Box(Modifier.size(64.dp).border(4.dp, MaterialTheme.colorScheme.outline, CircleShape))
+                        Box(Modifier.size(44.dp).background(RecordingRed, CircleShape))
                     }
                 }
 
-                LevelMeter(if (state.isRecording) level else 0f, Modifier.width(56.dp))
+                // Split: like a stopwatch lap — ends this note and starts the next without a gap.
+                val view = LocalView.current
+                Column(
+                    Modifier
+                        .width(72.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable(enabled = state.isRecording) {
+                            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                            controller.split()
+                        }
+                        .padding(vertical = 6.dp)
+                        .semantics { contentDescription = "Split: finish this recording and start a new one" },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    val tint = if (state.isRecording) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                    Icon(Icons.Default.ContentCut, contentDescription = null, tint = tint)
+                    Text("Split", style = MaterialTheme.typography.labelMedium, color = tint)
+                }
             }
+            Text(
+                if (state.isRecording) {
+                    "Recording" + (if (state.partNumber > 1) " · part ${state.partNumber}" else "") + " — tap ■ to stop"
+                } else {
+                    "Not recording — tap ● to start"
+                },
+                style = MaterialTheme.typography.labelLarge,
+                color = if (state.isRecording) RecordingRed else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 6.dp),
+            )
         }
     }
+}
+
+val RecordingRed = Color(0xFFD32F2F)
+
+/** A red dot that pulses, for "recording now". */
+@Composable
+fun PulsingDot(modifier: Modifier = Modifier, color: Color = RecordingRed, size: androidx.compose.ui.unit.Dp = 10.dp) {
+    val alpha by rememberInfiniteTransition(label = "pulse").animateFloat(
+        initialValue = 1f,
+        targetValue = 0.25f,
+        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+        label = "pulse-alpha",
+    )
+    Box(modifier.size(size).background(color.copy(alpha = alpha), CircleShape))
 }
 
 @Composable

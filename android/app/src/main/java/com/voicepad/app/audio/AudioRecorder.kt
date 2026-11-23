@@ -26,6 +26,8 @@ class AudioRecorder {
     }
 
     private val lock = Any()
+    /** Guards the WAV file, so [switchFile] lands exactly between two buffers. */
+    private val wavLock = Any()
     private var samples = FloatArray(SAMPLE_RATE * 60)
     private var count = 0
     /**
@@ -124,14 +126,38 @@ class AudioRecorder {
         record = null
         routedDeviceName = null
         level = 0f
-        wav?.let {
-            runCatching {
-                WavFile.writeHeader(it, wavDataBytes)
-                it.fd.sync()
-            }.onFailure { e -> writeError = e.message ?: "Could not save audio." }
-            runCatching { it.close() }
+        synchronized(wavLock) {
+            wav?.let {
+                runCatching {
+                    WavFile.writeHeader(it, wavDataBytes)
+                    it.fd.sync()
+                }.onFailure { e -> writeError = e.message ?: "Could not save audio." }
+                runCatching { it.close() }
+            }
+            wav = null
         }
-        wav = null
+    }
+
+    /**
+     * Splits the recording without stopping the microphone: finishes the
+     * current WAV and continues into [file]. Returns the recording position of
+     * the split; audio before it is in the old file, audio after it in the new.
+     */
+    fun switchFile(file: File): Int = synchronized(wavLock) {
+        wav?.let { old ->
+            runCatching {
+                WavFile.writeHeader(old, wavDataBytes)
+                old.fd.sync()
+            }.onFailure { e -> writeError = e.message ?: "Could not save audio." }
+            runCatching { old.close() }
+        }
+        writeError = null
+        wav = RandomAccessFile(file, "rw").apply {
+            setLength(0)
+            write(WavFile.header(0))
+        }
+        wavDataBytes = 0
+        sampleCount
     }
 
     /** Switches the live recording to [device] (null = system default). */
@@ -167,6 +193,7 @@ class AudioRecorder {
             val db = 20 * log10(max(rms, 1e-6f))
             level = ((db + 50f) / 50f).coerceIn(0f, 1f)
 
+            synchronized(wavLock) {
             synchronized(lock) {
                 if (count + read > samples.size) samples = samples.copyOf(max(samples.size * 2, count + read))
                 System.arraycopy(buffer, 0, samples, count, read)
@@ -190,6 +217,7 @@ class AudioRecorder {
                         file.fd.sync()
                     }
                 }
+            }
             }
         }
     }

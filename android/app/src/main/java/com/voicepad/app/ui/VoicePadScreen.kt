@@ -4,6 +4,13 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import android.text.format.DateUtils
+import androidx.compose.foundation.border
+import androidx.compose.material.icons.filled.MicOff
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.ui.text.font.FontWeight
+import kotlinx.coroutines.delay
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -138,9 +145,24 @@ fun VoicePadScreen(controller: RecordingController) {
                     onClose = { searchActive = false; query = "" },
                 )
             } else {
+                val recording = state.isRecording
+                val onBar = if (recording) Color.White else MaterialTheme.colorScheme.onSurface
                 TopAppBar(
-                    title = { Text("VoicePad") },
-                    navigationIcon = { EngineStatusBadge(state, Modifier.padding(start = 12.dp)) },
+                    // Unmistakable: the whole bar turns red while the mic is on.
+                    colors = if (recording) {
+                        TopAppBarDefaults.topAppBarColors(
+                            containerColor = RecordingRed,
+                            titleContentColor = Color.White,
+                            actionIconContentColor = Color.White,
+                            navigationIconContentColor = Color.White,
+                        )
+                    } else {
+                        TopAppBarDefaults.topAppBarColors()
+                    },
+                    title = {
+                        if (recording) RecordingTitle(state) else IdleTitle()
+                    },
+                    navigationIcon = { EngineStatusBadge(state, Modifier.padding(start = 12.dp), color = onBar) },
                     actions = {
                         IconButton(onClick = { searchActive = true }) {
                             Icon(Icons.Default.Search, contentDescription = "Search")
@@ -154,7 +176,12 @@ fun VoicePadScreen(controller: RecordingController) {
         },
         bottomBar = { RecordBar(controller, state) },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .then(if (state.isRecording) Modifier.border(3.dp, RecordingRed.copy(alpha = 0.6f)) else Modifier)
+        ) {
             if (!searching && visibleNotes.isEmpty() && !showLive) {
                 EmptyState(Modifier.align(Alignment.Center))
             }
@@ -248,6 +275,40 @@ fun VoicePadScreen(controller: RecordingController) {
     }
 }
 
+/** Top bar title while recording: pulsing dot, REC, elapsed time, part number. */
+@Composable
+private fun RecordingTitle(state: RecordingController.UiState) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(state.startedAt) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(500)
+        }
+    }
+    val elapsed = state.startedAt?.let { DateUtils.formatElapsedTime(((now - it) / 1000).coerceAtLeast(0)) } ?: ""
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        PulsingDot(color = Color.White, size = 12.dp)
+        Spacer(Modifier.width(8.dp))
+        Text("REC  $elapsed", fontWeight = FontWeight.Bold)
+        if (state.partNumber > 1) {
+            Text("  · part ${state.partNumber}", style = MaterialTheme.typography.titleSmall)
+        }
+    }
+}
+
+/** Top bar title when the mic is off. */
+@Composable
+private fun IdleTitle() {
+    Column {
+        Text("VoicePad")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.MicOff, null, Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(4.dp))
+            Text("Not recording", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SearchBar(query: String, onQueryChange: (String) -> Unit, onClose: () -> Unit) {
@@ -328,14 +389,18 @@ private fun EmptyState(modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun EngineStatusBadge(state: RecordingController.UiState, modifier: Modifier = Modifier) {
+fun EngineStatusBadge(
+    state: RecordingController.UiState,
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         when (val status = state.engineStatus) {
             EngineStatus.Idle -> {}
             is EngineStatus.Loading -> {
-                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = color)
                 Spacer(Modifier.width(4.dp))
-                if (status.downloading) Text("${(status.progress * 100).toInt()}%", style = MaterialTheme.typography.labelSmall)
+                if (status.downloading) Text("${(status.progress * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, color = color)
             }
             EngineStatus.Ready -> Icon(
                 Icons.Default.CheckCircle, contentDescription = "Model ready",
@@ -350,7 +415,7 @@ fun EngineStatusBadge(state: RecordingController.UiState, modifier: Modifier = M
         Text(
             state.engineChoice.shortName,
             style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = color,
         )
     }
 }

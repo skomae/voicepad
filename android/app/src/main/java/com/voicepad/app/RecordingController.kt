@@ -15,6 +15,7 @@ import com.voicepad.app.data.NoteStore
 import com.voicepad.app.data.NoteTranslation
 import com.voicepad.app.data.RevisionSource
 import com.voicepad.app.data.TranscriptionStatus
+import com.voicepad.app.data.TranslationJoin
 import com.voicepad.app.data.TranslationStatus
 import com.voicepad.app.data.withRevision
 import com.voicepad.app.transcription.AutoEngine
@@ -22,6 +23,7 @@ import com.voicepad.app.transcription.ChunkPlanner
 import com.voicepad.app.transcription.ChunkPlanner.Span
 import com.voicepad.app.transcription.EngineChoice
 import com.voicepad.app.transcription.EnglishTranslator
+import com.voicepad.app.transcription.LanguageTags
 import com.voicepad.app.transcription.ModelManager
 import com.voicepad.app.transcription.SherpaEngine
 import com.voicepad.app.transcription.SpeechDetector
@@ -90,6 +92,10 @@ class RecordingController(
         val selectedInputKey: String? = null,
         /** Mic Android is actually recording from right now, if recording. */
         val activeInputName: String? = null,
+        /** Translation of the note being recorded, updated as it is spoken. */
+        val liveTranslation: NoteTranslation? = null,
+        /** Which part of a split recording is being recorded (1 = not split). */
+        val partNumber: Int = 1,
     )
 
     companion object {
@@ -137,20 +143,43 @@ class RecordingController(
     private val translationTried = mutableSetOf<String>()
     private val translator by lazy { EnglishTranslator() }
 
-    // Live state for the recording in progress.
-    private var committedText = ""
-    /** Recording position up to which text is committed. */
-    private var committedUpTo = 0
-    /** Recording position fed to the speech detector so far. */
-    private var detectedUpTo = 0
-    /** Last position at which the detector heard no speech; the current utterance began after it. */
-    private var quietAt = 0
-    private var detector: SpeechDetector? = null
-    /** Finished utterances not yet committed. */
-    private val pendingSpeech = mutableListOf<Span>()
-    /** Language / model reported for each committed piece. */
-    private val chunkLanguages = mutableListOf<String>()
-    private val chunkEngines = mutableListOf<String>()
+    /** One finished utterance (or chunk) of a live recording, with its translation. */
+    private class LiveSegment(val text: String, val language: String?) {
+        /** Language the translator settled on (the model's tag may be missing). */
+        var detectedLanguage: String? = null
+        var english: String? = null
+        var romanization: String? = null
+        var translated = false
+    }
+
+    /**
+     * Live state of one note: the one being recorded, or one still finishing
+     * its transcription after Stop or Split. Positions are in the recording
+     * (the microphone stream), which runs on across splits.
+     */
+    private inner class LiveSession(val noteId: String, val origin: Int) {
+        var committedText = ""
+        var committedUpTo = origin
+        /** Recording position fed to the speech detector so far. */
+        var detectedUpTo = origin
+        /** Last position at which the detector heard no speech; the current utterance began after it. */
+        var quietAt = origin
+        val detector: SpeechDetector? = newDetector()
+        /** Finished utterances not yet committed. */
+        val pending = mutableListOf<Span>()
+        val languages = mutableListOf<String>()
+        val engines = mutableListOf<String>()
+        val segments = mutableListOf<LiveSegment>()
+        var tail = LiveSegment("", null)
+        /** Where this note's audio ends; null while it is still being recorded. */
+        var end: Int? = null
+    }
+
+    private var session: LiveSession? = null
+    /** Sessions finishing their transcription after Stop or Split. */
+    private val finishing = mutableSetOf<LiveSession>()
+    private var tailTranslateJob: Job? = null
+    private val liveTranslateMutex = Mutex()
 
     init {
         // Before anything records: repair what a crash or kill left behind.
@@ -262,16 +291,16 @@ class RecordingController(
         processTranslations()
         if (engine == null && loadJob?.isActive != true) loadEngine() else processQueue()
         val s = _state.value
-        if (s.autoRecordOnOpen && !s.isRecording && s.recordingNoteId == null) start()
+        if (s.autoRecordOnOpen && !s.isRecording) start()
     }
 
     fun toggle() {
-        if (_state.value.isRecording) scope.launch { stop() } else start()
+        if (_state.value.isRecording) stop() else start()
     }
 
     fun start() {
         val s = _state.value
-        if (s.isRecording || s.recordingNoteId != null) return
+        if (s.isRecording) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             showError("Microphone access is needed to record.")
             return
@@ -287,129 +316,169 @@ class RecordingController(
             return
         }
         RecordingService.start(context)
-
-        // Saved before any audio arrives, so a crash can always find it.
-        val note = Note(audioFileName = fileName, status = TranscriptionStatus.RECORDING)
-        store.add(note)
-        committedText = ""
-        committedUpTo = 0
-        detectedUpTo = 0
-        quietAt = 0
-        pendingSpeech.clear()
-        chunkLanguages.clear()
-        chunkEngines.clear()
-        detector?.release()
-        detector = newDetector()
-        _state.update {
-            it.copy(
-                isRecording = true,
-                startedAt = System.currentTimeMillis(),
-                liveText = "",
-                recordingNoteId = note.id,
-                errorMessage = null,
-            )
-        }
+        beginNote(fileName, origin = 0, part = 1)
+        _state.update { it.copy(isRecording = true, errorMessage = null) }
         liveJob = scope.launch {
             while (isActive) {
                 delay(TICK_MS)
-                if (engineReady) processLive(noteId = note.id)
+                val current = session ?: continue
+                if (engineReady) processLive(current)
             }
         }
     }
 
-    suspend fun stop() {
-        val noteId = _state.value.recordingNoteId ?: return
+    /** Creates the note (saved before any audio arrives, so a crash can always find it) and its live session. */
+    private fun beginNote(fileName: String, origin: Int, part: Int) {
+        val note = Note(audioFileName = fileName, status = TranscriptionStatus.RECORDING)
+        store.add(note)
+        session = LiveSession(note.id, origin)
+        tailTranslateJob?.cancel()
+        _state.update {
+            it.copy(
+                startedAt = System.currentTimeMillis(),
+                liveText = "",
+                liveTranslation = null,
+                recordingNoteId = note.id,
+                partNumber = part,
+            )
+        }
+    }
+
+    /**
+     * Like a stopwatch lap: ends the current note and starts a new one at this
+     * exact moment. The microphone keeps running, so nothing is lost between
+     * the two; the finished note transcribes in the background.
+     */
+    fun split() {
+        val old = session ?: return
+        if (!_state.value.isRecording) return
+        val fileName = "${UUID.randomUUID()}.wav"
+        val at = try {
+            recorder.switchFile(File(store.recordingsDir, fileName))
+        } catch (e: Throwable) {
+            showError("Couldn't split: ${e.message}")
+            return
+        }
+        old.end = at
+        finishing += old
+        beginNote(fileName, origin = at, part = _state.value.partNumber + 1)
+        scope.launch { finishSession(old) }
+    }
+
+    fun stop() {
+        val current = session ?: return
         if (!_state.value.isRecording) return
         recorder.stop()
         inputs.endRecording()
         RecordingService.stop(context)
-        _state.update { it.copy(isRecording = false, startedAt = null, activeInputName = null) }
-        liveJob?.cancelAndJoin()
-        liveJob = null
-        recorder.writeError?.let { showError("Part of this recording couldn't be saved: $it") }
-
-        val duration = recorder.sampleCount.toDouble() / AudioRecorder.SAMPLE_RATE
-        // Opening the app always starts a recording; drop ones stopped before
-        // anything could have been said.
-        if (duration < NoteStore.MIN_SECONDS) {
-            store.delete(noteId)
-            _state.update { it.copy(recordingNoteId = null, liveText = "") }
-            return
+        current.end = recorder.sampleCount
+        finishing += current
+        session = null
+        tailTranslateJob?.cancel()
+        _state.update {
+            it.copy(isRecording = false, startedAt = null, activeInputName = null, recordingNoteId = null,
+                liveText = "", liveTranslation = null, partNumber = 1)
         }
+        recorder.writeError?.let { showError("Part of this recording couldn't be saved: $it") }
+        // Taken now, so a quick restart's new live job isn't the one cancelled.
+        val job = liveJob
+        liveJob = null
+        scope.launch {
+            job?.cancelAndJoin()
+            finishSession(current)
+        }
+    }
 
-        if (!engineReady) {
-            // Audio is safe on disk; it is transcribed once the model is ready.
-            store.update(noteId) {
-                it.copy(status = TranscriptionStatus.PENDING, durationSeconds = duration, partialText = _state.value.liveText.ifBlank { null })
+    /** Final transcription of a stopped or split-off note, then its saved revision and translation. */
+    private suspend fun finishSession(s: LiveSession) {
+        val noteId = s.noteId
+        try {
+            val duration = ((s.end ?: recorder.sampleCount) - s.origin).toDouble() / AudioRecorder.SAMPLE_RATE
+            // Opening the app always starts a recording; drop ones stopped before
+            // anything could have been said.
+            if (duration < NoteStore.MIN_SECONDS) {
+                store.delete(noteId)
+                return
             }
-        } else {
+            if (!engineReady) {
+                // Audio is safe on disk; it is transcribed once the model is ready.
+                store.update(noteId) {
+                    it.copy(status = TranscriptionStatus.PENDING, durationSeconds = duration, partialText = s.committedText.ifBlank { null })
+                }
+                return
+            }
             store.update(noteId) {
                 it.copy(status = TranscriptionStatus.IN_PROGRESS, durationSeconds = duration, attempts = it.attempts + 1)
             }
-            val error = processLive(noteId = noteId, final = true)
-            val text = _state.value.liveText
-            val engineName = engineLabel(chunkEngines)
+            val error = processLive(s, final = true)
+            val text = s.committedText
             store.update(noteId) {
                 if (error == null) {
-                    it.withRevision(text, RevisionSource.TRANSCRIPTION, engineName, mostCommon(chunkLanguages))
+                    val done = it.withRevision(text, RevisionSource.TRANSCRIPTION, engineLabel(s.engines), mostCommon(s.languages))
                         .copy(status = TranscriptionStatus.DONE, lastError = null, partialText = null)
+                    // Reuse the live translation when every part of it finished.
+                    done.copy(translation = liveTranslationFor(s.segments, done.revisions.last().id))
                 } else {
                     it.copy(status = TranscriptionStatus.FAILED, lastError = error, partialText = text.ifBlank { null })
                 }
             }
+        } finally {
+            s.detector?.release()
+            finishing -= s
+            processQueue()
         }
-        detector?.release()
-        detector = null
-        _state.update { it.copy(recordingNoteId = null, liveText = "") }
-        processQueue()
     }
 
     /**
-     * One live step: finds newly finished utterances, commits the ones that
-     * are ready, and refreshes the preview of speech still in progress.
-     * Returns null on success or the error message. Nothing is skipped on
-     * failure: utterances are only removed from [pendingSpeech] once their
-     * text is committed, so the next pass retries them.
+     * One live step for [s]: finds newly finished utterances, commits them, and
+     * (while it's the note being recorded) refreshes the preview of speech in
+     * progress. Returns null on success or the error message. Nothing is
+     * skipped on failure: utterances leave [LiveSession.pending] only once
+     * their text is committed, so the next pass retries them.
      */
-    private suspend fun processLive(noteId: String, final: Boolean = false): String? {
+    private suspend fun processLive(s: LiveSession, final: Boolean = false): String? {
         return try {
-            val now = recorder.sampleCount
-            val vad = detector
+            val now = s.end ?: recorder.sampleCount
+            val vad = s.detector
             if (vad != null) {
-                if (now > detectedUpTo) {
-                    pendingSpeech += vad.feed(recorder.samples(detectedUpTo, now))
-                    detectedUpTo = now
-                    if (!vad.inSpeech) quietAt = now
+                if (now > s.detectedUpTo) {
+                    // The detector counts from the first sample it was given: this note's origin.
+                    s.pending += vad.feed(recorder.samples(s.detectedUpTo, now)).map { Span(it.start + s.origin, it.end + s.origin) }
+                    s.detectedUpTo = now
+                    if (!vad.inSpeech) s.quietAt = now
                 }
-                if (final) pendingSpeech += vad.flush()
-            } else if (final || now - committedUpTo >= MAX_CHUNK) {
+                if (final) s.pending += vad.flush().map { Span(it.start + s.origin, minOf(it.end + s.origin, now)) }
+            } else if (final || now - s.committedUpTo >= MAX_CHUNK) {
                 // No detector: treat everything as speech; the planner cuts at quiet points.
-                pendingSpeech.clear()
-                pendingSpeech += Span(committedUpTo, now)
+                s.pending.clear()
+                s.pending += Span(s.committedUpTo, now)
             }
 
             val batchReady = when {
                 final -> true
                 grouping == ChunkPlanner.Grouping.UTTERANCES -> true
-                else -> pendingSpeech.isNotEmpty() &&
-                    now - pendingSpeech.first().start >= (WHISPER_BATCH_SECONDS * AudioRecorder.SAMPLE_RATE).toInt()
+                else -> s.pending.isNotEmpty() &&
+                    now - s.pending.first().start >= (WHISPER_BATCH_SECONDS * AudioRecorder.SAMPLE_RATE).toInt()
             }
-            if (batchReady && pendingSpeech.isNotEmpty()) commit(noteId, now)
+            if (batchReady && s.pending.isNotEmpty()) commit(s, now)
 
-            if (!final) {
+            if (!final && s === session) {
                 // Preview: whatever is still uncommitted, but only while there's speech.
                 val speaking = vad?.inSpeech ?: true
-                val tail = if (speaking || pendingSpeech.isNotEmpty()) {
+                val tail = if (speaking || s.pending.isNotEmpty()) {
                     // The detector confirms speech ~0.25 s after it starts; back up a second.
-                    val openStart = if (vad == null) committedUpTo else quietAt - AudioRecorder.SAMPLE_RATE
-                    val from = minOf(pendingSpeech.firstOrNull()?.start?.minus(PAD) ?: openStart, openStart)
-                    transcribe(recorder.samples(maxOf(from, committedUpTo, now - MAX_CHUNK), now)).text
+                    val openStart = if (vad == null) s.committedUpTo else s.quietAt - AudioRecorder.SAMPLE_RATE
+                    val from = minOf(s.pending.firstOrNull()?.start?.minus(PAD) ?: openStart, openStart)
+                    transcribe(recorder.samples(maxOf(from, s.committedUpTo, s.origin, now - MAX_CHUNK), now))
                 } else {
-                    ""
+                    Transcript("", null)
                 }
-                _state.update { it.copy(liveText = join(committedText, tail)) }
-            } else {
-                _state.update { it.copy(liveText = committedText) }
+                if (tail.text != s.tail.text) {
+                    s.tail = LiveSegment(tail.text, tail.language)
+                    translateTail(s)
+                }
+                _state.update { it.copy(liveText = join(s.committedText, tail.text)) }
+                publishLiveTranslation(s)
             }
             null
         } catch (e: CancellationException) {
@@ -422,28 +491,105 @@ class RecordingController(
         }
     }
 
-    /** Transcribes and commits every pending utterance, chunk by chunk. */
-    private suspend fun commit(noteId: String, audioEnd: Int) {
-        val chunks = ChunkPlanner.plan(pendingSpeech, audioEnd, MAX_CHUNK, PAD, grouping) { from, to ->
+    /** Transcribes and commits every pending utterance of [s], chunk by chunk. */
+    private suspend fun commit(s: LiveSession, audioEnd: Int) {
+        val chunks = ChunkPlanner.plan(s.pending, audioEnd, MAX_CHUNK, PAD, grouping) { from, to ->
             quietestPoint(recorder.samples(from, to), from)
         }
         for (chunk in chunks) {
-            val audio = join(chunk.map { recorder.samples(it.start, it.end) })
+            // Padding never reaches into the previous note's audio.
+            val audio = join(chunk.map { recorder.samples(maxOf(it.start, s.origin), it.end) })
             val result = transcribe(audio)
-            committedText = join(committedText, result.text)
-            result.language?.let { chunkLanguages += it }
-            result.engine?.let { chunkEngines += it }
+            s.committedText = join(s.committedText, result.text)
+            result.language?.let { s.languages += it }
+            result.engine?.let { s.engines += it }
+            if (result.text.isNotBlank()) {
+                val segment = LiveSegment(result.text, result.language)
+                s.segments += segment
+                translateSegment(s, segment)
+            }
             val end = chunk.last().end
-            pendingSpeech.removeAll { it.end <= end }
+            s.pending.removeAll { it.end <= end }
             // A hard cut inside one long utterance: keep its unsent remainder.
-            pendingSpeech.replaceAll { if (it.start < end) Span(end, it.end) else it }
-            committedUpTo = maxOf(committedUpTo, end)
-            _state.update { it.copy(liveText = committedText) }
-            // Keep committed text on disk in case the app dies, and free the audio.
-            store.update(noteId) { it.copy(partialText = committedText.ifBlank { null }) }
-            recorder.discardBefore(committedUpTo - PAD)
+            s.pending.replaceAll { if (it.start < end) Span(end, it.end) else it }
+            s.committedUpTo = maxOf(s.committedUpTo, end)
+            if (s === session) {
+                _state.update { it.copy(liveText = s.committedText) }
+                publishLiveTranslation(s)
+            }
+            // Keep committed text on disk in case the app dies.
+            store.update(s.noteId) { it.copy(partialText = s.committedText.ifBlank { null }) }
+            freeCommittedAudio()
         }
     }
+
+    /** Drops audio from memory that no live or finishing note still needs. */
+    private fun freeCommittedAudio() {
+        val needed = (finishing + listOfNotNull(session)).minOfOrNull { it.committedUpTo } ?: return
+        recorder.discardBefore(needed - PAD)
+    }
+
+    // Live translation: each committed utterance is translated once, as soon as
+    // its pause is detected; the utterance still being spoken is re-translated
+    // whenever its preview text changes.
+
+    private fun translateSegment(s: LiveSession, segment: LiveSegment) {
+        if (!_state.value.autoTranslate) return
+        scope.launch {
+            liveTranslateMutex.withLock { translateInto(segment) }
+            if (s === session) publishLiveTranslation(s)
+        }
+    }
+
+    private fun translateTail(s: LiveSession) {
+        if (!_state.value.autoTranslate) return
+        val tail = s.tail
+        tailTranslateJob?.cancel()
+        if (tail.text.isBlank()) return
+        tailTranslateJob = scope.launch {
+            delay(300) // let a burst of preview updates settle
+            liveTranslateMutex.withLock { translateInto(tail) }
+            if (s === session && s.tail === tail) publishLiveTranslation(s)
+        }
+    }
+
+    private suspend fun translateInto(segment: LiveSegment) {
+        if (segment.translated) return
+        try {
+            val result = translator.translate(segment.text, segment.language)
+            segment.english = result.english ?: segment.text.takeIf { LanguageTags.isEnglish(result.language) }
+            segment.romanization = result.romanization
+            if (result.language != null) segment.detectedLanguage = result.language
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // Live translation is best effort; the saved note is translated (and retried) afterwards.
+        } finally {
+            segment.translated = true
+        }
+    }
+
+    /** Pushes the combined live translation of [s] to the UI. */
+    private fun publishLiveTranslation(s: LiveSession) {
+        if (!_state.value.autoTranslate) return
+        val parts = s.segments + listOfNotNull(s.tail.takeIf { it.text.isNotBlank() })
+        val translation = combine(parts, revisionId = "live")
+        _state.update { it.copy(liveTranslation = translation) }
+    }
+
+    /** The finished live translation for a saved revision, or null to translate it afresh. */
+    private fun liveTranslationFor(segments: List<LiveSegment>, revisionId: String): NoteTranslation? {
+        if (!_state.value.autoTranslate || segments.isEmpty() || segments.any { !it.translated }) return null
+        return combine(segments, revisionId)?.takeIf { it.status != TranslationStatus.PENDING }
+    }
+
+    private fun combine(parts: List<LiveSegment>, revisionId: String): NoteTranslation? =
+        TranslationJoin.combine(
+            parts.map {
+                TranslationJoin.Part(it.text, it.detectedLanguage ?: it.language, it.english, it.romanization, it.translated)
+            },
+            revisionId,
+        )
 
     /** Position (in the recording) of the quietest 100 ms in [window], which starts at [start]. */
     private fun quietestPoint(window: FloatArray, start: Int): Int {

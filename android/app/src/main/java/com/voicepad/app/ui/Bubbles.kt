@@ -186,7 +186,7 @@ fun NoteBubble(
  * room (landscape, tablets), stacked on a phone held upright.
  */
 @Composable
-private fun TextWithTranslation(
+internal fun TextWithTranslation(
     text: String,
     translation: NoteTranslation?,
     color: Color,
@@ -376,14 +376,15 @@ fun LiveBubble(state: RecordingController.UiState) {
         Box(
             Modifier
                 .background(colors.surfaceVariant, BubbleShape)
-                .border(1.5.dp, colors.primary.copy(alpha = 0.5f), BubbleShape)
+                .border(1.5.dp, RecordingRed.copy(alpha = 0.6f), BubbleShape)
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
-            Text(
-                text,
-                color = if (state.liveText.isEmpty()) colors.onSurfaceVariant else colors.onSurface,
-                fontStyle = if (state.liveText.isEmpty()) FontStyle.Italic else FontStyle.Normal,
-            )
+            if (state.liveText.isEmpty()) {
+                Text(text, color = colors.onSurfaceVariant, fontStyle = FontStyle.Italic)
+            } else {
+                // Original, pinyin and English update together as you speak.
+                TextWithTranslation(state.liveText, state.liveTranslation, colors.onSurface, emptyList(), onRetry = {})
+            }
         }
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -391,8 +392,12 @@ fun LiveBubble(state: RecordingController.UiState) {
             modifier = Modifier.padding(top = 6.dp),
         ) {
             if (state.isRecording) {
-                Box(Modifier.size(7.dp).background(Color.Red, CircleShape))
-                Text("Live", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+                PulsingDot(size = 8.dp)
+                Text(
+                    "Live" + if (state.partNumber > 1) " · part ${state.partNumber}" else "",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = RecordingRed,
+                )
             } else {
                 CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
                 Text("Finishing transcript…", style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
