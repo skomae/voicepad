@@ -1,8 +1,9 @@
 name: iOS build
 
+# Disabled for now: macOS runners cost too much at this stage. Only runs when
+# started by hand (Actions tab → iOS build → Run workflow). To turn it back on,
+# restore the `push:` and `pull_request:` triggers below.
 on:
-  push:
-  pull_request:
   workflow_dispatch:
 
 jobs:

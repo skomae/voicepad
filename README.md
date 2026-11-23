@@ -75,8 +75,10 @@ xcodebuild test -project VoicePad.xcodeproj -scheme VoicePad \
   -destination 'platform=iOS Simulator,name=iPhone 18 Pro'
 ```
 
-CI (`.github/workflows/ios-build.yml`) builds for the simulator and produces
-an unsigned `.ipa` artifact on every push.
+CI (`.github/workflows/ios-build.yml`) builds for the simulator, runs the unit
+tests and produces an unsigned `.ipa`. It is manual-only for now (no macOS
+runner budget yet); start it from the Actions tab, or restore its `push` and
+`pull_request` triggers to run it automatically.
 
 ## Layout
 
