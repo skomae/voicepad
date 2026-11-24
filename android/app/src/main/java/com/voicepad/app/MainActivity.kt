@@ -22,7 +22,7 @@ import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
 import com.voicepad.app.ui.ConversationScreen
 import com.voicepad.app.ui.CrashReportDialog
-import com.voicepad.app.ui.ChannelCrashDialog
+import com.voicepad.app.ui.CrashGuardDialog
 import com.voicepad.app.ui.OuterScreenPresenter
 import com.voicepad.app.ui.VoicePadScreen
 import com.voicepad.app.ui.VoicePadTheme
@@ -60,9 +60,9 @@ class MainActivity : ComponentActivity() {
             }
             VoicePadTheme(state.themeMode) {
                 val conversationState by conversation.state.collectAsStateWithLifecycle()
-                val crashedWith = conversationState.crashedWithChannels
-                if (crashedWith != null) {
-                    ChannelCrashDialog(crashedWith, onAnswer = conversation::answerCrashPrompt)
+                val crashedDuring = conversationState.crashedDuring.firstOrNull()
+                if (crashedDuring != null) {
+                    CrashGuardDialog(crashedDuring, onAnswer = { off -> conversation.answerCrashPrompt(crashedDuring, off) })
                 } else {
                     CrashReportDialog()
                 }

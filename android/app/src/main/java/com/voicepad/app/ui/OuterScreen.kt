@@ -41,6 +41,7 @@ import androidx.window.area.WindowAreaInfo
 import androidx.window.area.WindowAreaPresentationSessionCallback
 import androidx.window.area.WindowAreaSessionPresenter
 import androidx.window.core.ExperimentalWindowApi
+import com.voicepad.app.CrashGuard
 import com.voicepad.app.conversation.ConversationController
 import com.voicepad.app.conversation.ConversationController.OuterScreen
 import com.voicepad.app.conversation.ConversationLayout
@@ -72,7 +73,9 @@ class OuterScreenPresenter(
         activity.lifecycleScope.launch {
             activity.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 val rear = areas.windowAreaInfos.map { infos -> infos.firstOrNull { it.type == WindowAreaInfo.Type.TYPE_REAR_FACING } }
-                val wanted = conversation.state.map { it.visible && it.layout == ConversationLayout.OUTER_SCREEN }.distinctUntilChanged()
+                val wanted = conversation.state.map {
+                    it.visible && it.layout == ConversationLayout.OUTER_SCREEN && CrashGuard.Risky.OUTER_SCREEN !in it.crashedDuring
+                }.distinctUntilChanged()
                 rear.combine(wanted) { info, want -> info to want }.collect { (info, want) -> update(info, want) }
             }
         }
@@ -89,12 +92,14 @@ class OuterScreenPresenter(
             }
         )
         if (!want) {
-            session?.close()
-            session = null
+            endSession()
             return
         }
         if (session != null || starting || info == null || status != WindowAreaCapability.Status.WINDOW_AREA_STATUS_AVAILABLE) return
         starting = true
+        // Marked until the session ends: a crash while it's up points here.
+        CrashGuard.enter(CrashGuard.Risky.OUTER_SCREEN)
+        marked = true
         areas.presentContentOnWindowArea(info.token, activity, ContextCompat.getMainExecutor(activity), object : WindowAreaPresentationSessionCallback {
             override fun onSessionStarted(session: WindowAreaSessionPresenter) {
                 starting = false
@@ -115,6 +120,7 @@ class OuterScreenPresenter(
             override fun onSessionEnded(t: Throwable?) {
                 starting = false
                 session = null
+                unmark()
                 if (conversation.state.value.outerScreen == OuterScreen.SHOWING) conversation.setOuterScreen(OuterScreen.UNAVAILABLE)
             }
 
@@ -122,11 +128,23 @@ class OuterScreenPresenter(
         })
     }
 
-    /** Ends the outer-screen session (the activity is going away). */
-    fun stop() {
+    private var marked = false
+
+    private fun unmark() {
+        if (marked) {
+            marked = false
+            CrashGuard.exit(CrashGuard.Risky.OUTER_SCREEN)
+        }
+    }
+
+    private fun endSession() {
         session?.close()
         session = null
+        if (!starting) unmark()
     }
+
+    /** Ends the outer-screen session (the activity is going away). */
+    fun stop() = endSession()
 }
 
 /**
