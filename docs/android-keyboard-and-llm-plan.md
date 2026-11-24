@@ -115,8 +115,9 @@ New packages sit beside the existing `audio`, `data`, `transcription`, `ui`:
   size, the per-device recommendation (`LlmGuidance`), and the reason (e.g.
   "6 GB RAM + SenseVoice — 1.5B will work but may stutter live transcription").
   The choice is always the user's; the label is guidance only.
-- `MainActivity.kt`: request `BLUETOOTH_CONNECT` (API 31+) alongside
-  `RECORD_AUDIO` in the existing permission launcher.
+- `ui/KeyboardButton.kt`: request `BLUETOOTH_CONNECT` + `BLUETOOTH_ADVERTISE`
+  (API 31+) when keyboard mode is first switched on, not at launch, then ask
+  to make the phone discoverable so the host can find it.
 
 ---
 
@@ -314,11 +315,12 @@ Style presets only change the system instruction (e.g. *Formal email* adds
 <uses-permission android:name="android.permission.BLUETOOTH" />
 <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
 <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" /> <!-- API 31+ runtime -->
+<uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" /> <!-- API 31+, discoverability -->
 <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 ```
 
-- `BLUETOOTH_CONNECT` is a runtime "Nearby devices" permission on API 31+;
-  request it in `MainActivity`'s existing `wanted` list.
+- `BLUETOOTH_CONNECT` / `BLUETOOTH_ADVERTISE` are runtime "Nearby devices"
+  permissions on API 31+; request them on first use of keyboard mode.
 - Keep everything optional so the feature is invisible on devices without
   Bluetooth or below API 30.
 

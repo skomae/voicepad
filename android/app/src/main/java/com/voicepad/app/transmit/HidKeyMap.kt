@@ -33,18 +33,47 @@ object HidKeyMap {
     fun strokes(text: String): List<Stroke> {
         val out = ArrayList<Stroke>(text.length)
         for (raw in text) {
-            val ch = normalize(raw)
-            val stroke = map(ch) ?: continue
-            out += stroke
+            for (ch in fold(raw)) {
+                out += map(ch) ?: continue
+            }
         }
         return out
     }
 
-    /** Folds an accented character to its ASCII base, or NUL if none exists. */
-    private fun normalize(ch: Char): Char {
-        if (ch.code < 128) return ch
+    /**
+     * Typographic characters that speech recognisers and LLMs emit but that
+     * have no Unicode decomposition to ASCII, so [fold] would drop them.
+     */
+    private val TYPOGRAPHY = mapOf(
+        '\u2018' to "'", '\u2019' to "'", '\u201A' to "'", '\u2032' to "'", // ‘ ’ ‚ ′
+        '\u201C' to "\"", '\u201D' to "\"", '\u201E' to "\"", '\u2033' to "\"", // “ ” „ ″
+        '\u00AB' to "\"", '\u00BB' to "\"", // « »
+        '\u2010' to "-", '\u2011' to "-", '\u2012' to "-", '\u2013' to "-", '\u2014' to "-", '\u2212' to "-",
+        '\u2022' to "*", '\u00B7' to "*", // • ·
+        '\u00A0' to " ", '\u202F' to " ", '\u2009' to " ", // non-breaking / thin spaces
+        '\u00D7' to "x", '\u00F7' to "/", '\u2044' to "/",
+        '\u00DF' to "ss", '\u00E6' to "ae", '\u00C6' to "AE", '\u0153' to "oe", '\u0152' to "OE",
+        '\u00F8' to "o", '\u00D8' to "O", '\u0142' to "l", '\u0141' to "L", '\u0111' to "d", '\u0110' to "D",
+    )
+
+    /**
+     * Folds [ch] to the ASCII it should type: itself, a typographic
+     * substitute, its decomposition with accents removed (é → e, … → ...,
+     * ﬁ → fi), or nothing. A carriage return is dropped so CRLF types one Enter.
+     */
+    private fun fold(ch: Char): String {
+        if (ch == '\r') return ""
+        if (ch.code < 128) return ch.toString()
+        TYPOGRAPHY[ch]?.let { return it }
         val decomposed = Normalizer.normalize(ch.toString(), Normalizer.Form.NFKD)
-        return decomposed.firstOrNull { it.code < 128 } ?: '\u0000'
+        return buildString {
+            for (d in decomposed) {
+                when {
+                    d.code < 128 -> append(d)
+                    else -> TYPOGRAPHY[d]?.let { append(it) } // e.g. ½ → 1⁄2 → 1/2
+                }
+            }
+        }
     }
 
     private fun map(ch: Char): Stroke? = when {

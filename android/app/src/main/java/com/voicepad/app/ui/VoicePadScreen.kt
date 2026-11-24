@@ -70,7 +70,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
@@ -103,7 +102,6 @@ import com.voicepad.app.RecordingController
 import com.voicepad.app.RecordingController.EngineStatus
 import com.voicepad.app.conversation.ConversationController
 import androidx.compose.material.icons.filled.Translate
-import com.voicepad.app.transmit.SinkStatus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -220,40 +218,15 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
                         IconButton(onClick = { conversation.open() }) {
                             Icon(Icons.Default.Translate, contentDescription = "Conversation mode")
                         }
-                        IconButton(onClick = {
-                            when (state.transmitStatus) {
-                                SinkStatus.CONNECTED -> {
-                                    val latest = notes.filter { it.currentText.isNotBlank() }.maxByOrNull { it.createdAt }
-                                    if (latest != null) controller.typeNote(latest.id)
-                                    else controller.typeText("hello from VoicePad")
-                                }
-                                SinkStatus.REGISTERING, SinkStatus.ADVERTISING -> {
-                                    controller.toggleKeyboard()
-                                    Toast.makeText(context, "Keyboard stopped.", Toast.LENGTH_SHORT).show()
-                                }
-                                SinkStatus.UNAVAILABLE -> {
-                                    Toast.makeText(context, "This phone can't act as a Bluetooth keyboard.", Toast.LENGTH_LONG).show()
-                                }
-                                else -> {
-                                    controller.toggleKeyboard()
-                                    Toast.makeText(
-                                        context,
-                                        "Pair VoicePad as a keyboard from your computer's Bluetooth settings.",
-                                        Toast.LENGTH_LONG,
-                                    ).show()
-                                }
+                        KeyboardButton(controller, state, onTypeLatest = {
+                            val latest = notes.filter { !it.archived && it.currentText.isNotBlank() }
+                                .maxByOrNull { it.createdAt }
+                            if (latest != null) {
+                                controller.typeNote(latest.id)
+                            } else {
+                                Toast.makeText(context, "No note to type yet.", Toast.LENGTH_SHORT).show()
                             }
-                        }) {
-                            Icon(
-                                Icons.Default.Keyboard,
-                                contentDescription = "Type as keyboard",
-                                tint = when (state.transmitStatus) {
-                                    SinkStatus.CONNECTED -> MaterialTheme.colorScheme.primary
-                                    SinkStatus.ADVERTISING, SinkStatus.REGISTERING -> RecordingRed
-                                    else -> MaterialTheme.colorScheme.onSurface
-                                },
-                            )
-                        }
+                        })
                         IconButton(onClick = { searchActive = true }) {
                             Icon(Icons.Default.Search, contentDescription = "Search")
                         }

@@ -60,9 +60,10 @@ val downloadLlamaCpp by tasks.registering {
         llamaCppDir.asFile.mkdirs()
         val tmp = File(llamaCppDir.asFile, "llama.cpp.tar.gz")
         URI(url).toURL().openStream().use { input -> tmp.outputStream().use { input.copyTo(it) } }
-        project.exec {
-            commandLine("tar", "-xzf", tmp.absolutePath, "-C", llamaCppDir.asFile.absolutePath, "--strip-components=1")
-        }
+        val tar = ProcessBuilder(
+            "tar", "-xzf", tmp.absolutePath, "-C", llamaCppDir.asFile.absolutePath, "--strip-components=1",
+        ).inheritIO().start()
+        check(tar.waitFor() == 0) { "Extracting llama.cpp failed." }
         tmp.delete()
         marker.asFile.writeText(llamaCppVersion)
     }

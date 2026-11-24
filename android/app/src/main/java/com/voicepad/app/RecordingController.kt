@@ -26,6 +26,7 @@ import com.voicepad.app.data.TranslationJoin
 import com.voicepad.app.data.TranslationStatus
 import com.voicepad.app.data.withTranscription
 import com.voicepad.app.llm.DeviceSpecs
+import com.voicepad.app.llm.LlamaEngine
 import com.voicepad.app.llm.LlmAdvice
 import com.voicepad.app.llm.LlmChoice
 import com.voicepad.app.llm.LlmEngine
@@ -54,6 +55,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -142,6 +144,8 @@ class RecordingController(
         val llmStatus: LlmStatus = LlmStatus.Idle,
         val llmChoice: LlmChoice = LlmChoice.QWEN_0_5B,
         val typeStyle: TypeStyle = TypeStyle.CLEANUP,
+        /** Text is being transformed and/or typed on the paired host. */
+        val isTyping: Boolean = false,
     ) {
         /** The model actually in use: Whisper turbo while background voices is on. */
         val activeEngine: EngineChoice get() = if (backgroundVoices) BACKGROUND_ENGINE else engineChoice
@@ -212,6 +216,7 @@ class RecordingController(
     private val translator by lazy { EnglishTranslator() }
     private var llm: LlmEngine? = null
     private var llmLoadJob: Job? = null
+    private var typingJob: Job? = null
     private val llmMutex = Mutex()
 
     /** One finished utterance (or chunk) of a live recording, with its translation. */
@@ -1142,23 +1147,41 @@ class RecordingController(
     /** Starts or stops advertising as a Bluetooth keyboard. */
     fun toggleKeyboard() {
         when (keyboard.state.value.status) {
-            SinkStatus.REGISTERING, SinkStatus.ADVERTISING, SinkStatus.CONNECTED -> keyboard.stop()
+            SinkStatus.REGISTERING, SinkStatus.ADVERTISING, SinkStatus.CONNECTED -> stopKeyboard()
             else -> keyboard.start()
         }
     }
 
-    /** Types [text] as keystrokes on the paired host. */
+    fun stopKeyboard() {
+        typingJob?.cancel()
+        keyboard.stop()
+    }
+
+    /**
+     * Types [text] as keystrokes on the paired host, after the optional LLM
+     * transform. Ignored while a previous text is still being typed; use
+     * [stopTyping] to abandon that one.
+     */
     fun typeText(text: String) {
-        if (text.isBlank()) return
-        scope.launch {
-            val final = if (_state.value.llmEnabled) transform(text) else text
-            keyboard.type(final)
+        if (text.isBlank() || typingJob?.isActive == true) return
+        typingJob = scope.launch {
+            _state.update { it.copy(isTyping = true) }
+            try {
+                val final = if (_state.value.llmEnabled) transform(text) else text
+                keyboard.type(final)
+            } finally {
+                _state.update { it.copy(isTyping = false) }
+            }
         }
     }
 
     /** Types a note's current text. */
     fun typeNote(noteId: String) {
         typeText(store.note(noteId)?.currentText.orEmpty())
+    }
+
+    fun stopTyping() {
+        typingJob?.cancel()
     }
 
     // endregion
@@ -1189,41 +1212,62 @@ class RecordingController(
     fun loadLlm() {
         if (!_state.value.llmEnabled) return
         val choice = _state.value.llmChoice
-        llmLoadJob?.cancel()
+        val previous = llmLoadJob
+        previous?.cancel()
         llmLoadJob = scope.launch {
+            // A cancelled load may still be inside native code; let it finish
+            // so two models are never loading (and resident) at once.
+            previous?.join()
             llmMutex.withLock { llm?.release(); llm = null }
             setLlmStatus(LlmStatus.Loading(0.0, !llmModels.isInstalled(choice)))
             try {
-                llmModels.install(choice) { p ->
-                    scope.launch { if (_state.value.llmChoice == choice) setLlmStatus(LlmStatus.Loading(p, true)) }
-                }
+                llmModels.install(choice) { p -> setLlmStatus(LlmStatus.Loading(p, true)) }
                 setLlmStatus(LlmStatus.Loading(1.0, false))
-                val engine = withContext(Dispatchers.Default) { createLlmEngine(choice, llmModels.file(choice)) }
-                llmMutex.withLock { llm = engine }
+                val engine = withContext(Dispatchers.Default) { createLlmEngine(llmModels.file(choice)) }
+                llmMutex.withLock {
+                    if (isActive) {
+                        llm = engine
+                    } else {
+                        engine.release()
+                    }
+                }
+                ensureActive()
                 setLlmStatus(LlmStatus.Ready)
             } catch (e: CancellationException) {
                 throw e
-            } catch (e: Throwable) {
+            } catch (e: LlamaEngine.ModelLoadException) {
+                // Likely a corrupt download: remove it so Retry fetches it again.
                 llmModels.discard(choice)
+                setLlmStatus(LlmStatus.Failed(e.message ?: e.toString()))
+            } catch (e: Throwable) {
                 setLlmStatus(LlmStatus.Failed(e.message ?: e.toString()))
             }
         }
     }
 
     private fun releaseLlm() {
-        llmLoadJob?.cancel()
+        val job = llmLoadJob
+        job?.cancel()
         llmLoadJob = null
-        scope.launch { llmMutex.withLock { llm?.release(); llm = null } }
         setLlmStatus(LlmStatus.Idle)
+        scope.launch {
+            job?.join()
+            llmMutex.withLock { llm?.release(); llm = null }
+        }
     }
 
     private fun setLlmStatus(status: LlmStatus) = _state.update { it.copy(llmStatus = status) }
 
-    /** Runs the optional LLM transform over [text], falling back to the original. */
-    private suspend fun transform(text: String): String {
-        val engine = llm ?: return text
-        return try {
-            llmMutex.withLock { withContext(Dispatchers.Default) { engine.transform(text, _state.value.typeStyle) } }
+    /**
+     * Runs the optional LLM transform over [text], falling back to the
+     * original. Holds [llmMutex] for the whole call so the engine can't be
+     * released underneath it.
+     */
+    private suspend fun transform(text: String): String = llmMutex.withLock {
+        val engine = llm ?: return@withLock text
+        try {
+            withContext(Dispatchers.Default) { engine.transform(text, _state.value.typeStyle) }
+                .ifBlank { text }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Throwable) {
