@@ -92,8 +92,22 @@ class ConversationController(
         data class Failed(val message: String) : Readiness
     }
 
+    /** Whether the outer (rear) screen of a foldable can show the other person's side. */
+    enum class OuterScreen {
+        /** Not a foldable, or the phone can't show content there while unfolded. */
+        UNSUPPORTED,
+        /** Supported, but not right now (folded, or the phone is busy with it). */
+        UNAVAILABLE,
+        AVAILABLE,
+        /** Showing the other person's side. */
+        SHOWING,
+    }
+
     data class UiState(
         val visible: Boolean = false,
+        val outerScreen: OuterScreen = OuterScreen.UNSUPPORTED,
+        /** Layout used instead of the chosen one for now (the outer screen, when unfolding opened this). */
+        val layoutOverride: ConversationLayout? = null,
         val listening: Boolean = false,
         val settings: Settings = Settings(),
         val turns: List<Turn> = emptyList(),
@@ -107,6 +121,8 @@ class ConversationController(
         val voiceModel: Readiness = Readiness.Off,
         val message: String? = null,
     ) {
+        val layout: ConversationLayout get() = layoutOverride ?: settings.layout
+
         /** How speakers are being told apart right now. */
         val speakerSource: SpeakerSource
             get() = when {
@@ -204,7 +220,19 @@ class ConversationController(
         }
     }
 
-    fun setLayout(layout: ConversationLayout) { changeSettings { it.copy(layout = layout) } }
+    fun setLayout(layout: ConversationLayout) {
+        layoutChosen = true
+        changeSettings { it.copy(layout = layout) }
+        _state.update { it.copy(layoutOverride = null) }
+    }
+
+    /** Reported by the activity as the outer screen comes and goes. */
+    fun setOuterScreen(status: OuterScreen) {
+        if (status == _state.value.outerScreen) return
+        // The outer screen often reports in only after the unfold that opened this.
+        val useIt = status == OuterScreen.AVAILABLE && openedByUnfold && _state.value.visible && !layoutChosen
+        _state.update { it.copy(outerScreen = status, layoutOverride = if (useIt) ConversationLayout.OUTER_SCREEN else it.layoutOverride) }
+    }
 
     fun setTextSize(size: Int) { changeSettings { it.copy(textSize = size.coerceIn(18, 96)) } }
 
@@ -240,6 +268,8 @@ class ConversationController(
     // region Opening, closing, folding
 
     private var openedByUnfold = false
+    /** A layout was picked since conversation mode opened, so don't switch it automatically. */
+    private var layoutChosen = false
     private var pausedInBackground = false
     /** Last fold state seen; null until the first reading after launch. */
     private var lastUnfolded: Boolean? = null
@@ -247,11 +277,14 @@ class ConversationController(
     fun open(byUnfold: Boolean = false) {
         if (_state.value.visible) return
         openedByUnfold = byUnfold
+        layoutChosen = false
         // Speakers are numbered afresh for each conversation (pausing keeps them).
         voices.reset()
         lastVoiceFor.clear()
         notes.enterConversation()
-        _state.update { it.copy(visible = true) }
+        // Unfolded with an outer screen to spare: the other person gets it.
+        val outer = byUnfold && _state.value.outerScreen != OuterScreen.UNSUPPORTED
+        _state.update { it.copy(visible = true, layoutOverride = if (outer) ConversationLayout.OUTER_SCREEN else null) }
         prepareTranslation()
         if (settings.identifyVoices) ensureVoiceModel()
         startListening()

@@ -146,7 +146,12 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
     ) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(Modifier.fillMaxSize().systemBarsPadding()) {
-            when (settings.layout) {
+            when (state.layout) {
+                ConversationLayout.OUTER_SCREEN -> {
+                    // Theirs is on the outer screen (OuterScreen.kt); this is yours.
+                    LanguagePane(settings.myLanguage, state, settings.textSize, Modifier.weight(1f).fillMaxWidth())
+                    controls()
+                }
                 ConversationLayout.FACE_TO_FACE -> {
                     LanguagePane(
                         settings.theirLanguage, state, settings.textSize,
@@ -232,7 +237,7 @@ private val SpeakerColors = listOf(
     Color(0xFF8E24AA), Color(0xFF00897B), Color(0xFFD81B60),
 )
 
-private fun speakerColor(ref: SpeakerRef?): Color =
+internal fun speakerColor(ref: SpeakerRef?): Color =
     ref?.let { SpeakerColors[it.index % SpeakerColors.size] } ?: Color.Gray
 
 /** The whole conversation in one [language], newest at the bottom. */
@@ -538,6 +543,15 @@ private fun StatusLines(
                 }
             }
         }
+        if (state.layout == ConversationLayout.OUTER_SCREEN) {
+            when (state.outerScreen) {
+                ConversationController.OuterScreen.UNSUPPORTED ->
+                    add { StatusText("This phone can't show anything on its outer screen while unfolded — pick another layout in settings.", error = true) }
+                ConversationController.OuterScreen.UNAVAILABLE ->
+                    add { StatusText("The outer screen isn't available right now — unfold the phone fully.") }
+                else -> {}
+            }
+        }
         if (!state.listening) add { StatusText("Paused — tap the microphone to listen.") }
     }
     lines.take(3).forEach { it() }
@@ -613,12 +627,18 @@ private fun ConversationSettingsSheet(
 
             SectionTitle("Layout")
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ConversationLayout.entries.forEach { layout ->
-                    FilterChip(selected = settings.layout == layout, onClick = { conversation.setLayout(layout) }, label = { Text(layout.label) })
+                ConversationLayout.entries.filter {
+                    it != ConversationLayout.OUTER_SCREEN || state.outerScreen != ConversationController.OuterScreen.UNSUPPORTED || state.layout == it
+                }.forEach { layout ->
+                    FilterChip(selected = state.layout == layout, onClick = { conversation.setLayout(layout) }, label = { Text(layout.label) })
                 }
             }
             Text(
-                when (settings.layout) {
+                when (state.layout) {
+                    ConversationLayout.OUTER_SCREEN ->
+                        "Unfolded: this screen shows the conversation in your language; the outer screen shows their " +
+                            "language, the last two turns in big text, for the person facing the back of the phone. " +
+                            "Used automatically when unfolding opens conversation mode."
                     ConversationLayout.FACE_TO_FACE -> "Lay the phone between you: the far half is upside down, in their language."
                     ConversationLayout.FACE_TO_FACE_SIDEWAYS ->
                         "Lay a wide or unfolded screen between you, one at each end: their half is turned round to face them."

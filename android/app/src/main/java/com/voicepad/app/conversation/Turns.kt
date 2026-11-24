@@ -15,6 +15,12 @@ enum class ConversationLayout(val label: String) {
     SIDE_BY_SIDE("Side by side"),
     /** One list with original and translation: for following along yourself. */
     TRANSCRIPT("Transcript"),
+    /**
+     * A foldable, unfolded: the inner screen shows the conversation in your
+     * language, the outer screen the last two turns in theirs, big, for the
+     * person facing the back of the phone.
+     */
+    OUTER_SCREEN("Outer screen"),
 }
 
 /**

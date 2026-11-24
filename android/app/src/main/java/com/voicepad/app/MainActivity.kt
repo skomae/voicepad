@@ -21,6 +21,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
 import com.voicepad.app.ui.ConversationScreen
+import com.voicepad.app.ui.OuterScreenPresenter
 import com.voicepad.app.ui.VoicePadScreen
 import com.voicepad.app.ui.VoicePadTheme
 import kotlinx.coroutines.launch
@@ -30,6 +31,7 @@ class MainActivity : ComponentActivity() {
     private val controller get() = app.controller
     private val conversation get() = app.conversation
     private var askedForPermission = false
+    private lateinit var outerScreen: OuterScreenPresenter
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -63,6 +65,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        // The other person's side on a foldable's outer screen, when that layout is in use.
+        outerScreen = OuterScreenPresenter(this, conversation).also { it.start() }
         // A foldable reports a hinge (a folding feature) only while unfolded.
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -71,6 +75,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        outerScreen.stop()
+        super.onDestroy()
     }
 
     override fun onStart() {

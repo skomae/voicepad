@@ -100,6 +100,13 @@ copied, edited, re-transcribed and rolled back through its revision history.
   - **Open when unfolded** (Settings, or the conversation settings): on a
     foldable, unfolding the phone opens conversation mode and folding it
     goes back to notes.
+  - **Outer screen** (foldables): unfolded, the inner screen shows the
+    conversation in your language and the **outer screen shows the last two
+    turns in theirs, in big white-on-black text**, for the person facing the
+    back of the phone (Android's rear-display presentation, as in Pixel
+    Fold's dual screen). Used automatically when unfolding opens
+    conversation mode on a phone that supports it; also a layout in the
+    conversation settings, with a note if the outer screen isn't available.
   - **Read aloud**: a speaker icon on every turn says it in that half's
     language (tap again to stop); *Read translations aloud* says each
     translation automatically once its speaker pauses. While the phone is
