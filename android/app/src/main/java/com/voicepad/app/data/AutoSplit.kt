@@ -6,6 +6,9 @@ package com.voicepad.app.data
  */
 enum class AutoSplit(val label: String, val badge: String?, val silenceSeconds: Int?, val everyMinutes: Int?) {
     OFF("Off", null, null, null),
+    SILENCE_2S("After 2 s of silence", "2s", 2, null),
+    SILENCE_3S("After 3 s of silence", "3s", 3, null),
+    SILENCE_5S("After 5 s of silence", "5s", 5, null),
     SILENCE_10S("After 10 s of silence", "10s", 10, null),
     SILENCE_30S("After 30 s of silence", "30s", 30, null),
     EVERY_5_MIN("Every 5 minutes", "5m", null, 5),
