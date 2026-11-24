@@ -18,6 +18,7 @@ import com.voicepad.app.data.TranscriptionStatus
 import com.voicepad.app.data.TranslationJoin
 import com.voicepad.app.data.TranslationStatus
 import com.voicepad.app.data.withRevision
+import com.voicepad.app.transcription.AudioLevel
 import com.voicepad.app.transcription.AutoEngine
 import com.voicepad.app.transcription.ChunkPlanner
 import com.voicepad.app.transcription.ChunkPlanner.Span
@@ -83,6 +84,10 @@ class RecordingController(
         val recordingNoteId: String? = null,
         val engineStatus: EngineStatus = EngineStatus.Idle,
         val engineChoice: EngineChoice = EngineChoice.PARAKEET_V3,
+        /** Background voices (announcements, TV): room microphone, louder speech, Whisper turbo. */
+        val backgroundVoices: Boolean = false,
+        /** Models already on the phone, for the quick switcher. */
+        val installedEngines: Set<EngineChoice> = emptySet(),
         val autoRecordOnOpen: Boolean = true,
         val autoTranslate: Boolean = true,
         val errorMessage: String? = null,
@@ -96,7 +101,10 @@ class RecordingController(
         val liveTranslation: NoteTranslation? = null,
         /** Which part of a split recording is being recorded (1 = not split). */
         val partNumber: Int = 1,
-    )
+    ) {
+        /** The model actually in use: Whisper turbo while background voices is on. */
+        val activeEngine: EngineChoice get() = if (backgroundVoices) BACKGROUND_ENGINE else engineChoice
+    }
 
     companion object {
         /** Longest audio one model call gets (Whisper's window is 30 s). */
@@ -109,6 +117,11 @@ class RecordingController(
         private val PAD = (PAD_SECONDS * AudioRecorder.SAMPLE_RATE).toInt()
         private const val TICK_MS = 1200L
         const val MAX_AUTO_ATTEMPTS = 3
+        /**
+         * Most robust to distant, noisy speech: in testing with echo and
+         * background noise it made 10% word errors where Parakeet made 41%.
+         */
+        val BACKGROUND_ENGINE = EngineChoice.WHISPER_TURBO
     }
 
     private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -125,6 +138,7 @@ class RecordingController(
                 ?: EngineChoice.PARAKEET_V3,
             autoRecordOnOpen = prefs.getBoolean("autoRecord", true),
             autoTranslate = prefs.getBoolean("autoTranslate", true),
+            backgroundVoices = prefs.getBoolean("backgroundVoices", false),
             inputDevices = inputs.devices.value,
             selectedInputKey = prefs.getString("inputDevice", null),
         )
@@ -184,6 +198,7 @@ class RecordingController(
     init {
         // Before anything records: repair what a crash or kill left behind.
         store.recoverAfterRestart()
+        refreshInstalled()
 
         inputs.onDevicesChanged = {
             val before = _state.value.inputDevices.map { it.key }.toSet()
@@ -220,7 +235,8 @@ class RecordingController(
         if (choice == _state.value.engineChoice) return
         prefs.edit { putString("engine", choice.name) }
         _state.update { it.copy(engineChoice = choice) }
-        loadEngine()
+        // While background voices is on, Whisper turbo stays in use.
+        if (!_state.value.backgroundVoices) loadEngine()
     }
 
     fun setAutoRecord(enabled: Boolean) {
@@ -228,8 +244,40 @@ class RecordingController(
         _state.update { it.copy(autoRecordOnOpen = enabled) }
     }
 
+    /**
+     * Background voices on: switches the microphone to room capture right
+     * away (even mid-recording), normalises loudness, and loads Whisper turbo.
+     */
+    fun setBackgroundVoices(enabled: Boolean) {
+        if (enabled == _state.value.backgroundVoices) return
+        prefs.edit { putBoolean("backgroundVoices", enabled) }
+        _state.update { it.copy(backgroundVoices = enabled) }
+        if (_state.value.isRecording) {
+            recorder.switchSource(AudioRecorder.sourceFor(context, enabled))
+            session?.let { s -> if (enabled) store.update(s.noteId) { it.copy(backgroundVoices = true) } }
+        }
+        loadEngine()
+    }
+
+    /**
+     * Quick switcher: use [choice] from now on. Picking a regular model turns
+     * background voices off; picking the background model turns it on.
+     */
+    fun selectModel(choice: EngineChoice) {
+        if (choice == BACKGROUND_ENGINE) {
+            setBackgroundVoices(true)
+            return
+        }
+        prefs.edit { putString("engine", choice.name) }
+        _state.update { it.copy(engineChoice = choice) }
+        if (_state.value.backgroundVoices) setBackgroundVoices(false) else loadEngine()
+    }
+
+    private fun refreshInstalled() =
+        _state.update { s -> s.copy(installedEngines = EngineChoice.entries.filter(models::isInstalled).toSet()) }
+
     fun loadEngine() {
-        val choice = _state.value.engineChoice
+        val choice = _state.value.activeEngine
         loadJob?.cancel()
         loadJob = scope.launch {
             val old = engineMutex.withLock { engine.also { engine = null } }
@@ -238,12 +286,13 @@ class RecordingController(
             setStatus(EngineStatus.Loading(0.0, downloading))
             try {
                 models.install(choice) { p ->
-                    scope.launch { if (_state.value.engineChoice == choice) setStatus(EngineStatus.Loading(p, true)) }
+                    scope.launch { if (_state.value.activeEngine == choice) setStatus(EngineStatus.Loading(p, true)) }
                 }
                 setStatus(EngineStatus.Loading(1.0, false))
                 val loaded = withContext(Dispatchers.Default) { createEngine(choice) }
                 engineMutex.withLock { engine = loaded }
                 setStatus(EngineStatus.Ready)
+                refreshInstalled()
                 processQueue()
             } catch (e: CancellationException) {
                 throw e
@@ -276,9 +325,11 @@ class RecordingController(
     private val engineReady get() = _state.value.engineStatus == EngineStatus.Ready
 
     /** Runs one model call at a time on a background thread. */
-    private suspend fun transcribe(samples: FloatArray): Transcript = engineMutex.withLock {
+    private suspend fun transcribe(samples: FloatArray, normalize: Boolean = _state.value.backgroundVoices): Transcript = engineMutex.withLock {
         val current = engine ?: throw IllegalStateException("The model isn't loaded.")
-        withContext(Dispatchers.Default) { current.transcribe(samples) }
+        withContext(Dispatchers.Default) {
+            current.transcribe(if (normalize) AudioLevel.normalize(samples) else samples)
+        }
     }
 
     // endregion
@@ -309,7 +360,7 @@ class RecordingController(
         try {
             // A chosen mic that isn't connected falls back to the phone's default.
             val preferred = inputs.beginRecording(s.selectedInputKey)
-            recorder.start(File(store.recordingsDir, fileName), preferred)
+            recorder.start(File(store.recordingsDir, fileName), preferred, AudioRecorder.sourceFor(context, s.backgroundVoices))
         } catch (e: Throwable) {
             inputs.endRecording()
             showError(e.message ?: "Could not start recording.")
@@ -329,7 +380,11 @@ class RecordingController(
 
     /** Creates the note (saved before any audio arrives, so a crash can always find it) and its live session. */
     private fun beginNote(fileName: String, origin: Int, part: Int) {
-        val note = Note(audioFileName = fileName, status = TranscriptionStatus.RECORDING)
+        val note = Note(
+            audioFileName = fileName,
+            status = TranscriptionStatus.RECORDING,
+            backgroundVoices = _state.value.backgroundVoices,
+        )
         store.add(note)
         session = LiveSession(note.id, origin)
         tailTranslateJob?.cancel()
@@ -620,7 +675,7 @@ class RecordingController(
 
     /** "Parakeet v3", or "Parakeet v3 + SenseVoice" when Auto used both. */
     private fun engineLabel(engines: List<String>): String =
-        engines.distinct().joinToString(" + ").ifBlank { _state.value.engineChoice.shortName }
+        engines.distinct().joinToString(" + ").ifBlank { _state.value.activeEngine.shortName }
 
     private fun join(a: String, b: String) = listOf(a, b).filter { it.isNotEmpty() }.joinToString(" ")
 
@@ -714,7 +769,7 @@ class RecordingController(
             val engines = mutableListOf<String>()
             for (chunk in chunks) {
                 val audio = withContext(Dispatchers.IO) { join(chunk.map { WavFile.readRange(file, it.start, it.end) }) }
-                val result = transcribe(audio)
+                val result = transcribe(audio, note.backgroundVoices)
                 text = join(text, result.text)
                 result.language?.let { languages += it }
                 result.engine?.let { engines += it }

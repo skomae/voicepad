@@ -16,6 +16,17 @@ copied, edited, re-transcribed and rolled back through its revision history.
 
   Each downloads once on first use. Recording starts immediately; text
   catches up once the model is ready.
+- **Quick model switcher**: tap the model name (top left) to switch between
+  models already on the phone, e.g. Auto: Western ↔ Auto: Asian + English.
+- **Background voices** (ear button, top bar; also in Settings and the
+  switcher): for announcements, a TV or someone across the room. Records
+  the room instead of just your voice (raw or camcorder microphone, noise
+  suppression off), evens out loudness, and switches to Whisper turbo. In
+  testing on distant, echoey speech with background noise, Whisper turbo
+  made 10% word errors where Parakeet made 41% (30% vs 65% in heavier
+  noise). A speech-enhancement model (GTCRN) was tried and left out: it made
+  results worse. Works mid-recording; notes remember the mode so
+  re-transcription treats them the same way.
 - **Silence trimming and pause-based splitting**: a bundled Silero
   voice-activity detector finds speech. Silence never reaches the model (no
   Whisper hallucinations on quiet stretches, less battery); Parakeet and

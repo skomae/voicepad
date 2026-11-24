@@ -5,6 +5,20 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import android.text.format.DateUtils
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Hearing
+import androidx.compose.material.icons.outlined.HearingDisabled
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Switch
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import com.voicepad.app.transcription.EngineChoice
 import androidx.compose.foundation.border
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.TopAppBarDefaults
@@ -162,8 +176,17 @@ fun VoicePadScreen(controller: RecordingController) {
                     title = {
                         if (recording) RecordingTitle(state) else IdleTitle()
                     },
-                    navigationIcon = { EngineStatusBadge(state, Modifier.padding(start = 12.dp), color = onBar) },
+                    navigationIcon = {
+                        ModelSwitcher(controller, state, onBar, onMoreModels = { showSettings = true })
+                    },
                     actions = {
+                        IconButton(onClick = { controller.setBackgroundVoices(!state.backgroundVoices) }) {
+                            Icon(
+                                if (state.backgroundVoices) Icons.Default.Hearing else Icons.Outlined.HearingDisabled,
+                                contentDescription = if (state.backgroundVoices) "Background voices on" else "Background voices off",
+                                tint = if (state.backgroundVoices && !recording) MaterialTheme.colorScheme.primary else onBar,
+                            )
+                        }
                         IconButton(onClick = { searchActive = true }) {
                             Icon(Icons.Default.Search, contentDescription = "Search")
                         }
@@ -272,6 +295,97 @@ fun VoicePadScreen(controller: RecordingController) {
     }
     if (showSettings) {
         SettingsSheet(controller, state, onDismiss = { showSettings = false })
+    }
+}
+
+/**
+ * Top-left: the model in use. Tap to switch between models already on the
+ * phone (both Autos, Whisper…) or toggle background voices.
+ */
+@Composable
+private fun ModelSwitcher(
+    controller: RecordingController,
+    state: RecordingController.UiState,
+    color: Color,
+    onMoreModels: () -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .padding(start = 8.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { open = true }
+                .padding(horizontal = 4.dp, vertical = 6.dp)
+                .semantics { contentDescription = "Model: ${state.activeEngine.shortName}. Tap to switch." },
+        ) {
+            EngineStatusBadge(state, color = color)
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            Text(
+                "Downloaded models",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            )
+            val installed = EngineChoice.entries.filter { it in state.installedEngines }
+            if (installed.isEmpty()) {
+                Text(
+                    "None yet — the first one is downloading.",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+            }
+            installed.forEach { choice ->
+                val active = choice == state.activeEngine
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(choice.displayName, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
+                            if (choice == RecordingController.BACKGROUND_ENGINE) {
+                                Text("Background voices", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    },
+                    leadingIcon = {
+                        if (active) Icon(Icons.Default.Check, contentDescription = "In use")
+                        else Spacer(Modifier.size(24.dp))
+                    },
+                    onClick = {
+                        open = false
+                        controller.selectModel(choice)
+                    },
+                )
+            }
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = {
+                    Column {
+                        Text("Background voices")
+                        Text(
+                            "Announcements, TV across the room" +
+                                if (RecordingController.BACKGROUND_ENGINE !in state.installedEngines) " · ~560 MB download" else "",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                },
+                leadingIcon = { Icon(Icons.Default.Hearing, contentDescription = null) },
+                trailingIcon = {
+                    Switch(checked = state.backgroundVoices, onCheckedChange = null)
+                },
+                onClick = { controller.setBackgroundVoices(!state.backgroundVoices) },
+            )
+            DropdownMenuItem(
+                text = { Text("More models…") },
+                leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                onClick = {
+                    open = false
+                    onMoreModels()
+                },
+            )
+        }
     }
 }
 
@@ -413,7 +527,7 @@ fun EngineStatusBadge(
         }
         Spacer(Modifier.width(4.dp))
         Text(
-            state.engineChoice.shortName,
+            state.activeEngine.shortName,
             style = MaterialTheme.typography.labelSmall,
             color = color,
         )

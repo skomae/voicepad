@@ -140,7 +140,8 @@ fun RecordBar(controller: RecordingController, state: RecordingController.UiStat
             }
             Text(
                 if (state.isRecording) {
-                    "Recording" + (if (state.partNumber > 1) " · part ${state.partNumber}" else "") + " — tap ■ to stop"
+                    "Recording" + (if (state.partNumber > 1) " · part ${state.partNumber}" else "") +
+                        (if (state.backgroundVoices) " · background voices" else "") + " — tap ■ to stop"
                 } else {
                     "Not recording — tap ● to start"
                 },
