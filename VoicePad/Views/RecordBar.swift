@@ -29,7 +29,7 @@ struct RecordBar: View {
         let recording = controller.isRecording
         VStack(spacing: 6) {
             if controller.isRecording, controller.noSoundWarning {
-                Label("No sound is coming in from the microphone. This part isn't being captured.", systemImage: "mic.slash.fill")
+                Label("No sound is coming in from the microphone, so this part isn't being captured. If the iPhone is connected to a Mac, unplug it.", systemImage: "mic.slash.fill")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 12)
