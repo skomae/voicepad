@@ -47,8 +47,11 @@ copied, edited, re-transcribed and rolled back through its revision history.
   pulsing REC, elapsed time and part number, the screen gets a red frame,
   and the bar under the button says "Recording — tap ■ to stop". When idle
   it says "Not recording" and the button shows a red dot in a ring.
-- **Background recording** continues via a foreground service with an
-  ongoing notification.
+- **Live notification** while recording: elapsed timer, the latest words
+  (expandable), and **Stop** / **Split** buttons; on Android 16 it's also a
+  **Live Update** with a "REC" chip in the status bar. After you stop it
+  shows "Finishing transcript…" until background transcription is done,
+  which also keeps Android from killing that work.
 - **Recordings are never lost to a model failure.** Every note saves its
   transcription status (recording → pending → transcribing → done/failed).
   Audio stays on disk until it has text; failed or waiting recordings show

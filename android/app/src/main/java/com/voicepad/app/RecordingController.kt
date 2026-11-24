@@ -102,6 +102,8 @@ class RecordingController(
         val liveTranslation: NoteTranslation? = null,
         /** Which part of a split recording is being recorded (1 = not split). */
         val partNumber: Int = 1,
+        /** Stopped or split-off notes still being transcribed (the notification stays until 0). */
+        val finishingCount: Int = 0,
     ) {
         /** The model actually in use: Whisper turbo while background voices is on. */
         val activeEngine: EngineChoice get() = if (backgroundVoices) BACKGROUND_ENGINE else engineChoice
@@ -416,7 +418,7 @@ class RecordingController(
             return
         }
         old.end = at
-        finishing += old
+        markFinishing(old)
         beginNote(fileName, origin = at, part = _state.value.partNumber + 1)
         scope.launch { finishSession(old) }
     }
@@ -426,9 +428,8 @@ class RecordingController(
         if (!_state.value.isRecording) return
         recorder.stop()
         inputs.endRecording()
-        RecordingService.stop(context)
         current.end = recorder.sampleCount
-        finishing += current
+        markFinishing(current)
         session = null
         tailTranslateJob?.cancel()
         _state.update {
@@ -480,7 +481,7 @@ class RecordingController(
             }
         } finally {
             s.detector?.release()
-            finishing -= s
+            unmarkFinishing(s)
             processQueue()
         }
     }
@@ -577,6 +578,16 @@ class RecordingController(
             store.update(s.noteId) { it.copy(partialText = s.committedText.ifBlank { null }) }
             freeCommittedAudio()
         }
+    }
+
+    private fun markFinishing(s: LiveSession) {
+        finishing += s
+        _state.update { it.copy(finishingCount = finishing.size) }
+    }
+
+    private fun unmarkFinishing(s: LiveSession) {
+        finishing -= s
+        _state.update { it.copy(finishingCount = finishing.size) }
     }
 
     /** Drops audio from memory that no live or finishing note still needs. */
