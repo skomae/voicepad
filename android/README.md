@@ -43,6 +43,9 @@ copied, edited, re-transcribed and rolled back through its revision history.
   ends the current note and starts a new one at that instant without
   stopping the microphone, so nothing is lost between them. The finished
   part transcribes in the background while you keep talking.
+- **Theme** (Settings): System, Light, Dark or **Pure black (OLED)** —
+  true #000000 background, bars and sheets, with cards on near-black so they
+  stay readable. Status-bar icons follow the app's theme.
 - **Copy when done** (Settings, on by default): after you press Stop and the
   transcript is finished, it's copied to the clipboard with a toast. Split
   parts aren't copied, so auto-split doesn't keep overwriting the clipboard.

@@ -23,7 +23,9 @@ import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicNone
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material3.AssistChip
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -186,6 +188,19 @@ fun SettingsSheet(controller: RecordingController, state: RecordingController.Ui
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Record when app opens", Modifier.weight(1f))
                 Switch(checked = state.autoRecordOnOpen, onCheckedChange = controller::setAutoRecord)
+            }
+            Text("Theme", style = MaterialTheme.typography.titleSmall)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(top = 6.dp, bottom = 12.dp).horizontalScroll(rememberScrollState()),
+            ) {
+                ThemeMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = state.themeMode == mode,
+                        onClick = { controller.setThemeMode(mode) },
+                        label = { Text(mode.label) },
+                    )
+                }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {

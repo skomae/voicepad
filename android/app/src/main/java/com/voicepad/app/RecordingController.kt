@@ -37,6 +37,7 @@ import com.voicepad.app.transcription.SherpaEngine
 import com.voicepad.app.transcription.SpeechDetector
 import com.voicepad.app.transcription.SpeechEngine
 import com.voicepad.app.transcription.Transcript
+import com.voicepad.app.ui.ThemeMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -93,6 +94,8 @@ class RecordingController(
         val engineChoice: EngineChoice = EngineChoice.PARAKEET_V3,
         /** Background voices (announcements, TV): room microphone, louder speech, Whisper turbo. */
         val backgroundVoices: Boolean = false,
+        /** Light, dark, pure black (OLED), or follow the phone. */
+        val themeMode: ThemeMode = ThemeMode.SYSTEM,
         /** After Stop, copy the finished transcript to the clipboard (with a toast). */
         val copyWhenDone: Boolean = true,
         /** Start a new note automatically after a silence or every few minutes. */
@@ -153,6 +156,8 @@ class RecordingController(
             autoTranslate = prefs.getBoolean("autoTranslate", true),
             backgroundVoices = prefs.getBoolean("backgroundVoices", false),
             copyWhenDone = prefs.getBoolean("copyWhenDone", true),
+            themeMode = prefs.getString("theme", null)
+                ?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() } ?: ThemeMode.SYSTEM,
             autoSplit = prefs.getString("autoSplit", null)
                 ?.let { runCatching { AutoSplit.valueOf(it) }.getOrNull() } ?: AutoSplit.OFF,
             inputDevices = inputs.devices.value,
@@ -587,6 +592,11 @@ class RecordingController(
                 s.pending += Span(s.committedUpTo, now)
             }
         }
+    }
+
+    fun setThemeMode(mode: ThemeMode) {
+        prefs.edit { putString("theme", mode.name) }
+        _state.update { it.copy(themeMode = mode) }
     }
 
     fun setCopyWhenDone(enabled: Boolean) {
