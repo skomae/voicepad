@@ -6,14 +6,14 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.callbackFlow
@@ -24,16 +24,6 @@ import no.nordicsemi.android.support.v18.scanner.ScanCallback
 import no.nordicsemi.android.support.v18.scanner.ScanResult
 import no.nordicsemi.android.support.v18.scanner.ScanSettings
 import kotlin.time.Duration
-
-@OptIn(DelicateCoroutinesApi::class)
-internal fun <T1, T2, R> StateFlow<T1>.combineState(
-    flow2: StateFlow<T2>,
-    scope: CoroutineScope = GlobalScope,
-    sharingStarted: SharingStarted = SharingStarted.Eagerly,
-    transform: (T1, T2) -> R
-): StateFlow<R> = this.combine(flow2) {
-        o1, o2 -> transform.invoke(o1, o2)
-}.stateIn(scope, sharingStarted, transform.invoke(this.value, flow2.value))
 
 class G1 {
 
@@ -55,6 +45,11 @@ class G1 {
     val state: StateFlow<State>
     private var currentState: State? = null
 
+    /** Holds [state]'s combination of the two arms; cancelled by [disconnect]. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    /** Identifies each page; the glasses expect it to change from one page to the next. */
+    private var textSeq = 0
+
     // construction --------------------------------------------------------------------------------
 
     private constructor(right: G1Device, left: G1Device) {
@@ -63,7 +58,7 @@ class G1 {
         this.name = leftName?.channel?.let { "G1 $it" } ?: leftName?.raw ?: "G1"
         this.right = right
         this.left = left
-        this.state = right.state.combineState(left.state) { l, r ->
+        this.state = left.state.combine(right.state) { l, r ->
             val lConnectionState = l.connectionState
             val rConnectionState = r.connectionState
             val connectionState = when {
@@ -97,18 +92,18 @@ class G1 {
                 currentState = newState
                 newState
             }
-        }
+        }.stateIn(scope, SharingStarted.Eagerly, State(ConnectionState.UNINITIALIZED, null))
     }
 
     // connect / disconnect ------------------------------------------------------------------------
 
-    suspend fun connect(context: Context, scope: CoroutineScope) = coroutineScope<Boolean> {
+    suspend fun connect(context: Context) = coroutineScope<Boolean> {
         if(state.value.connectionState == ConnectionState.CONNECTED) {
             true
         } else {
             val results = awaitAll(
-                async { left.connect(context, scope) },
-                async { right.connect(context, scope) }
+                async { left.connect(context) },
+                async { right.connect(context) }
             )
             if (results[0] == true && results[1] == true) {
                 true
@@ -123,42 +118,32 @@ class G1 {
     suspend fun disconnect() {
         left.disconnect()
         right.disconnect()
+        scope.cancel()
     }
 
     // requests ------------------------------------------------------------------------------------
 
+    /**
+     * Shows [page] (lines joined with `\n`) as one 0x4E "text show" page:
+     * every packet to the left arm, each acknowledged, then the same to the
+     * right — the order Even Realities' own app uses.
+     */
     suspend fun displayTextPage(page: List<String>): Boolean {
-        val singleStringPage = page.joinToString("\n")
-        if(left.sendRequestForResponse(
-                SendTextPacket(
-                    singleStringPage,
-                    1,
-                    1
-                )
-            ) == null) {
-            return false
-        }
-        if(right.sendRequestForResponse(
-                SendTextPacket(
-                    singleStringPage,
-                    1,
-                    1
-                )
-            ) == null) {
-            return false
-        }
-        return true
+        val packets = G1Protocol.text(page.joinToString("\n"), seq = textSeq++ and 0xFF)
+        return left.requestAll(packets, TEXT_TIMEOUT_MS) && right.requestAll(packets, TEXT_TIMEOUT_MS)
     }
 
-    suspend fun stopDisplaying(): Boolean {
-        left.sendRequest(ExitRequestPacket())
-        right.sendRequest(ExitRequestPacket())
-        return true
-    }
+    /** Back to the dashboard. */
+    suspend fun stopDisplaying(): Boolean =
+        G1Protocol.accepted(left.request(G1Protocol.exit(), EXIT_TIMEOUT_MS)) &&
+            G1Protocol.accepted(right.request(G1Protocol.exit(), EXIT_TIMEOUT_MS))
 
     // find devices --------------------------------------------------------------------------------
 
     companion object {
+        private const val TEXT_TIMEOUT_MS = 2_000L
+        private const val EXIT_TIMEOUT_MS = 1_500L
+
         fun find(duration: Duration) = callbackFlow<G1?> {
             data class FoundPair(
                 val left: ScanResult? = null,

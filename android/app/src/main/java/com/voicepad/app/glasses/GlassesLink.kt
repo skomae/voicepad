@@ -32,5 +32,5 @@ interface GlassesLink {
     suspend fun clear()
 
     /** Stops looking and disconnects. */
-    fun close()
+    suspend fun close()
 }

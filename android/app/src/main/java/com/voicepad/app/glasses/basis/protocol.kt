@@ -12,181 +12,108 @@ const val UART_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 const val UART_WRITE_CHARACTERISTIC_UUID = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 const val UART_READ_CHARACTERISTIC_UUID = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 
-// request protocol --------------------------------------------------------------------------------
+/**
+ * The parts of the G1 protocol VoicePad speaks, as documented by Even
+ * Realities' own demo app (github.com/even-realities/EvenDemoApp: its README's
+ * protocol section, `proto.dart` and `evenai_proto.dart`).
+ *
+ * Every request is answered on the read characteristic by a packet starting
+ * with the same command byte; for most commands the second byte is a status.
+ * Pure Kotlin, so it is unit-tested (`G1ProtocolTest`).
+ */
+object G1Protocol {
+    const val EXIT: Byte = 0x18
+    const val HEARTBEAT: Byte = 0x25
+    const val BATTERY: Byte = 0x2C
+    const val TEXT: Byte = 0x4E
 
-enum class OutgoingPacketType(val label: String) {
-    EXIT("EXIT"),                                                                             // x18
-    GET_BATTERY_LEVEL("GET_BATTERY_LEVEL"),                                                   // x2C
-    SEND_AI_RESULT("SEND_AI_RESULT"),                                                         // x4E
-    ;
-    override fun toString() = label
-}
+    /** Status byte (index 1) of a response: done. */
+    const val STATUS_OK: Byte = 0xC9.toByte()
+    /** Status byte of a response: received, more expected (a middle packet of several). */
+    const val STATUS_CONTINUE: Byte = 0xCB.toByte()
+    /** Status byte of a response: refused. */
+    const val STATUS_FAILED: Byte = 0xCA.toByte()
 
-                                        // still unmapped ------------------------------------------
+    /**
+     * Text bytes per 0x4E packet. The demo app splits at 191 so that the 9-byte
+     * header plus data stays at 200 bytes, inside what the glasses accept
+     * whatever MTU was negotiated. A full 5×40 page is ~205 bytes of ASCII and
+     * up to ~300 of CJK, so a page is usually two packets.
+     */
+    const val TEXT_CHUNK = 191
 
-                                                        //    BRIGHTNESS(0x01),
-                                                                                // x02 -- antishake?
-                                                        //    SILENT_MODE(0x03),
-                                                        //    SETUP(0x04),
-                                                                  // x05 -- turn on and off logging?
-                                                        //    SHOW_DASHBOARD(0x06),
-                                                                          // x07 -- start countdown?
-                                                                                              // x08
-                                                        //    TELEPROMPTER(0x09),
-                                                        //    NAVIGATION(0x0A),
-                                                        //    HEADUP_ANGLE(0x0B),
-                                                                                              // x0C
-                                                                      // x0D -- translation related?
-                                                        //    MICROPHONE(0x0E),
-                                                                      // x0F -- translation related?
-                                                                                         // x10-0x14
-                                                        //    BMP(0x15),
-                                                        //    CRC(0x16),
-                                                                                         // x17-0x1D
-                                                        //    ADD_QUICK_NOTE(0x1E),
-                                                                                         // x1F-0x20
-                                                        //    QUICK_NOTE(0x21),
-                                                        //    DASHBOARD(0x22),
-                                                        //    FIRMWARE(0x23),
-                                                                                              // x24
-                                                        //    HEARTBEAT(0x25),
-                                                        //    DASHBOARD_POSITION(0x26),
-                                                        //    GLASS_WEARING(0x27),
-                                                                                         // x28-0x2B
-                                                        //    NOTIFICATION(0x4B),
-                                                                                              // x4C
-                                                        //    INITIALIZE(0x4D),
-                                                                                         // x4F-0xF0
-                                                        //    RECEIVE_MIC_DATA(0xF1.toByte()),
-                                                                                         // xF2-0xF4
-                                                        //    START_AI(0xF5.toByte()),
+    /**
+     * Screen status for 0x4E: upper nibble 0x70 is "text show" (the mode the
+     * demo's text sender uses, which the glasses leave up until told otherwise),
+     * lower nibble 0x01 is "display new content".
+     */
+    const val TEXT_SHOW_NEW: Int = 0x71
 
-// response protocol -------------------------------------------------------------------------------
+    /** Leave whatever is on screen and go back to the dashboard. */
+    fun exit(): ByteArray = byteArrayOf(EXIT)
 
-internal fun hasFirst(byte: Byte): (ByteArray) -> Boolean = { bytes ->
-    bytes.isNotEmpty() && bytes[0] == byte
-}
+    /** Battery level request; answered by `2C 66 <percent> ...`. */
+    fun battery(): ByteArray = byteArrayOf(BATTERY)
 
-internal fun hasFirstTwo(first: Byte, second: Byte): (ByteArray) -> Boolean = { bytes ->
-    bytes.size > 1 && bytes[0] == first && bytes[1] == second
-}
-
-enum class IncomingPacketType(
-    val label: String,
-    val isType: (bytes: ByteArray) -> Boolean,
-    val factory: (bytes: ByteArray) -> (IncomingPacket?)
-) {
-    EXIT("EXIT", hasFirst(0x18), { ExitResponsePacket(it) }),
-    GLASSES_BATTERY_LEVEL("GLASSES_BATTERY_LEVEL", hasFirstTwo(0x2C, 0x66), { BatteryLevelResponsePacket(it) }),
-    AI_RESULT_RECEIVED("AI_RESULT_RECEIVED", hasFirst(0x4E), { SendTextResponsePacket(it) }),
-;
-    override fun toString() = label
-}
-
-                                        // still unmapped ------------------------------------------
-
-                                                                                        // x00-0x24
-                                                        //    HEARTBEAT(0x25),
-                                                                                        // x26-0x28
-                                                        // x29 - observed use by ER app
-                                                                                        // x2A
-                                                        // x2B - observed use by ER app
-                                                                                        // x2D-0x36
-                                                        // x37 - observed use by ER app
-                                                                                        // x38-0x4D
-                                                                                        // x38-0x6D
-                                                        // x6E - observed use by ER app
-                                                                                        // x6F-0xFF
-
-// outgoing ////////////////////////////////////////////////////////////////////////////////////////
-
-abstract class OutgoingPacket(
-    val type: OutgoingPacketType,
-    val bytes: ByteArray = byteArrayOf()
-)
-
-// exit
-
-class ExitRequestPacket: OutgoingPacket(
-    // EXAMPLE: 18
-    OutgoingPacketType.EXIT,
-    byteArrayOf(0x18)
-)
-
-// battery level request
-
-class BatteryLevelRequestPacket: OutgoingPacket(
-    // EXAMPLE: 2C
-    OutgoingPacketType.GET_BATTERY_LEVEL,
-    byteArrayOf(0x2C)
-)
-
-// send text
-
-class SendTextPacket(
-    text: String,
-    pageNumber: Int,
-    maxPages: Int
-): OutgoingPacket(
-    // EXAMPLE: TODO
-    OutgoingPacketType.SEND_AI_RESULT,
-    byteArrayOf(
-        0x4E.toByte(),
-        0x00.toByte(),
-        0x01.toByte(),
-        0x00.toByte(),
-        0x71.toByte(),
-        0x00.toByte(),
-        0x00.toByte(),
-        pageNumber.toByte(),
-        maxPages.toByte()
-    ).plus(
-        text.encodeToByteArray()
-    )
-)
-
-// incoming ////////////////////////////////////////////////////////////////////////////////////////
-
-abstract class IncomingPacket(val type: IncomingPacketType, val bytes: ByteArray, val responseTo: OutgoingPacketType? = null) {
-    companion object {
-        fun fromBytes(bytes: ByteArray): IncomingPacket? =
-            IncomingPacketType.entries.firstOrNull { it.isType(bytes) }?.factory?.invoke(bytes)
+    /**
+     * Keep-alive the official app sends both arms every 8 s:
+     * `25 <len lo> <len hi> <seq> 04 <seq>`, answered by `25 .. .. .. 04 ..`.
+     */
+    fun heartbeat(seq: Int): ByteArray {
+        val length = 6
+        val s = (seq % 0xFF).toByte()
+        return byteArrayOf(HEARTBEAT, (length and 0xFF).toByte(), ((length shr 8) and 0xFF).toByte(), s, 0x04, s)
     }
-}
 
-// exit
-
-class ExitResponsePacket(bytes: ByteArray): IncomingPacket(
-    IncomingPacketType.EXIT,
-    bytes,
-    OutgoingPacketType.EXIT
-) {
-    // EXAMPLE: 18 c9 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
-    //          18 -> packet id
-    //             c9 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 -> TODO UNKNOWN
-}
-
-// battery level
-
-class BatteryLevelResponsePacket(bytes: ByteArray): IncomingPacket(
-    IncomingPacketType.GLASSES_BATTERY_LEVEL,
-    bytes,
-    OutgoingPacketType.GET_BATTERY_LEVEL
-) {
-    // EXAMPLE: 2c 66 5e 00 e6 a0 19 00 00 00 01 05 00 00 00 00 00 00 00 00
-    //          2c 66 -> packet id
-    //                5e 00 e6 a0 19 00 00 00 01 05 00 00 00 00 00 00 00 00 -> TODO UNKNOWN
-
-    val level = bytes[2].toInt()
-    override fun toString(): String {
-        return "${type} => ${level}%"
+    /**
+     * One page of [text] as the 0x4E packets that carry it:
+     * `4E <seq> <packets> <index> <screen status> <pos hi> <pos lo> <page> <pages> <data…>`,
+     * the UTF-8 text cut into [TEXT_CHUNK]-byte pieces. All packets of a page
+     * share [seq]; it should change from one page to the next.
+     */
+    fun text(
+        text: String,
+        seq: Int,
+        page: Int = 1,
+        pages: Int = 1,
+        screenStatus: Int = TEXT_SHOW_NEW,
+        position: Int = 0,
+    ): List<ByteArray> {
+        val data = text.encodeToByteArray()
+        val count = maxOf(1, (data.size + TEXT_CHUNK - 1) / TEXT_CHUNK)
+        require(count <= 255) { "Text too long for one page: ${data.size} bytes" }
+        return List(count) { index ->
+            val start = index * TEXT_CHUNK
+            val end = minOf(start + TEXT_CHUNK, data.size)
+            byteArrayOf(
+                TEXT,
+                (seq and 0xFF).toByte(),
+                count.toByte(),
+                index.toByte(),
+                screenStatus.toByte(),
+                ((position shr 8) and 0xFF).toByte(),
+                (position and 0xFF).toByte(),
+                page.toByte(),
+                pages.toByte(),
+            ) + data.copyOfRange(start, end)
+        }
     }
+
+    /** Whether [response] acknowledges a packet of a command whose status sits at index 1. */
+    fun accepted(response: ByteArray?): Boolean =
+        response != null && response.size > 1 && (response[1] == STATUS_OK || response[1] == STATUS_CONTINUE)
+
+    /** Whether [response] answers a heartbeat. */
+    fun heartbeatAnswered(response: ByteArray?): Boolean =
+        response != null && response.size > 5 && response[0] == HEARTBEAT && response[4] == 0x04.toByte()
+
+    /** The battery percentage in [response], if it is a battery report. */
+    fun batteryLevel(response: ByteArray?): Int? =
+        if (response != null && response.size > 2 && response[0] == BATTERY && response[1] == 0x66.toByte()) {
+            response[2].toInt() and 0xFF
+        } else {
+            null
+        }
+
+    fun hex(bytes: ByteArray): String = bytes.joinToString(" ") { String.format("%02x", it) }
 }
-
-// send text
-
-class SendTextResponsePacket(bytes: ByteArray): IncomingPacket(
-    IncomingPacketType.AI_RESULT_RECEIVED,
-    bytes,
-    OutgoingPacketType.SEND_AI_RESULT
-)
