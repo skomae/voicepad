@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
@@ -52,8 +53,11 @@ import kotlin.math.floor
 @Composable
 fun SplitButton(controller: RecordingController, state: RecordingController.UiState, modifier: Modifier = Modifier) {
     val view = LocalView.current
-    val stepPx = with(LocalDensity.current) { STEP.toPx() }
     val options = AutoSplit.entries
+    // Fit the whole list in about 60 % of the window, so it works in small pop-up windows too.
+    val windowHeight = LocalConfiguration.current.screenHeightDp
+    val step = (windowHeight * 0.6f / (options.size + 2)).coerceIn(30f, 44f).dp
+    val stepPx = with(LocalDensity.current) { step.toPx() }
     var dragging by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     /** Option under the finger while dragging, or -1 for "cancel". */
@@ -139,7 +143,7 @@ fun SplitButton(controller: RecordingController, state: RecordingController.UiSt
         }
 
         if (dragging || menuOpen) {
-            val lift = with(LocalDensity.current) { (STEP * (options.size + 0.5f)).roundToPx() }
+            val lift = with(LocalDensity.current) { (step * (options.size + 0.5f)).roundToPx() }
             Popup(
                 alignment = Alignment.TopCenter,
                 offset = IntOffset(0, -lift),
@@ -172,7 +176,7 @@ fun SplitButton(controller: RecordingController, state: RecordingController.UiSt
                                         menuOpen = false
                                     }
                                     .padding(horizontal = 10.dp)
-                                    .size(width = 210.dp, height = STEP - 4.dp),
+                                    .size(width = 210.dp, height = step - 4.dp),
                             ) {
                                 if (option == state.autoSplit) {
                                     Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
@@ -200,6 +204,3 @@ fun SplitButton(controller: RecordingController, state: RecordingController.UiSt
         }
     }
 }
-
-/** Height of one option in the drag picker. */
-private val STEP = 44.dp

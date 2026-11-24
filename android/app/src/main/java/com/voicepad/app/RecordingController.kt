@@ -96,7 +96,7 @@ class RecordingController(
         val backgroundVoices: Boolean = false,
         /** Light, dark, pure black (OLED), or follow the phone. */
         val themeMode: ThemeMode = ThemeMode.SYSTEM,
-        /** After Stop, copy the finished transcript to the clipboard (with a toast). */
+        /** When a recording (or split part) finishes transcribing, copy it to the clipboard (with a toast). */
         val copyWhenDone: Boolean = true,
         /** Start a new note automatically after a silence or every few minutes. */
         val autoSplit: AutoSplit = AutoSplit.OFF,
@@ -210,7 +210,7 @@ class RecordingController(
         var end: Int? = null
         /** Last moment speech was heard in this note (null: nothing said yet). */
         var lastVoiceAt: Int? = null
-        /** Ended with Stop (not a split): its transcript is copied when done. */
+        /** Ended with Stop (not a split). */
         var stoppedByUser = false
     }
 
@@ -509,7 +509,8 @@ class RecordingController(
                     it.copy(status = TranscriptionStatus.FAILED, lastError = error, partialText = text.ifBlank { null })
                 }
             }
-            if (error == null && s.stoppedByUser) copyWhenDone(noteId)
+            // Every finished part is copied: after Stop, a manual split or an auto-split.
+            if (error == null) copyWhenDone(noteId)
         } finally {
             s.detector?.release()
             unmarkFinishing(s)

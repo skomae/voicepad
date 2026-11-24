@@ -5,6 +5,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import android.text.format.DateUtils
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.filled.DeleteSweep
@@ -117,6 +118,9 @@ fun VoicePadScreen(controller: RecordingController) {
     val player = remember { AudioPlayer() }
     DisposableEffect(Unit) { onDispose { player.stop() } }
 
+    // Pop-up / split-screen / small windows get a tighter layout.
+    val config = LocalConfiguration.current
+    val compact = config.screenWidthDp < 420 || config.screenHeightDp < 560
     var searchActive by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     val searching = searchActive && query.isNotBlank()
@@ -149,6 +153,7 @@ fun VoicePadScreen(controller: RecordingController) {
     @Composable
     fun Bubble(note: Note, highlight: List<String> = emptyList(), matchedEarlier: Boolean = false) {
         NoteBubble(
+            compact = compact,
             note = note,
             engineStatus = state.engineStatus,
             isPlaying = player.playingId == note.id,
@@ -192,30 +197,49 @@ fun VoicePadScreen(controller: RecordingController) {
                         TopAppBarDefaults.topAppBarColors()
                     },
                     title = {
-                        if (recording) RecordingTitle(state) else IdleTitle()
+                        if (recording) RecordingTitle(state, compact) else IdleTitle(compact)
                     },
                     navigationIcon = {
-                        ModelSwitcher(controller, state, onBar, onMoreModels = { showSettings = true })
+                        ModelSwitcher(controller, state, onBar, compact, onMoreModels = { showSettings = true })
                     },
                     actions = {
-                        IconButton(onClick = { controller.setBackgroundVoices(!state.backgroundVoices) }) {
-                            Icon(
-                                if (state.backgroundVoices) Icons.Default.Hearing else Icons.Outlined.HearingDisabled,
-                                contentDescription = if (state.backgroundVoices) "Background voices on" else "Background voices off",
-                                tint = if (state.backgroundVoices && !recording) MaterialTheme.colorScheme.primary else onBar,
-                            )
+                        if (!compact) {
+                            IconButton(onClick = { controller.setBackgroundVoices(!state.backgroundVoices) }) {
+                                Icon(
+                                    if (state.backgroundVoices) Icons.Default.Hearing else Icons.Outlined.HearingDisabled,
+                                    contentDescription = if (state.backgroundVoices) "Background voices on" else "Background voices off",
+                                    tint = if (state.backgroundVoices && !recording) MaterialTheme.colorScheme.primary else onBar,
+                                )
+                            }
                         }
                         IconButton(onClick = { searchActive = true }) {
                             Icon(Icons.Default.Search, contentDescription = "Search")
                         }
-                        IconButton(onClick = { showSettings = true }) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        if (!compact) {
+                            IconButton(onClick = { showSettings = true }) {
+                                Icon(Icons.Default.Settings, contentDescription = "Settings")
+                            }
                         }
                         Box {
                             IconButton(onClick = { overflowOpen = true }) {
                                 Icon(Icons.Default.MoreVert, contentDescription = "More")
                             }
                             DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
+                                if (compact) {
+                                    // In a small window these live here instead of on the bar.
+                                    DropdownMenuItem(
+                                        text = { Text("Background voices") },
+                                        leadingIcon = { Icon(Icons.Default.Hearing, contentDescription = null) },
+                                        trailingIcon = { Switch(checked = state.backgroundVoices, onCheckedChange = null) },
+                                        onClick = { controller.setBackgroundVoices(!state.backgroundVoices) },
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text("Settings") },
+                                        leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                                        onClick = { overflowOpen = false; showSettings = true },
+                                    )
+                                    HorizontalDivider()
+                                }
                                 DropdownMenuItem(
                                     text = { Text("Archived notes (${archivedNotes.size})") },
                                     leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) },
@@ -232,7 +256,7 @@ fun VoicePadScreen(controller: RecordingController) {
                 )
             }
         },
-        bottomBar = { RecordBar(controller, state) },
+        bottomBar = { RecordBar(controller, state, compact) },
     ) { padding ->
         Box(
             Modifier
@@ -463,6 +487,7 @@ private fun ModelSwitcher(
     controller: RecordingController,
     state: RecordingController.UiState,
     color: Color,
+    compact: Boolean,
     onMoreModels: () -> Unit,
 ) {
     var open by remember { mutableStateOf(false) }
@@ -476,7 +501,8 @@ private fun ModelSwitcher(
                 .padding(horizontal = 4.dp, vertical = 6.dp)
                 .semantics { contentDescription = "Model: ${state.activeEngine.shortName}. Tap to switch." },
         ) {
-            EngineStatusBadge(state, color = color)
+            // Small windows show just the model's status; the name is in the menu.
+            EngineStatusBadge(state, color = color, showName = !compact)
             Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
         }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
@@ -547,7 +573,7 @@ private fun ModelSwitcher(
 
 /** Top bar title while recording: pulsing dot, REC, elapsed time, part number. */
 @Composable
-private fun RecordingTitle(state: RecordingController.UiState) {
+private fun RecordingTitle(state: RecordingController.UiState, compact: Boolean) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(state.startedAt) {
         while (true) {
@@ -559,18 +585,32 @@ private fun RecordingTitle(state: RecordingController.UiState) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         PulsingDot(color = Color.White, size = 12.dp)
         Spacer(Modifier.width(8.dp))
-        Text("REC  $elapsed", fontWeight = FontWeight.Bold)
+        Text(
+            if (compact) elapsed else "REC  $elapsed",
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            softWrap = false,
+        )
         if (state.partNumber > 1) {
-            Text("  · part ${state.partNumber}", style = MaterialTheme.typography.titleSmall)
+            Text(
+                if (compact) " · ${state.partNumber}" else "  · part ${state.partNumber}",
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                softWrap = false,
+            )
         }
     }
 }
 
 /** Top bar title when the mic is off. */
 @Composable
-private fun IdleTitle() {
+private fun IdleTitle(compact: Boolean) {
+    if (compact) {
+        Text("VoicePad", maxLines = 1, softWrap = false)
+        return
+    }
     Column {
-        Text("VoicePad")
+        Text("VoicePad", maxLines = 1, softWrap = false)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.MicOff, null, Modifier.size(12.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.width(4.dp))
@@ -663,6 +703,7 @@ fun EngineStatusBadge(
     state: RecordingController.UiState,
     modifier: Modifier = Modifier,
     color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    showName: Boolean = true,
 ) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
         when (val status = state.engineStatus) {
@@ -681,12 +722,15 @@ fun EngineStatusBadge(
                 tint = Color(0xFFEF6C00), modifier = Modifier.size(16.dp),
             )
         }
-        Spacer(Modifier.width(4.dp))
-        Text(
-            state.activeEngine.shortName,
-            style = MaterialTheme.typography.labelSmall,
-            color = color,
-        )
+        if (showName) {
+            Spacer(Modifier.width(4.dp))
+            Text(
+                state.activeEngine.shortName,
+                style = MaterialTheme.typography.labelSmall,
+                color = color,
+                maxLines = 1,
+            )
+        }
     }
 }
 

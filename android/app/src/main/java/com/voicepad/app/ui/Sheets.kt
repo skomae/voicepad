@@ -206,7 +206,7 @@ fun SettingsSheet(controller: RecordingController, state: RecordingController.Ui
                 Column(Modifier.weight(1f)) {
                     Text("Copy transcript when done")
                     Text(
-                        "After you stop recording and the transcript is finished, it's copied to the clipboard.",
+                        "When a recording finishes transcribing (after Stop, a split or an auto-split), it's copied to the clipboard.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
