@@ -139,6 +139,7 @@ final class RecordingController {
     private static let themeKey = "theme"
     private static let copyWhenDoneKey = "copyWhenDone"
     private static let autoSplitKey = "autoSplit"
+    private static let onboardingKey = "onboardingDone"
     private static let rate = AudioRecorder.sampleRate
     /// Longest audio one model call gets (Whisper's window is 30 s).
     private static let maxChunk = Int(25 * rate)
@@ -186,6 +187,10 @@ final class RecordingController {
         themeMode = UserDefaults.standard.string(forKey: Self.themeKey).flatMap(ThemeMode.init(rawValue:)) ?? .system
         copyWhenDone = UserDefaults.standard.object(forKey: Self.copyWhenDoneKey) as? Bool ?? true
         autoSplit = UserDefaults.standard.string(forKey: Self.autoSplitKey).flatMap(AutoSplit.init(rawValue:)) ?? .off
+        // People already using the app (mic allowed, notes saved) skip the walkthrough.
+        onboardingDone = UserDefaults.standard.object(forKey: Self.onboardingKey) as? Bool
+            ?? (AVAudioApplication.shared.recordPermission == .granted && !store.notes.isEmpty)
+        microphoneDenied = AVAudioApplication.shared.recordPermission == .denied
         installedEngines = Set((UserDefaults.standard.stringArray(forKey: Self.installedKey) ?? []).compactMap(EngineChoice.init(rawValue:)))
 
         // Before anything records: repair what a crash or kill left behind.
@@ -348,19 +353,49 @@ final class RecordingController {
 
     /// Called whenever the app comes to the foreground.
     func appBecameActive() async {
+        // The user may have changed it in Settings meanwhile.
+        microphoneDenied = AVAudioApplication.shared.recordPermission == .denied
+        if !microphoneDenied, errorMessage?.hasPrefix("Microphone access is off") == true { errorMessage = nil }
         translationTried.removeAll()
         processTranslations()
         if engine == nil, case .idle = engineStatus { loadEngine() } else { processQueue() }
-        guard autoRecordOnOpen, !isRecording, !conversationActive else { return }
+        // Never record before onboarding has asked for the microphone.
+        guard onboardingDone, autoRecordOnOpen, !isRecording, !conversationActive else { return }
         await start()
+    }
+
+    // MARK: Permissions and onboarding
+
+    /// The first-run walkthrough has been finished (it asks for each permission
+    /// before anything records).
+    var onboardingDone: Bool {
+        didSet { UserDefaults.standard.set(onboardingDone, forKey: Self.onboardingKey) }
+    }
+
+    var microphonePermission: AVAudioApplication.recordPermission { AVAudioApplication.shared.recordPermission }
+
+    /// The microphone was refused: recording needs the user to allow it in Settings.
+    private(set) var microphoneDenied = false
+
+    /// Shows iOS's microphone prompt (only the first time; afterwards it answers at once).
+    func requestMicrophone() async -> Bool {
+        let granted = await AVAudioApplication.requestRecordPermission()
+        microphoneDenied = !granted
+        return granted
+    }
+
+    /// Ends onboarding and, if wanted, starts recording right away.
+    func finishOnboarding() async {
+        onboardingDone = true
+        if autoRecordOnOpen, !isRecording { await start() }
     }
 
     func start() async {
         guard !isRecording, !conversationActive else { return }
         errorMessage = nil
 
-        guard await AVAudioApplication.requestRecordPermission() else {
-            errorMessage = "Microphone access is off. Enable it in Settings → VoicePad."
+        guard await requestMicrophone() else {
+            errorMessage = "Microphone access is off. Allow it in Settings to record."
             return
         }
         guard !isRecording else { return }
@@ -377,6 +412,18 @@ final class RecordingController {
 
         beginNote(fileName: fileName, origin: 0, part: 1)
         isRecording = true
+
+        // If no audio arrives at all, reopen the microphone once.
+        let startedNote = recordingNoteID
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            guard let self, self.isRecording, self.recordingNoteID == startedNote, self.recorder.sampleCount == 0 else { return }
+            try? self.recorder.restartCapture()
+            try? await Task.sleep(for: .seconds(3))
+            if self.isRecording, self.recorder.sampleCount == 0 {
+                self.errorMessage = "No sound is coming from the microphone. Try stopping and starting again."
+            }
+        }
 
         meterTask = Task { [weak self] in
             while !Task.isCancelled {

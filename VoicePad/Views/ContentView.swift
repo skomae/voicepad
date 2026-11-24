@@ -70,6 +70,9 @@ struct ContentView: View {
             .sheet(isPresented: $showArchive) { ArchivedNotesView(actions: bubbleActions, player: player) }
             .sheet(isPresented: $showCleanup) { CleanupView().presentationDetents([.medium, .large]) }
             .sheet(isPresented: $showExport) { ExportView().presentationDetents([.medium, .large]) }
+            .fullScreenCover(isPresented: Binding(get: { !controller.onboardingDone }, set: { _ in })) {
+                OnboardingView()
+            }
             .fullScreenCover(isPresented: Binding(get: { conversation.visible }, set: { if !$0 { conversation.close() } })) {
                 ConversationView()
             }

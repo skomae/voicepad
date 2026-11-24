@@ -19,7 +19,9 @@ final class AudioRecorder: @unchecked Sendable {
 
     static let sampleRate: Double = 16_000
 
-    private let engine = AVAudioEngine()
+    /// Made fresh for every recording: an engine created before microphone
+    /// permission was granted can keep delivering silence.
+    private var engine = AVAudioEngine()
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: AudioRecorder.sampleRate,
@@ -108,6 +110,7 @@ final class AudioRecorder: @unchecked Sendable {
 
     func start(writingTo url: URL, roomCapture: Bool = false) throws {
         guard !isRunning else { return }
+        engine = AVAudioEngine()
         self.roomCapture = roomCapture
 
         let session = AVAudioSession.sharedInstance()
@@ -154,6 +157,17 @@ final class AudioRecorder: @unchecked Sendable {
             input.removeTap(onBus: 0)
             throw error
         }
+    }
+
+    /// Reopens the microphone without ending the recording (its file and
+    /// positions carry on), e.g. when no audio is arriving.
+    func restartCapture() throws {
+        guard isRunning else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        engine = AVAudioEngine()
+        try AVAudioSession.sharedInstance().setActive(true)
+        try startCapture()
     }
 
     /// Switches between close-speech and room capture mid-recording (e.g.

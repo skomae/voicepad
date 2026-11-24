@@ -34,6 +34,12 @@ struct RecordBar: View {
                     .foregroundStyle(.red)
                     .multilineTextAlignment(.center)
             }
+            if controller.microphoneDenied {
+                Button("Allow the microphone in Settings", systemImage: "gear") {
+                    if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
+                }
+                .font(.footnote.weight(.semibold))
+            }
             HStack(spacing: 20) {
                 VStack(spacing: 4) {
                     ElapsedTime(start: recording ? controller.startedAt : nil)
