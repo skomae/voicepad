@@ -40,6 +40,8 @@ final class AudioRecorder: @unchecked Sendable {
     private var currentLevel: Float = 0
     private var currentWriteError: String?
     private var signalSeen = false
+    private var rawPeak: Float = 0
+    private var rawBuffers = 0
 
     private(set) var isRunning = false
 
@@ -172,6 +174,19 @@ final class AudioRecorder: @unchecked Sendable {
         try startCapture()
     }
 
+    /// One line about the audio route and format, for Documents/diagnostics.log.
+    func describeInput() -> String {
+        let s = AVAudioSession.sharedInstance()
+        let inputs = s.currentRoute.inputs.map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ",")
+        let outputs = s.currentRoute.outputs.map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ",")
+        let format = engine.inputNode.outputFormat(forBus: 0)
+        return "category=\(s.category.rawValue) mode=\(s.mode.rawValue) inputAvailable=\(s.isInputAvailable) " +
+            "inputMuted=\(AVAudioApplication.shared.isInputMuted) permission=\(AVAudioApplication.shared.recordPermission.rawValue) " +
+            "inputs=[\(inputs)] outputs=[\(outputs)] preferred=\(s.preferredInput?.portName ?? "nil") " +
+            "format=\(format.sampleRate)Hz/\(format.channelCount)ch/\(format.commonFormat.rawValue) gain=\(s.inputGain) running=\(engine.isRunning) " +
+            "signal=\(hasSignal) rawBuffers=\(rawBuffers) rawPeak=\(rawPeak) samples=\(sampleCount)"
+    }
+
     /// Whether anything but exact digital silence has arrived since the
     /// recording (or the last restart) began. A real microphone is never
     /// perfectly silent; all zeros means the input isn't really connected.
@@ -213,6 +228,12 @@ final class AudioRecorder: @unchecked Sendable {
     }
 
     private func process(_ buffer: AVAudioPCMBuffer) {
+        // Loudest raw microphone sample, before conversion (diagnostics).
+        if let raw = buffer.floatChannelData?[0] {
+            var peak: Float = 0
+            for i in 0..<Int(buffer.frameLength) { peak = max(peak, abs(raw[i])) }
+            lock.lock(); rawPeak = max(rawPeak, peak); rawBuffers += 1; lock.unlock()
+        }
         guard let converter else { return }
         let ratio = targetFormat.sampleRate / buffer.format.sampleRate
         let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 64

@@ -415,13 +415,19 @@ final class RecordingController {
 
         // If the microphone delivers nothing, or only digital silence, reopen it once.
         let startedNote = recordingNoteID
+        Diagnostics.log("start: " + recorder.describeInput())
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(2.5))
-            guard let self, self.isRecording, self.recordingNoteID == startedNote, !self.recorder.hasSignal else { return }
+            guard let self else { return }
+            Diagnostics.log("after 2.5 s: " + self.recorder.describeInput())
+            guard self.isRecording, self.recordingNoteID == startedNote, !self.recorder.hasSignal else { return }
+            if AVAudioApplication.shared.isInputMuted { try? AVAudioApplication.shared.setInputMuted(false) }
             try? self.recorder.restartCapture()
             try? await Task.sleep(for: .seconds(3))
+            Diagnostics.log("after reset: " + self.recorder.describeInput())
+            try? await Task.sleep(for: .seconds(3))
             if self.isRecording, self.recordingNoteID == startedNote, !self.recorder.hasSignal {
-                self.errorMessage = "No sound is coming from the microphone. Try stopping and starting again."
+                self.errorMessage = "iOS is giving VoicePad only silence from the microphone. Another app or a call is probably using it: open Control Center to see which, close it, then tap ■ and ● again."
             }
         }
 
