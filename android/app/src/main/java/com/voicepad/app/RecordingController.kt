@@ -46,6 +46,7 @@ import com.voicepad.app.transcription.SherpaEngine
 import com.voicepad.app.transcription.SpeechDetector
 import com.voicepad.app.transcription.SpeechEngine
 import com.voicepad.app.transcription.Transcript
+import com.voicepad.app.transmit.KeyboardHost
 import com.voicepad.app.transmit.SinkStatus
 import com.voicepad.app.transmit.createKeyboardSink
 import com.voicepad.app.ui.ThemeMode
@@ -1151,6 +1152,12 @@ class RecordingController(
             else -> keyboard.start()
         }
     }
+
+    /** Paired devices the keyboard can connect to from the phone side. */
+    fun keyboardHosts(): List<KeyboardHost> = keyboard.hosts()
+
+    /** Connects the (registered) keyboard to an already-paired host. */
+    fun connectKeyboard(address: String): Boolean = keyboard.connect(address)
 
     fun stopKeyboard() {
         typingJob?.cancel()

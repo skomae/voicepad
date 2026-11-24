@@ -2,6 +2,7 @@ package com.voicepad.app.transmit
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothClass
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothHidDevice
 import android.bluetooth.BluetoothHidDeviceAppSdpSettings
@@ -10,6 +11,9 @@ import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import androidx.core.content.edit
 import androidx.annotation.RequiresApi
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.NonCancellable
@@ -57,11 +61,32 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
     @Volatile
     private var connected: BluetoothDevice? = null
 
+    private val prefs = this.context.getSharedPreferences("keyboard", Context.MODE_PRIVATE)
+    private val main = Handler(Looper.getMainLooper())
+
+    /**
+     * Some manufacturers ship with the HID Device profile disabled: the proxy
+     * request "succeeds" but nothing ever answers. Fail with a clear message
+     * instead of sitting in REGISTERING forever.
+     */
+    private val registrationTimeout = Runnable {
+        if (_state.value.status == SinkStatus.REGISTERING) {
+            stop()
+            _state.value = SinkState(
+                SinkStatus.FAILED,
+                "This phone didn't enable Bluetooth keyboard mode. Its manufacturer may have " +
+                    "turned off the HID Device profile.",
+            )
+        }
+    }
+
     private val callback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
             this@BluetoothKeyboardSink.registered = registered
             if (registered && _state.value.status == SinkStatus.REGISTERING) {
+                main.removeCallbacks(registrationTimeout)
                 _state.value = SinkState(SinkStatus.ADVERTISING)
+                reconnectLastHost()
             } else if (!registered && profile != null) {
                 // The system dropped our registration (e.g. another app took the HID slot).
                 connected = null
@@ -73,6 +98,7 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
             when (state) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     connected = device
+                    prefs.edit { putString(LAST_HOST, device.address) }
                     _state.value = SinkState(SinkStatus.CONNECTED)
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
@@ -108,6 +134,7 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
         if (profile != null) return
         wanted = true
         _state.value = SinkState(SinkStatus.REGISTERING)
+        main.postDelayed(registrationTimeout, REGISTRATION_TIMEOUT_MS)
         val listener = object : BluetoothProfile.ServiceListener {
             override fun onServiceConnected(profileId: Int, proxy: BluetoothProfile) {
                 if (profileId != HID_DEVICE) return
@@ -158,6 +185,7 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
     }
 
     override fun stop() {
+        main.removeCallbacks(registrationTimeout)
         wanted = false
         profile?.let { hid ->
             try {
@@ -178,6 +206,50 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
         try {
             adapter?.closeProfileProxy(HID_DEVICE, hid)
         } catch (_: SecurityException) {
+        }
+    }
+
+    /** Reconnects to the host used last time, if it's still paired. */
+    private fun reconnectLastHost() {
+        val last = prefs.getString(LAST_HOST, null) ?: return
+        if (hosts().any { it.address == last }) connect(last)
+    }
+
+    override fun hosts(): List<KeyboardHost> {
+        if (!hasPermission()) return emptyList()
+        val bonded = try {
+            adapter?.bondedDevices.orEmpty()
+        } catch (_: SecurityException) {
+            return emptyList()
+        }
+        val last = prefs.getString(LAST_HOST, null)
+        return bonded.map { d ->
+            val name = try {
+                d.name
+            } catch (_: SecurityException) {
+                null
+            } ?: d.address
+            KeyboardHost(
+                address = d.address,
+                name = name,
+                isComputer = d.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.COMPUTER,
+                isLast = d.address == last,
+            )
+        }.sortedWith(compareByDescending<KeyboardHost> { it.isLast }.thenByDescending { it.isComputer }.thenBy { it.name })
+    }
+
+    override fun connect(address: String): Boolean {
+        val hid = profile ?: return false
+        if (!registered) return false
+        val device = try {
+            adapter?.getRemoteDevice(address)
+        } catch (_: IllegalArgumentException) {
+            null
+        } ?: return false
+        return try {
+            hid.connect(device)
+        } catch (_: SecurityException) {
+            false
         }
     }
 
@@ -220,6 +292,8 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
         private const val REPORT_LEN = 8
         private const val DOWN_UP_MS = 5L
         private const val KEY_MS = 8L
+        private const val REGISTRATION_TIMEOUT_MS = 10_000L
+        private const val LAST_HOST = "lastHost"
 
         /**
          * Standard boot-keyboard HID report descriptor: 8-byte input report
