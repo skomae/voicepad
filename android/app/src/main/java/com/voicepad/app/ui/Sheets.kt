@@ -191,7 +191,6 @@ fun HistorySheet(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 /** Delete "No speech detected" notes and/or compress audio once notes reach a chosen age. */
 @Composable
 private fun AutoCleanupSection(state: RecordingController.UiState, controller: RecordingController) {
@@ -219,6 +218,7 @@ private fun AutoCleanupSection(state: RecordingController.UiState, controller: R
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AutoAgeRow(
     title: String,
@@ -238,6 +238,7 @@ private fun AutoAgeRow(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsSheet(
     controller: RecordingController,
