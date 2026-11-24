@@ -98,20 +98,23 @@ final class AudioRecorder: @unchecked Sendable {
         return (offset + samples.count, finishedError)
     }
 
-    func start(writingTo url: URL) throws {
+    private var roomCapture = false
+
+    /// Close speech uses iOS's voice processing (`.default`); room capture
+    /// (background voices) uses `.measurement`, which turns off the gain and
+    /// noise processing tuned for one nearby talker, so a distant voice isn't
+    /// treated as noise to remove.
+    private static func mode(roomCapture: Bool) -> AVAudioSession.Mode { roomCapture ? .measurement : .default }
+
+    func start(writingTo url: URL, roomCapture: Bool = false) throws {
         guard !isRunning else { return }
+        self.roomCapture = roomCapture
 
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP])
+        try session.setCategory(.playAndRecord, mode: Self.mode(roomCapture: roomCapture),
+                                options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP])
         try session.setActive(true)
 
-        let input = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0)
-        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else { throw RecorderError.noInput }
-        guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            throw RecorderError.converterUnavailable
-        }
-        self.converter = converter
         let writer = try WavWriter(url: url)
 
         lock.lock()
@@ -122,6 +125,25 @@ final class AudioRecorder: @unchecked Sendable {
         self.writer = writer
         lock.unlock()
 
+        do {
+            try startCapture()
+        } catch {
+            try? writer.close()
+            throw error
+        }
+        isRunning = true
+    }
+
+    /// Opens the microphone (its format can change with the session mode)
+    /// and feeds it into the recording.
+    private func startCapture() throws {
+        let input = engine.inputNode
+        let inputFormat = input.outputFormat(forBus: 0)
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else { throw RecorderError.noInput }
+        guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
+            throw RecorderError.converterUnavailable
+        }
+        self.converter = converter
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
             self?.process(buffer)
         }
@@ -130,10 +152,21 @@ final class AudioRecorder: @unchecked Sendable {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
-            try? writer.close()
             throw error
         }
-        isRunning = true
+    }
+
+    /// Switches between close-speech and room capture mid-recording (e.g.
+    /// background voices on/off). Capture pauses for a moment; the recording,
+    /// its file and its positions carry on.
+    func setRoomCapture(_ enabled: Bool) throws {
+        guard enabled != roomCapture else { return }
+        roomCapture = enabled
+        guard isRunning else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        try AVAudioSession.sharedInstance().setMode(Self.mode(roomCapture: enabled))
+        try startCapture()
     }
 
     func stop() {

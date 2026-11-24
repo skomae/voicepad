@@ -9,6 +9,8 @@ struct ContentView: View {
     @State private var confirmDeleteID: Note.ID?
     @State private var shareItem: ShareItem?
     @State private var showSettings = false
+    @State private var showArchive = false
+    @State private var showCleanup = false
     @State private var toast: String?
     @State private var query = ""
     @State private var player = AudioPlayer()
@@ -36,20 +38,33 @@ struct ContentView: View {
             .toolbarColorScheme(controller.isRecording ? .dark : nil, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    EngineStatusBadge(color: controller.isRecording ? .white : .secondary)
+                    ModelSwitcher(color: controller.isRecording ? .white : .secondary) { showSettings = true }
                 }
                 ToolbarItem(placement: .principal) {
                     if controller.isRecording { RecordingTitle() } else { IdleTitle() }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { showSettings = true } label: { Image(systemName: "gearshape") }
-                        .tint(controller.isRecording ? .white : nil)
-                        .accessibilityLabel("Settings")
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { controller.setBackgroundVoices(!controller.backgroundVoices) } label: {
+                        Image(systemName: controller.backgroundVoices ? "ear.fill" : "ear")
+                    }
+                    .tint(controller.isRecording ? .white : controller.backgroundVoices ? .accentColor : .primary)
+                    .accessibilityLabel(controller.backgroundVoices ? "Background voices on" : "Background voices off")
+                    Menu {
+                        Button("Settings", systemImage: "gearshape") { showSettings = true }
+                        Button("Archived notes (\(store.notes.filter(\.archived).count))", systemImage: "archivebox") { showArchive = true }
+                        Button("Clean up…", systemImage: "sparkles") { showCleanup = true }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .tint(controller.isRecording ? .white : nil)
+                    .accessibilityLabel("More")
                 }
             }
             .sheet(item: $editingNoteID) { id in EditNoteView(noteID: id) }
             .sheet(item: $historyNoteID) { id in HistoryView(noteID: id, onCopy: copy) }
             .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showArchive) { ArchivedNotesView(actions: bubbleActions, player: player) }
+            .sheet(isPresented: $showCleanup) { CleanupView().presentationDetents([.medium, .large]) }
             .sheet(item: $shareItem) { item in ShareSheet(items: item.items).presentationDetents([.medium, .large]) }
             .confirmationDialog(
                 "Delete recording?",
@@ -59,7 +74,7 @@ struct ContentView: View {
             ) { id in
                 Button("Delete", role: .destructive) {
                     if player.playingID == id { player.stop() }
-                    store.delete(id)
+                    controller.delete([id])
                 }
             } message: { _ in
                 Text("This permanently deletes the audio and every revision of its transcript.")
@@ -89,6 +104,7 @@ struct ContentView: View {
                 shareItem = ShareItem(items: items)
             },
             delete: { confirmDeleteID = $0.id },
+            archive: { note in note.archived ? controller.unarchive(note.id) : controller.archive([note.id]) },
             translate: { controller.translateNow($0.id) },
             copyText: { copy($0) }
         )
@@ -117,6 +133,7 @@ struct BubbleActions {
     let play: (Note) -> Void
     let share: (Note) -> Void
     let delete: (Note) -> Void
+    let archive: (Note) -> Void
     let translate: (Note) -> Void
     let copyText: (String) -> Void
 }
@@ -135,7 +152,9 @@ private struct NotesList: View {
     private let bottomID = "bottom"
 
     private var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
-    private var visibleNotes: [Note] { store.notes.filter { $0.id != controller.recordingNoteID } }
+    /// The main list leaves out archived notes; search still finds them.
+    private var visibleNotes: [Note] { store.notes.filter { $0.id != controller.recordingNoteID && !$0.archived } }
+    private var searchableNotes: [Note] { store.notes.filter { $0.id != controller.recordingNoteID } }
     private var showLive: Bool { controller.isRecording }
 
     var body: some View {
@@ -148,7 +167,7 @@ private struct NotesList: View {
             ScrollView {
                 LazyVStack(spacing: 14) {
                     if searching {
-                        searchResults(visible)
+                        searchResults(searchableNotes)
                     } else {
                         if visible.isEmpty && !showLive {
                             EmptyStateView().padding(.top, 80)
@@ -216,7 +235,8 @@ private struct NotesList: View {
             onShare: { a.share(note) },
             onDelete: { a.delete(note) },
             onTranslate: { a.translate(note) },
-            onCopyText: a.copyText
+            onCopyText: a.copyText,
+            onArchive: { a.archive(note) }
         )
     }
 }

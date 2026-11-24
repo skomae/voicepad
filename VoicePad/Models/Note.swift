@@ -90,6 +90,11 @@ struct Note: Identifiable, Codable, Equatable {
     /// When it was pinned; pinned notes are listed most recently pinned first.
     var pinnedAt: Date?
     var translation: NoteTranslation?
+    /// Recorded in background-voices mode: its audio is normalised before transcription.
+    var backgroundVoices = false
+    /// Moved out of the main list, with its audio compressed (see AudioArchive).
+    var archived = false
+    var archivedAt: Date?
 
     var currentText: String { revisions.last?.text ?? "" }
 
@@ -119,6 +124,32 @@ struct Note: Identifiable, Codable, Equatable {
         return copy
     }
 
+    /// Adds a model's transcription without ever losing what the user wrote:
+    /// - an empty result never replaces existing text;
+    /// - an automatic result (after stop/split, or a queued retry) that arrives
+    ///   after the user edited the note goes into the history *behind* their
+    ///   edits, so their text stays current. A re-transcription they asked for
+    ///   (`userRequested`) becomes current as usual.
+    func withTranscription(_ text: String, source: Revision.Source, engine: String?, language: String?,
+                           userRequested: Bool = false) -> Note {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty, !currentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return self }
+        let userEdits = revisions.reversed().prefix { $0.source == .edit || $0.source == .restore }.count
+        if userRequested || userEdits == 0 { return withRevision(trimmed, source: source, engine: engine, language: language) }
+        var copy = self
+        let machine = Revision(text: trimmed, source: source, engine: engine, language: language)
+        copy.revisions.insert(machine, at: revisions.count - userEdits)
+        return copy
+    }
+
+    /// Text the user wrote or restored is final: marks the note done, so no
+    /// pending or retried transcription comes along later and replaces it.
+    mutating func settle() {
+        status = .done
+        lastError = nil
+        partialText = nil
+    }
+
     init(id: UUID = UUID(), createdAt: Date = .now, audioFileName: String? = nil, status: TranscriptionStatus = .done) {
         self.id = id
         self.createdAt = createdAt
@@ -130,6 +161,7 @@ struct Note: Identifiable, Codable, Equatable {
     // than failing to decode (which would lose every note).
     enum CodingKeys: String, CodingKey {
         case id, createdAt, duration, audioFileName, revisions, status, attempts, lastError, partialText, pinned, pinnedAt, translation
+        case backgroundVoices, archived, archivedAt
     }
 
     init(from decoder: Decoder) throws {
@@ -146,5 +178,8 @@ struct Note: Identifiable, Codable, Equatable {
         pinned = try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false
         pinnedAt = try c.decodeIfPresent(Date.self, forKey: .pinnedAt)
         translation = try? c.decodeIfPresent(NoteTranslation.self, forKey: .translation)
+        backgroundVoices = try c.decodeIfPresent(Bool.self, forKey: .backgroundVoices) ?? false
+        archived = try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false
+        archivedAt = try c.decodeIfPresent(Date.self, forKey: .archivedAt)
     }
 }

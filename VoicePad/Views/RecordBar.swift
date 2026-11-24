@@ -82,7 +82,8 @@ struct RecordBar: View {
                 .accessibilityLabel("Split: finish this recording and start a new one")
             }
             Text(recording
-                 ? "Recording" + (controller.partNumber > 1 ? " · part \(controller.partNumber)" : "") + " — tap ■ to stop"
+                 ? "Recording" + (controller.partNumber > 1 ? " · part \(controller.partNumber)" : "")
+                    + (controller.backgroundVoices ? " · background voices" : "") + " — tap ■ to stop"
                  : "Not recording — tap ● to start")
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(recording ? Color.recordingRed : .secondary)
@@ -142,7 +143,7 @@ struct EngineStatusBadge: View {
             case .failed:
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             }
-            Text(controller.engineChoice.shortName)
+            Text(controller.activeEngine.shortName)
         }
         .font(.caption)
         .foregroundStyle(color)

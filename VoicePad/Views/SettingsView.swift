@@ -21,6 +21,15 @@ struct SettingsView: View {
                 MicrophoneSection()
 
                 Section {
+                    Toggle("Capture background voices", isOn: Binding(
+                        get: { controller.backgroundVoices },
+                        set: { controller.setBackgroundVoices($0) }
+                    ))
+                } footer: {
+                    Text("For announcements, a TV or someone across the room. Records the whole room instead of just your voice, evens out the loudness, and uses Whisper turbo (~630 MB download, slower), which in testing made a quarter of the errors on distant, noisy speech. Also picks up nearby chatter, so leave it off for normal notes.")
+                }
+
+                Section {
                     Picker("Model", selection: $controller.engineChoice) {
                         ForEach(EngineChoice.allCases) { choice in
                             VStack(alignment: .leading) {

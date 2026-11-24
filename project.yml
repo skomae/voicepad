@@ -57,6 +57,7 @@ targets:
       - VoicePad/Translation/Romanizer.swift
       - VoicePad/Translation/TranslationJoin.swift
       - VoicePad/Transcription/ChunkPlanner.swift
+      - VoicePad/Transcription/AudioLevel.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.voicepad.tests

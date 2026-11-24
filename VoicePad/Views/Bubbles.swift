@@ -21,6 +21,7 @@ struct NoteBubble: View {
     let onDelete: () -> Void
     var onTranslate: () -> Void = {}
     var onCopyText: (String) -> Void = { _ in }
+    var onArchive: () -> Void = {}
 
     private var hasText: Bool { !note.currentText.isEmpty }
     private var working: Bool { note.status == .inProgress }
@@ -97,6 +98,8 @@ struct NoteBubble: View {
         Button("Share Recording", systemImage: "square.and.arrow.up", action: onShare)
         Button(hasText ? "Re-transcribe" : "Retry Transcription", systemImage: "arrow.clockwise", action: onRetranscribe)
             .disabled(!engineReady || working)
+        Button(note.archived ? "Unarchive" : "Archive", systemImage: note.archived ? "tray.and.arrow.up" : "archivebox", action: onArchive)
+            .disabled(note.status == .recording || working)
         Divider()
         Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
     }
@@ -149,6 +152,7 @@ struct NoteBubble: View {
         var parts = [note.createdAt.formatted(date: .abbreviated, time: .shortened)]
         if note.duration > 0 { parts.append(Duration.seconds(note.duration).formatted(.time(pattern: .minuteSecond))) }
         if let last = note.revisions.last, last.source != .transcription { parts.append(last.source.label.lowercased()) }
+        if note.archived { parts.append("archived") }
         return parts.joined(separator: " · ")
     }
 }
@@ -274,7 +278,8 @@ struct TextWithTranslation: View {
     let onRetry: () -> Void
 
     var body: some View {
-        if let translation, translation.status != .notNeeded {
+        // Also collapses notes saved before the repeat check existed.
+        if let translation, translation.status != .notNeeded, !TextSimilarity.nearlySame(translation.english, text) {
             ViewThatFits(in: .horizontal) {
                 HStack(alignment: .top, spacing: 12) {
                     original(translation).frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)

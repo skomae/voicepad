@@ -51,13 +51,30 @@ final class NoteStore {
         }
     }
 
-    /// Appends a new revision unless the text is unchanged.
+    /// Appends a new revision unless the text is unchanged. Text the user
+    /// wrote or restored is final: the note is marked done, so no pending or
+    /// retried transcription comes along later and replaces it.
     func addRevision(to id: Note.ID, text: String, source: Revision.Source, engine: String? = nil) {
-        update(id) { $0 = $0.withRevision(text, source: source, engine: engine) }
+        update(id) {
+            $0 = $0.withRevision(text, source: source, engine: engine)
+            if source == .edit || source == .restore { $0.settle() }
+        }
     }
 
     func restore(noteID: Note.ID, revision: Revision) {
-        update(noteID) { $0 = $0.withRevision(revision.text, source: .restore, engine: revision.engine, language: revision.language) }
+        update(noteID) {
+            $0 = $0.withRevision(revision.text, source: .restore, engine: revision.engine, language: revision.language)
+            $0.settle()
+        }
+    }
+
+    /// Deletes several notes and their audio in one save.
+    func deleteMany(_ ids: some Collection<Note.ID>) {
+        let set = Set(ids)
+        for note in notes where set.contains(note.id) {
+            if let url = audioURL(for: note) { try? FileManager.default.removeItem(at: url) }
+        }
+        mutate { $0.removeAll { set.contains($0.id) } }
     }
 
     func setPinned(_ id: Note.ID, _ pinned: Bool) {

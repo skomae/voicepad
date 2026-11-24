@@ -33,6 +33,9 @@ final class RecordingController {
     typealias Span = ChunkPlanner.Span
 
     static let maxAutoAttempts = 3
+    /// Most robust to distant, noisy speech: in Android's testing with echo
+    /// and background noise it made 10% word errors where Parakeet made 41%.
+    static let backgroundEngine = EngineChoice.whisperLargeV3Turbo
 
     // MARK: Observable state
 
@@ -49,14 +52,25 @@ final class RecordingController {
     var errorMessage: String?
     /// The note being recorded right now, if any.
     private(set) var recordingNoteID: Note.ID?
+    /// Stopped or split-off notes still being transcribed.
+    private(set) var finishingCount = 0
+    /// Background voices (announcements, TV): room microphone, louder speech, Whisper turbo.
+    private(set) var backgroundVoices: Bool
+    /// Models that have loaded on this device, for the quick switcher.
+    private(set) var installedEngines: Set<EngineChoice>
 
+    /// The model chosen in Settings.
     var engineChoice: EngineChoice {
         didSet {
             guard engineChoice != oldValue else { return }
             UserDefaults.standard.set(engineChoice.rawValue, forKey: Self.engineKey)
-            loadEngine()
+            // While background voices is on, Whisper turbo stays in use.
+            if !backgroundVoices { loadEngine() }
         }
     }
+
+    /// The model actually in use: Whisper turbo while background voices is on.
+    var activeEngine: EngineChoice { backgroundVoices ? Self.backgroundEngine : engineChoice }
 
     var autoRecordOnOpen: Bool {
         didSet { UserDefaults.standard.set(autoRecordOnOpen, forKey: Self.autoRecordKey) }
@@ -87,6 +101,8 @@ final class RecordingController {
     private static let autoRecordKey = "autoRecordOnOpen"
     private static let inputKey = "inputDevice"
     private static let autoTranslateKey = "autoTranslate"
+    private static let backgroundVoicesKey = "backgroundVoices"
+    private static let installedKey = "installedEngines"
     private static let rate = AudioRecorder.sampleRate
     /// Longest audio one model call gets (Whisper's window is 30 s).
     private static let maxChunk = Int(25 * rate)
@@ -112,7 +128,9 @@ final class RecordingController {
     /// The note being recorded.
     @ObservationIgnored private var session: LiveSession?
     /// Notes finishing their transcription after Stop or Split.
-    @ObservationIgnored private var finishing: [LiveSession] = []
+    @ObservationIgnored private var finishing: [LiveSession] = [] {
+        didSet { finishingCount = finishing.count }
+    }
     @ObservationIgnored private var tailTranslateTask: Task<Void, Never>?
 
     @ObservationIgnored fileprivate var translating = false
@@ -128,6 +146,8 @@ final class RecordingController {
         autoRecordOnOpen = UserDefaults.standard.object(forKey: Self.autoRecordKey) as? Bool ?? true
         selectedInputID = UserDefaults.standard.string(forKey: Self.inputKey)
         autoTranslate = UserDefaults.standard.object(forKey: Self.autoTranslateKey) as? Bool ?? true
+        backgroundVoices = UserDefaults.standard.bool(forKey: Self.backgroundVoicesKey)
+        installedEngines = Set((UserDefaults.standard.stringArray(forKey: Self.installedKey) ?? []).compactMap(EngineChoice.init(rawValue:)))
 
         // Before anything records: repair what a crash or kill left behind.
         store.recoverAfterRestart()
@@ -155,9 +175,46 @@ final class RecordingController {
 
     var isEngineReady: Bool { engineStatus == .ready && engine != nil }
 
+    /// Background voices on: switches the microphone to room capture right
+    /// away (even mid-recording), normalises loudness, and loads Whisper turbo.
+    func setBackgroundVoices(_ enabled: Bool) {
+        guard enabled != backgroundVoices else { return }
+        applyBackgroundVoices(enabled)
+        loadEngine()
+    }
+
+    private func applyBackgroundVoices(_ enabled: Bool) {
+        backgroundVoices = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.backgroundVoicesKey)
+        if isRecording {
+            do {
+                try recorder.setRoomCapture(enabled)
+            } catch {
+                errorMessage = "Couldn't switch the microphone: \(error.localizedDescription)"
+            }
+            if enabled, let s = session { store.update(s.noteID) { $0.backgroundVoices = true } }
+        }
+    }
+
+    /// Quick switcher: use `choice` from now on. Picking a regular model turns
+    /// background voices off; picking the background model turns it on.
+    func selectModel(_ choice: EngineChoice) {
+        if choice == Self.backgroundEngine {
+            setBackgroundVoices(true)
+            return
+        }
+        let wasBackground = backgroundVoices
+        if wasBackground { applyBackgroundVoices(false) }
+        if engineChoice != choice {
+            engineChoice = choice // its didSet loads the model
+        } else if wasBackground {
+            loadEngine()
+        }
+    }
+
     func loadEngine() {
         loadVoiceActivity()
-        let choice = engineChoice
+        let choice = activeEngine
         let loadID = UUID()
         engineLoadID = loadID
         engine = nil
@@ -174,6 +231,8 @@ final class RecordingController {
                 guard engineLoadID == loadID else { return }
                 engine = newEngine
                 engineStatus = .ready
+                installedEngines.insert(choice)
+                UserDefaults.standard.set(installedEngines.map(\.rawValue), forKey: Self.installedKey)
                 processQueue()
             } catch {
                 guard engineLoadID == loadID else { return }
@@ -198,12 +257,13 @@ final class RecordingController {
     private var grouping: ChunkPlanner.Grouping { engine?.grouping ?? .utterances }
 
     /// Runs model calls one at a time; engines are not re-entrant.
-    private func transcribeSerially(_ samples: [Float]) async throws -> Transcript {
+    private func transcribeSerially(_ samples: [Float], normalize: Bool? = nil) async throws -> Transcript {
         guard let engine else { throw TranscriptionError.modelNotLoaded }
         let previous = serialTail
+        let audio = normalize ?? backgroundVoices ? AudioLevel.normalize(samples) : samples
         let task = Task { @MainActor () async throws -> Transcript in
             await previous?.value
-            return try await engine.transcribe(samples)
+            return try await engine.transcribe(audio)
         }
         serialTail = Task { _ = try? await task.value }
         return try await task.value
@@ -232,7 +292,7 @@ final class RecordingController {
 
         let fileName = "\(UUID().uuidString).wav"
         do {
-            try recorder.start(writingTo: store.recordingsURL.appendingPathComponent(fileName))
+            try recorder.start(writingTo: store.recordingsURL.appendingPathComponent(fileName), roomCapture: backgroundVoices)
         } catch {
             errorMessage = error.localizedDescription
             return
@@ -264,7 +324,8 @@ final class RecordingController {
     /// Creates the note (saved before any audio arrives, so a crash can always
     /// find it) and its live session.
     private func beginNote(fileName: String, origin: Int, part: Int) {
-        let note = Note(audioFileName: fileName, status: .recording)
+        var note = Note(audioFileName: fileName, status: .recording)
+        note.backgroundVoices = backgroundVoices
         store.add(note)
         session = LiveSession(noteID: note.id, origin: origin, detector: newDetector())
         tailTranslateTask?.cancel()
@@ -380,12 +441,15 @@ final class RecordingController {
                 $0.lastError = error
                 $0.partialText = text.isEmpty ? nil : text
             } else {
-                $0 = $0.withRevision(text, source: .transcription, engine: engineName, language: language)
+                // Never replaces an edit made meanwhile (it goes behind it in the history).
+                $0 = $0.withTranscription(text, source: .transcription, engine: engineName, language: language)
                 $0.status = .done
                 $0.lastError = nil
                 $0.partialText = nil
-                if autoTranslate, let revision = $0.revisions.last {
-                    $0.translation = Self.finishedTranslation(s.segments, revisionID: revision.id)
+                // Reuse the live translation only if this transcription is the current text.
+                if autoTranslate, let current = $0.revisions.last, current.source == .transcription,
+                   current.text == text.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    $0.translation = Self.finishedTranslation(s.segments, revisionID: current.id)
                 }
             }
         }
@@ -482,6 +546,8 @@ final class RecordingController {
         }
     }
 
+    fileprivate var finishingNoteIDs: [Note.ID] { finishing.map(\.noteID) }
+
     /// Drops audio from memory that no live or finishing note still needs.
     private func freeCommittedAudio() {
         guard let needed = (finishing + [session].compactMap { $0 }).map(\.committedUpTo).min() else { return }
@@ -575,7 +641,7 @@ final class RecordingController {
     private func engineLabel(_ engines: [String]) -> String {
         var seen = Set<String>()
         let names = engines.filter { seen.insert($0).inserted }
-        return names.isEmpty ? engineChoice.shortName : names.joined(separator: " + ")
+        return names.isEmpty ? activeEngine.shortName : names.joined(separator: " + ")
     }
 
     private static func join(_ a: String, _ b: String) -> String {
@@ -591,14 +657,14 @@ final class RecordingController {
 
     /// Re-runs the current model over a note's audio (manual retry or re-transcribe).
     func retranscribe(_ noteID: Note.ID) {
-        Task { await transcribeSaved(noteID) }
+        Task { await transcribeSaved(noteID, userRequested: true) }
     }
 
     /// Retries every recording that still needs text, ignoring the auto-retry limit.
     func retryAll() {
         Task {
             for note in store.notes where note.needsTranscription && note.id != recordingNoteID {
-                await transcribeSaved(note.id)
+                await transcribeSaved(note.id, userRequested: true)
             }
         }
     }
@@ -625,9 +691,9 @@ final class RecordingController {
         }
     }
 
-    private func transcribeSaved(_ noteID: Note.ID) async {
+    private func transcribeSaved(_ noteID: Note.ID, userRequested: Bool = false) async {
         guard let note = store.note(id: noteID), note.status != .inProgress, note.status != .recording else { return }
-        guard let url = store.audioURL(for: note), FileManager.default.fileExists(atPath: url.path) else {
+        guard let stored = store.audioURL(for: note), FileManager.default.fileExists(atPath: stored.path) else {
             store.update(noteID) {
                 $0.status = .failed
                 $0.lastError = "The audio file is missing."
@@ -646,7 +712,19 @@ final class RecordingController {
             $0.status = .inProgress
             $0.attempts += 1
         }
+        // Archived notes are compressed: decode to a temporary WAV first.
+        let decoded: URL? = stored.pathExtension.lowercased() == "wav" ? nil
+            : FileManager.default.temporaryDirectory.appendingPathComponent("\(note.id).decoded.wav")
+        defer { if let decoded { try? FileManager.default.removeItem(at: decoded) } }
+        let normalize = note.backgroundVoices
         do {
+            let url: URL
+            if let decoded {
+                try await Task.detached { try AudioArchive.decodeToWav(stored, to: decoded) }.value
+                url = decoded
+            } else {
+                url = stored
+            }
             let total = WavFile.sampleCount(url)
             // Find the speech by streaming the file through the detector in
             // 10 s blocks, so memory stays small however long it is.
@@ -674,15 +752,18 @@ final class RecordingController {
                 let audio = try await Task.detached {
                     try chunk.flatMap { try WavFile.readRange(url, from: $0.start, to: $0.end) }
                 }.value
-                let result = try await transcribeSerially(audio)
+                let result = try await transcribeSerially(audio, normalize: normalize)
                 text = Self.join(text, result.text)
                 if let language = result.language { languages.append(language) }
                 if let engine = result.engine { engines.append(engine) }
             }
             let language = Self.mostCommon(languages)
             let engineName = engineLabel(engines)
+            if text.isEmpty, !(store.note(id: noteID)?.currentText.isEmpty ?? true) {
+                errorMessage = "No speech found on re-transcription — the existing text was kept."
+            }
             store.update(noteID) {
-                $0 = $0.withRevision(text, source: source, engine: engineName, language: language)
+                $0 = $0.withTranscription(text, source: source, engine: engineName, language: language, userRequested: userRequested)
                 $0.status = .done
                 $0.lastError = nil
                 $0.partialText = nil
@@ -777,6 +858,79 @@ private final class TaskGroupTracker {
 }
 
 extension RecordingController {
+    // MARK: Archive and clean-up
+
+    /// Notes that must not be archived or deleted right now.
+    private var busyIDs: Set<Note.ID> {
+        Set(finishingNoteIDs + [recordingNoteID].compactMap { $0 })
+    }
+
+    /// Archives notes: compresses each one's audio to AAC (about a tenth of the
+    /// size) and moves it out of the main list. The WAV is only deleted once
+    /// the compressed copy has been checked and the note saved; if compression
+    /// fails the note stays as it was and you're told why.
+    func archive(_ ids: [Note.ID]) {
+        Task {
+            var failed = 0
+            for id in ids {
+                guard let note = store.note(id: id), !note.archived, !busyIDs.contains(id), note.status != .inProgress else { continue }
+                if let wav = store.audioURL(for: note), wav.pathExtension.lowercased() == "wav",
+                   FileManager.default.fileExists(atPath: wav.path) {
+                    let m4aName = wav.deletingPathExtension().lastPathComponent + ".m4a"
+                    let m4a = store.recordingsURL.appendingPathComponent(m4aName)
+                    do {
+                        try await Task.detached { try AudioArchive.compress(wav, to: m4a) }.value
+                    } catch {
+                        failed += 1
+                        continue
+                    }
+                    store.update(id) {
+                        $0.audioFileName = m4aName
+                        $0.archived = true
+                        $0.archivedAt = .now
+                    }
+                    try? FileManager.default.removeItem(at: wav)
+                } else {
+                    store.update(id) {
+                        $0.archived = true
+                        $0.archivedAt = .now
+                    }
+                }
+            }
+            if failed > 0 {
+                errorMessage = failed == 1
+                    ? "1 note couldn't be compressed, so it was left as it was."
+                    : "\(failed) notes couldn't be compressed, so they were left as they were."
+            }
+        }
+    }
+
+    /// Back to the main list (the audio stays compressed).
+    func unarchive(_ id: Note.ID) {
+        store.update(id) {
+            $0.archived = false
+            $0.archivedAt = nil
+        }
+    }
+
+    func delete(_ ids: [Note.ID]) {
+        let busy = busyIDs
+        store.deleteMany(ids.filter { !busy.contains($0) })
+    }
+
+    /// Unpinned notes older than `days` that `cleanUp` would touch.
+    func cleanupCandidates(_ action: NoteCleanup.Action, days: Int) -> [Note] {
+        NoteCleanup.select(store.notes, action: action, olderThanDays: days, busy: busyIDs)
+    }
+
+    func cleanUp(_ action: NoteCleanup.Action, days: Int) {
+        let ids = cleanupCandidates(action, days: days).map(\.id)
+        switch action {
+        case .archive: archive(ids)
+        case .delete: delete(ids)
+        }
+    }
+
     // MARK: Translation
 
     /// Translates one note now, even if automatic translation is off or gave up.
@@ -832,7 +986,8 @@ extension RecordingController {
             let result = try await translator.translate(revision.text, modelLanguage: revision.language)
             outcome = NoteTranslation(
                 revisionID: revision.id,
-                status: result.english == nil ? .notNeeded : .done,
+                // A translation that repeats the original (misdetected English) isn't one.
+                status: result.english == nil || TextSimilarity.nearlySame(result.english, revision.text) ? .notNeeded : .done,
                 language: result.language,
                 english: result.english,
                 romanization: result.romanization,
