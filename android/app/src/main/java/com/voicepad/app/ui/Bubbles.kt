@@ -66,6 +66,7 @@ import com.voicepad.app.data.Note
 import com.voicepad.app.data.NoteSearch
 import com.voicepad.app.data.RevisionSource
 import com.voicepad.app.data.TranscriptionStatus
+import com.voicepad.app.data.NoteRewrite
 import com.voicepad.app.data.NoteTranslation
 import com.voicepad.app.data.TextSimilarity
 import com.voicepad.app.data.TranslationStatus
@@ -115,9 +116,11 @@ fun NoteBubble(
     val bodyText = if (hasText) note.currentText else note.partialText.orEmpty()
     val solid = hasText || note.status == TranscriptionStatus.DONE
     val translated = note.currentTranslation?.takeIf { it.status == TranslationStatus.DONE }
+    val rewrite = note.currentRewrite?.takeIf { it.text.isNotBlank() && it.text != bodyText }
     val copyTranslation = translated?.let { t ->
         { onCopyText(listOfNotNull(t.romanization, t.english).joinToString("\n")) }
     }
+    val copyRewrite = rewrite?.let { rw -> { onCopyText(rw.text) } }
     // Same actions as the long-press menu; null where the action doesn't apply.
     val onTap: (() -> Unit)? = when (tapAction) {
         NoteTapAction.EDIT -> onEdit
@@ -158,6 +161,10 @@ fun NoteBubble(
                 } else if (note.status == TranscriptionStatus.DONE) {
                     Text("No speech detected", color = textColor.copy(alpha = 0.8f), fontStyle = FontStyle.Italic)
                 }
+                rewrite?.let { rw ->
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp), color = textColor.copy(alpha = 0.3f))
+                    RewriteSection(rw, textColor)
+                }
                 if (!hasText || working) {
                     StatusLine(note, engineStatus, textColor, onRetranscribe)
                 }
@@ -183,6 +190,12 @@ fun NoteBubble(
                     }
                 } else if (hasText) {
                     MenuItem("Translate to English", Icons.Default.Translate) { menuOpen = false; onTranslate() }
+                }
+                if (copyRewrite != null) {
+                    MenuItem("Copy rewrite", Icons.Default.Keyboard) {
+                        menuOpen = false
+                        copyRewrite()
+                    }
                 }
                 MenuItem(if (note.pinned) "Unpin" else "Pin", Icons.Default.PushPin) { menuOpen = false; onTogglePin() }
                 MenuItem("Edit", Icons.Default.Edit) { menuOpen = false; onEdit() }
@@ -321,6 +334,19 @@ private fun LanguageLabel(name: String, color: Color) {
         Icon(Icons.Default.Translate, null, Modifier.size(12.dp), tint = color.copy(alpha = 0.7f))
         Spacer(Modifier.width(4.dp))
         Text(name.uppercase(), color = color.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+/** The LLM's rewrite of a note, shown below the transcript like a translation. */
+@Composable
+private fun RewriteSection(rewrite: NoteRewrite, color: Color) {
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 2.dp)) {
+            Icon(Icons.Default.Keyboard, null, Modifier.size(12.dp), tint = color.copy(alpha = 0.7f))
+            Spacer(Modifier.width(4.dp))
+            Text((rewrite.prompt ?: "Rewritten").uppercase(), color = color.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall)
+        }
+        Text(rewrite.text, color = color)
     }
 }
 
