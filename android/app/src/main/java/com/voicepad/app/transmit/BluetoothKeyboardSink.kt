@@ -99,7 +99,12 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
                 BluetoothProfile.STATE_CONNECTED -> {
                     connected = device
                     prefs.edit { putString(LAST_HOST, device.address) }
-                    _state.value = SinkState(SinkStatus.CONNECTED)
+                    val name = try {
+                        device.name
+                    } catch (_: SecurityException) {
+                        null
+                    }
+                    _state.value = SinkState(SinkStatus.CONNECTED, host = name ?: device.address)
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     if (connected == device) connected = null

@@ -367,3 +367,22 @@ Style presets only change the system instruction (e.g. *Formal email* adds
   from "Tight", and what OS/foreground reserve (1.5 GB vs 2 GB) is realistic?
 - Should the recommendation re-check after the user picks a heavier ASR model
   (and warn if the current LLM choice no longer fits)?
+
+---
+
+## As built (keyboard mode UX)
+
+- **Sending:** while a host is connected, double-tap any note bubble or
+  conversation turn, use a note's "Type on paired device" menu item, or tap
+  the keyboard icon (latest note). Anything the app copies to the clipboard
+  (Copy, copy translation, copy from history, auto-copy when a recording
+  finishes) is also typed.
+- **Keyboard menu:** drag the keyboard icon down (or long-press it) for
+  connection controls, the LLM rewrite toggle and the prompt.
+- **Prompts:** two presets, *Clean up* (fix recognition, punctuation and
+  capitalisation; keep wording) and *Polish* (drop filler words and false
+  starts, fix grammar, split into sentences and paragraphs), plus your own
+  prompts; the last 8 you used are remembered. These replace the fixed style
+  presets above.
+- **Icon colours:** tertiary while waiting for a host, primary (with a dot)
+  when connected, filled while typing. Never red, which is the recording colour.

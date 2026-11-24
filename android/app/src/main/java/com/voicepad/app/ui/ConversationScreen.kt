@@ -254,7 +254,8 @@ private fun PaneTurn(turn: Turn, language: String, textSize: Int, isLive: Boolea
     val size = if (newest) textSize else (textSize * 0.7f).toInt()
     val original = turn.language == language
     val main = turn.textIn(language) ?: if (turn.translationFailed) turn.text else "…"
-    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+    // Double-tap types what this reader sees (finished turns only).
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).doubleTapToType(if (isLive || main == "…") "" else main)) {
         Box(Modifier.width(5.dp).fillMaxHeight().background(color, RoundedCornerShape(3.dp)))
         Spacer(Modifier.width(10.dp))
         Column {
@@ -304,7 +305,9 @@ internal fun TranscriptPane(state: ConversationController.UiState, textSize: Int
             val newest = turn === newestFirst.first()
             val size = if (newest) textSize else (textSize * 0.7f).toInt()
             val color = speakerColor(turn.speaker)
-            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+            // Double-tap types the translation if there is one, else what was said.
+            val typed = if (isLive) "" else turn.translation ?: turn.text
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).doubleTapToType(typed)) {
                 Box(Modifier.width(5.dp).fillMaxHeight().background(color, RoundedCornerShape(3.dp)))
                 Spacer(Modifier.width(10.dp))
                 Column {

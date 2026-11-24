@@ -12,6 +12,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -69,8 +73,9 @@ private fun Context.hasBluetoothPermissions() = bluetoothPermissions.all {
  *   keyboard, then reconnects the last host or offers the paired devices.
  * - Advertising: tap picks a paired device to connect to, pairs a new one
  *   (the only case that asks to make the phone discoverable), or stops.
- * - Connected: tap types the latest note (tap again to stop mid-way);
- *   long-press disconnects and stops advertising.
+ * - Connected: tap types the latest note (tap again to stop mid-way).
+ * - Drag down or long-press: the keyboard menu (connection, LLM rewrite
+ *   toggle and prompt).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -85,6 +90,7 @@ fun KeyboardButton(
 
     val discoverable = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {}
     var showHosts by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
     // Open the host picker once registration finishes after a tap to start.
     var pickAfterStart by remember { mutableStateOf(false) }
 
@@ -184,35 +190,70 @@ fun KeyboardButton(
         else -> "Type as keyboard"
     }
 
-    // Sized and shaped like an IconButton, plus a long-press to disconnect.
+    if (showMenu) {
+        KeyboardMenu(
+            controller = controller,
+            state = state,
+            onTurnOn = { if (context.hasBluetoothPermissions()) start() else permissions.launch(bluetoothPermissions) },
+            onPickHost = { showHosts = true },
+            onTypeLatest = onTypeLatest,
+            onDismiss = { showMenu = false },
+        )
+    }
+
+    val colors = MaterialTheme.colorScheme
+    val typing = state.transmitStatus == SinkStatus.CONNECTED && state.isTyping
+    // Sized and shaped like an IconButton. Drag down (or long-press) opens the
+    // keyboard menu. Deliberately never red: that's the recording colour.
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .size(48.dp)
             .clip(CircleShape)
+            .background(if (typing) colors.primaryContainer else Color.Transparent, CircleShape)
+            .pointerInput(Unit) {
+                val threshold = 24.dp.toPx()
+                var pulled = 0f
+                var opened = false
+                detectVerticalDragGestures(
+                    onDragStart = { pulled = 0f; opened = false },
+                    onVerticalDrag = { change, dy ->
+                        change.consume()
+                        pulled += dy
+                        if (!opened && pulled > threshold) {
+                            opened = true
+                            showMenu = true
+                        }
+                    },
+                )
+            }
             .combinedClickable(
                 role = Role.Button,
                 onClickLabel = label,
                 onClick = onClick,
-                onLongClickLabel = "Stop keyboard mode",
-                onLongClick = {
-                    if (state.transmitStatus == SinkStatus.CONNECTED || state.transmitStatus == SinkStatus.ADVERTISING) {
-                        controller.stopKeyboard()
-                        toast("Keyboard disconnected.")
-                    }
-                },
+                onLongClickLabel = "Keyboard options",
+                onLongClick = { showMenu = true },
             ),
     ) {
         Icon(
             Icons.Default.Keyboard,
             contentDescription = label,
-            tint = when {
-                state.transmitStatus == SinkStatus.CONNECTED && state.isTyping -> MaterialTheme.colorScheme.tertiary
-                state.transmitStatus == SinkStatus.CONNECTED -> MaterialTheme.colorScheme.primary
-                state.transmitStatus == SinkStatus.ADVERTISING || state.transmitStatus == SinkStatus.REGISTERING -> RecordingRed
-                else -> MaterialTheme.colorScheme.onSurface
+            tint = when (state.transmitStatus) {
+                SinkStatus.CONNECTED -> if (typing) colors.onPrimaryContainer else colors.primary
+                SinkStatus.ADVERTISING, SinkStatus.REGISTERING -> colors.tertiary
+                else -> colors.onSurface
             },
         )
+        if (state.transmitStatus == SinkStatus.CONNECTED && !typing) {
+            // A small dot so "connected" reads at a glance, even in monochrome themes.
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 10.dp, end = 10.dp)
+                    .size(7.dp)
+                    .background(colors.primary, CircleShape),
+            )
+        }
     }
 }
 

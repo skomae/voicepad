@@ -32,7 +32,7 @@ import com.voicepad.app.llm.LlmChoice
 import com.voicepad.app.llm.LlmEngine
 import com.voicepad.app.llm.LlmGuidance
 import com.voicepad.app.llm.LlmModelManager
-import com.voicepad.app.llm.LlmPrompt.TypeStyle
+import com.voicepad.app.llm.LlmPrompt
 import com.voicepad.app.llm.createLlmEngine
 import com.voicepad.app.transcription.AudioLevel
 import com.voicepad.app.transcription.AutoEngine
@@ -69,6 +69,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
+import org.json.JSONArray
 
 /**
  * Owns the recorder and the speech engine and turns audio into text.
@@ -144,7 +145,12 @@ class RecordingController(
         val llmEnabled: Boolean = false,
         val llmStatus: LlmStatus = LlmStatus.Idle,
         val llmChoice: LlmChoice = LlmChoice.QWEN_0_5B,
-        val typeStyle: TypeStyle = TypeStyle.CLEANUP,
+        /** Instruction the LLM follows before typing (a preset or the user's own). */
+        val typePrompt: String = LlmPrompt.CLEANUP.instruction,
+        /** User-written prompts, most recent first (presets aren't included). */
+        val recentPrompts: List<String> = emptyList(),
+        /** Name of the computer the keyboard is connected to. */
+        val transmitHost: String? = null,
         /** Text is being transformed and/or typed on the paired host. */
         val isTyping: Boolean = false,
     ) {
@@ -198,8 +204,14 @@ class RecordingController(
             llmEnabled = prefs.getBoolean("llmEnabled", false),
             llmChoice = prefs.getString("llmChoice", null)
                 ?.let { runCatching { LlmChoice.valueOf(it) }.getOrNull() } ?: LlmChoice.QWEN_0_5B,
-            typeStyle = prefs.getString("typeStyle", null)
-                ?.let { runCatching { TypeStyle.valueOf(it) }.getOrNull() } ?: TypeStyle.CLEANUP,
+            typePrompt = prefs.getString("typePrompt", null)?.takeIf { it.isNotBlank() }
+                ?: LlmPrompt.CLEANUP.instruction,
+            recentPrompts = prefs.getString("recentPrompts", null)?.let { json ->
+                runCatching {
+                    val array = JSONArray(json)
+                    List(array.length()) { array.getString(it) }
+                }.getOrNull()
+            }.orEmpty(),
         )
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -282,7 +294,7 @@ class RecordingController(
         }
 
         // Reflect the Bluetooth keyboard sink's state into the UI.
-        scope.launch { keyboard.state.collect { s -> _state.update { it.copy(transmitStatus = s.status, transmitError = s.error) } } }
+        scope.launch { keyboard.state.collect { s -> _state.update { it.copy(transmitStatus = s.status, transmitError = s.error, transmitHost = s.host) } } }
 
         // Translate whenever a note gets new text (transcription, edit, restore).
         scope.launch { store.notes.collect { processTranslations() } }
@@ -656,7 +668,12 @@ class RecordingController(
         val text = store.note(noteId)?.currentText?.takeIf { it.isNotBlank() } ?: return
         val clipboard = context.getSystemService(ClipboardManager::class.java)
         clipboard.setPrimaryClip(ClipData.newPlainText("VoicePad transcript", text))
-        Toast.makeText(context, "Transcript copied to clipboard", Toast.LENGTH_SHORT).show()
+        val typing = sendToKeyboardIfConnected(text)
+        Toast.makeText(
+            context,
+            if (typing) "Transcript copied and typing on the keyboard" else "Transcript copied to clipboard",
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 
     fun setAutoSplit(mode: AutoSplit) {
@@ -1187,6 +1204,17 @@ class RecordingController(
         typeText(store.note(noteId)?.currentText.orEmpty())
     }
 
+    /**
+     * Also types [text] when a host is connected; used wherever the app
+     * copies text to the clipboard. Returns whether typing started.
+     */
+    fun sendToKeyboardIfConnected(text: String): Boolean {
+        if (_state.value.transmitStatus != SinkStatus.CONNECTED || text.isBlank()) return false
+        if (typingJob?.isActive == true) return false
+        typeText(text)
+        return true
+    }
+
     fun stopTyping() {
         typingJob?.cancel()
     }
@@ -1208,9 +1236,22 @@ class RecordingController(
         if (_state.value.llmEnabled) loadLlm()
     }
 
-    fun setTypeStyle(style: TypeStyle) {
-        prefs.edit { putString("typeStyle", style.name) }
-        _state.update { it.copy(typeStyle = style) }
+    /** Uses [instruction] for the LLM rewrite and remembers it if it's the user's own. */
+    fun setTypePrompt(instruction: String) {
+        val trimmed = instruction.trim()
+        if (trimmed.isEmpty()) return
+        val recent = LlmPrompt.remember(_state.value.recentPrompts, trimmed)
+        prefs.edit {
+            putString("typePrompt", trimmed)
+            putString("recentPrompts", JSONArray(recent).toString())
+        }
+        _state.update { it.copy(typePrompt = trimmed, recentPrompts = recent) }
+    }
+
+    fun forgetPrompt(instruction: String) {
+        val recent = _state.value.recentPrompts - instruction
+        prefs.edit { putString("recentPrompts", JSONArray(recent).toString()) }
+        _state.update { it.copy(recentPrompts = recent) }
     }
 
     fun llmAdvice(choice: LlmChoice): LlmAdvice =
@@ -1273,7 +1314,7 @@ class RecordingController(
     private suspend fun transform(text: String): String = llmMutex.withLock {
         val engine = llm ?: return@withLock text
         try {
-            withContext(Dispatchers.Default) { engine.transform(text, _state.value.typeStyle) }
+            withContext(Dispatchers.Default) { engine.transform(text, _state.value.typePrompt) }
                 .ifBlank { text }
         } catch (e: CancellationException) {
             throw e

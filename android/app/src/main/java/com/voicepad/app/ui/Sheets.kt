@@ -69,7 +69,6 @@ import com.voicepad.app.data.Note
 import com.voicepad.app.data.Revision
 import com.voicepad.app.llm.Guidance
 import com.voicepad.app.llm.LlmChoice
-import com.voicepad.app.llm.LlmPrompt.TypeStyle
 import com.voicepad.app.transcription.EngineChoice
 import java.util.Date
 
@@ -333,7 +332,8 @@ fun SettingsSheet(
                     Text("Clean up with a small LLM")
                     Text(
                         "Optionally run a tiny on-device model over the text before it's typed as a keyboard. " +
-                            "Runs alongside the speech model; the picker recommends a size for this phone.",
+                            "Runs alongside the speech model; the picker recommends a size for this phone. " +
+                            "Also in the keyboard icon's menu (drag the icon down).",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -342,19 +342,13 @@ fun SettingsSheet(
                 Switch(checked = state.llmEnabled, onCheckedChange = controller::setLlmEnabled)
             }
             if (state.llmEnabled) {
-                Text("Style", style = MaterialTheme.typography.titleSmall)
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.padding(top = 6.dp).horizontalScroll(rememberScrollState()),
-                ) {
-                    TypeStyle.entries.forEach { style ->
-                        FilterChip(
-                            selected = state.typeStyle == style,
-                            onClick = { controller.setTypeStyle(style) },
-                            label = { Text(style.label) },
-                        )
-                    }
-                }
+                Text("Prompt", style = MaterialTheme.typography.titleSmall)
+                PromptChooser(
+                    current = state.typePrompt,
+                    recent = state.recentPrompts,
+                    onUse = controller::setTypePrompt,
+                    onForget = controller::forgetPrompt,
+                )
                 Text("Model", style = MaterialTheme.typography.titleSmall)
                 LlmChoice.entries.forEach { choice ->
                     val advice = controller.llmAdvice(choice)

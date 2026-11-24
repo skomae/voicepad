@@ -1,11 +1,11 @@
 package com.voicepad.app.llm
 
-import com.voicepad.app.llm.LlmPrompt.TypeStyle
 import java.io.File
 
 /** Post-processes text before it is typed out. Not thread-safe; callers serialise access. */
 interface LlmEngine {
-    suspend fun transform(text: String, style: TypeStyle): String
+    /** Rewrites [text] following [instruction] (see [LlmPrompt.system]). */
+    suspend fun transform(text: String, instruction: String): String
     fun release()
 }
 

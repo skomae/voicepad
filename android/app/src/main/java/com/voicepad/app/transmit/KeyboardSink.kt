@@ -8,7 +8,8 @@ import kotlinx.coroutines.flow.StateFlow
 /** How the "type as keyboard" sink is doing. */
 enum class SinkStatus { UNAVAILABLE, IDLE, REGISTERING, ADVERTISING, CONNECTED, FAILED }
 
-data class SinkState(val status: SinkStatus, val error: String? = null)
+/** [host] is the connected device's name while [status] is CONNECTED. */
+data class SinkState(val status: SinkStatus, val error: String? = null, val host: String? = null)
 
 /** A device already paired with the phone that the keyboard could connect to. */
 data class KeyboardHost(val address: String, val name: String, val isComputer: Boolean, val isLast: Boolean)

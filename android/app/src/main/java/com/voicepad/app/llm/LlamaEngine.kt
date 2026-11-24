@@ -1,6 +1,5 @@
 package com.voicepad.app.llm
 
-import com.voicepad.app.llm.LlmPrompt.TypeStyle
 import java.io.File
 
 /**
@@ -10,8 +9,8 @@ import java.io.File
  */
 class LlamaEngine private constructor(private val handle: Long) : LlmEngine {
 
-    override suspend fun transform(text: String, style: TypeStyle): String {
-        val bytes = LlamaJni.complete(handle, style.system, text, LlmPrompt.maxTokens(text))
+    override suspend fun transform(text: String, instruction: String): String {
+        val bytes = LlamaJni.complete(handle, LlmPrompt.system(instruction), text, LlmPrompt.maxTokens(text))
             ?: throw IllegalStateException("The model couldn't process this text.")
         return String(bytes, Charsets.UTF_8).trim()
     }

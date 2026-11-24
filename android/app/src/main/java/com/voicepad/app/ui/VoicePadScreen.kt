@@ -152,7 +152,13 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
         if (!searching && itemCount > 0) listState.animateScrollToItem(itemCount - 1)
     }
 
-    fun copy(text: String) = copyToClipboard(context, text)
+    // Copying also types the text when a Bluetooth keyboard host is connected.
+    fun copy(text: String) {
+        copyToClipboard(context, text)
+        if (controller.sendToKeyboardIfConnected(text)) {
+            Toast.makeText(context, "Copied and typing on ${state.transmitHost ?: "the paired device"}", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     @Composable
     fun Bubble(note: Note, highlight: List<String> = emptyList(), matchedEarlier: Boolean = false) {
@@ -174,7 +180,7 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
             onTranslate = { controller.translateNow(note.id) },
             onArchive = { if (note.archived) controller.unarchive(note.id) else controller.archive(listOf(note.id)) },
             onCopyText = ::copy,
-            onType = if (state.transmitStatus == SinkStatus.CONNECTED && !state.isTyping) {
+            onType = if (state.transmitStatus == SinkStatus.CONNECTED) {
                 { controller.typeNote(note.id) }
             } else {
                 null

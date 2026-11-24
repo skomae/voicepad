@@ -24,6 +24,10 @@ import com.voicepad.app.ui.ConversationScreen
 import com.voicepad.app.ui.VoicePadScreen
 import com.voicepad.app.ui.VoicePadTheme
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
+import com.voicepad.app.transmit.SinkStatus
+import com.voicepad.app.ui.LocalTypeOnKeyboard
 
 class MainActivity : ComponentActivity() {
     private val app get() = application as VoicePadApplication
@@ -56,10 +60,15 @@ class MainActivity : ComponentActivity() {
             }
             VoicePadTheme(state.themeMode) {
                 val conversationState by conversation.state.collectAsStateWithLifecycle()
-                if (conversationState.visible) {
-                    ConversationScreen(conversation, controller)
-                } else {
-                    VoicePadScreen(controller, conversation)
+                val connected = state.transmitStatus == SinkStatus.CONNECTED
+                val typeOnKeyboard: ((String) -> Unit)? =
+                    remember(connected) { if (connected) controller::typeText else null }
+                CompositionLocalProvider(LocalTypeOnKeyboard provides typeOnKeyboard) {
+                    if (conversationState.visible) {
+                        ConversationScreen(conversation, controller)
+                    } else {
+                        VoicePadScreen(controller, conversation)
+                    }
                 }
             }
         }

@@ -99,7 +99,7 @@ fun NoteBubble(
     onTranslate: () -> Unit = {},
     onCopyText: (String) -> Unit = {},
     onArchive: () -> Unit = {},
-    /** Types the note on the paired Bluetooth host; null hides the menu item (not connected). */
+    /** Types the note on the paired Bluetooth host (menu item and double-tap); null when not connected. */
     onType: (() -> Unit)? = null,
     /** Small window: only the date and Copy under the bubble; the rest is in the long-press menu. */
     compact: Boolean = false,
@@ -119,7 +119,13 @@ fun NoteBubble(
                 Modifier
                     .background(if (solid) colors.primary else colors.surfaceVariant, BubbleShape)
                     .then(if (failed) Modifier.border(1.5.dp, colors.error, BubbleShape) else Modifier)
-                    .combinedClickable(onClick = onEdit, onLongClick = { menuOpen = true })
+                    .combinedClickable(
+                        onClick = onEdit,
+                        onLongClick = { menuOpen = true },
+                        // Only while a keyboard is connected, so a single tap
+                        // otherwise edits without waiting out a double-tap.
+                        onDoubleClick = onType?.takeIf { hasText },
+                    )
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
                 val textColor = if (solid) colors.onPrimary else colors.onSurfaceVariant
