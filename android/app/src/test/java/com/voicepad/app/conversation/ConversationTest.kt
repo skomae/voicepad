@@ -118,6 +118,12 @@ class ChannelAttributionTest {
         assertEquals(20f, ChannelAttribution.separationDb(levels)!!, 0.5f)
     }
 
+    @Test fun garbledLevelsDontCrash() {
+        val levels = listOf(floatArrayOf(Float.NaN, -20f), floatArrayOf(Float.NaN, -40f))
+        assertTrue(ChannelAttribution.owns(levels, 0))
+        assertFalse(ChannelAttribution.owns(levels, 1))
+    }
+
     @Test fun silenceIsNobody() {
         val levels = listOf(FloatArray(20) { -90f }, FloatArray(20) { -90f })
         assertEquals(null, ChannelAttribution.separationDb(levels))

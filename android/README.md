@@ -126,6 +126,9 @@ copied, edited, re-transcribed and rolled back through its revision history.
   - Pauses when the app goes to the background; note recording is paused
     while it's open and resumes after. Each listening stretch is saved as a
     note: its audio plus the speaker-labelled transcript with translations.
+- **Crash reports**: if VoicePad closes unexpectedly, the next launch shows
+  what happened (the error, or Android's record of a native crash or a
+  freeze) with *Copy* and *Share*, for a bug report.
 - **Recordings are never lost to a model failure.** Every note saves its
   transcription status (recording → pending → transcribing → done/failed).
   Audio stays on disk until it has text; failed or waiting recordings show

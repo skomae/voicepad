@@ -351,7 +351,10 @@ class ConversationController(
     }
 
     /** One listening session: one recording, one saved note. */
-    private inner class Session(val number: Int, val noteId: String, val lanes: List<Lane>)
+    private inner class Session(val number: Int, val noteId: String, val lanes: List<Lane>) {
+        val startedAt = System.currentTimeMillis()
+        var silenceReported = false
+    }
 
     private var session: Session? = null
     private var sessionCount = 0
@@ -495,7 +498,18 @@ class ConversationController(
      * turns, oldest first; then previews speech still in progress.
      */
     private suspend fun step(s: Session, final: Boolean) {
+        recorder.captureError?.let { error ->
+            if (_state.value.message != error) showMessage(error)
+        }
         val now = recorder.sampleCount
+        // Some phones accept a stereo recording and then deliver nothing.
+        if (!final && now == 0 && !s.silenceReported && System.currentTimeMillis() - s.startedAt > 3000) {
+            s.silenceReported = true
+            showMessage(
+                if (_state.value.recordingChannels > 1) "No sound is coming from the microphone in ${_state.value.recordingChannels} channels — switch to 1 channel in settings."
+                else "No sound is coming from the microphone."
+            )
+        }
         for (lane in s.lanes) feed(lane, now, final)
         if (!notes.isEngineReady) return // audio waits in memory (and on disk) until the model is ready
         while (true) {
