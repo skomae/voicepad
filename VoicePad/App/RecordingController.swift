@@ -57,6 +57,24 @@ final class RecordingController {
     private(set) var finishingCount = 0
     /// Background voices (announcements, TV): room microphone, louder speech, Whisper turbo.
     private(set) var backgroundVoices: Bool
+    /// A short message for the user (shown as a toast), e.g. "Transcript copied".
+    var notice: String?
+
+    /// Light, dark, pure black (OLED), or follow the phone.
+    var themeMode: ThemeMode {
+        didSet { UserDefaults.standard.set(themeMode.rawValue, forKey: Self.themeKey) }
+    }
+
+    /// When a recording (or split part) finishes transcribing, copy it to the clipboard.
+    var copyWhenDone: Bool {
+        didSet { UserDefaults.standard.set(copyWhenDone, forKey: Self.copyWhenDoneKey) }
+    }
+
+    /// Start a new note automatically after a silence or every few minutes.
+    var autoSplit: AutoSplit {
+        didSet { UserDefaults.standard.set(autoSplit.rawValue, forKey: Self.autoSplitKey) }
+    }
+
     /// Models that have loaded on this device, for the quick switcher.
     private(set) var installedEngines: Set<EngineChoice>
 
@@ -118,6 +136,9 @@ final class RecordingController {
     private static let autoTranslateKey = "autoTranslate"
     private static let backgroundVoicesKey = "backgroundVoices"
     private static let installedKey = "installedEngines"
+    private static let themeKey = "theme"
+    private static let copyWhenDoneKey = "copyWhenDone"
+    private static let autoSplitKey = "autoSplit"
     private static let rate = AudioRecorder.sampleRate
     /// Longest audio one model call gets (Whisper's window is 30 s).
     private static let maxChunk = Int(25 * rate)
@@ -162,6 +183,9 @@ final class RecordingController {
         selectedInputID = UserDefaults.standard.string(forKey: Self.inputKey)
         autoTranslate = UserDefaults.standard.object(forKey: Self.autoTranslateKey) as? Bool ?? true
         backgroundVoices = UserDefaults.standard.bool(forKey: Self.backgroundVoicesKey)
+        themeMode = UserDefaults.standard.string(forKey: Self.themeKey).flatMap(ThemeMode.init(rawValue:)) ?? .system
+        copyWhenDone = UserDefaults.standard.object(forKey: Self.copyWhenDoneKey) as? Bool ?? true
+        autoSplit = UserDefaults.standard.string(forKey: Self.autoSplitKey).flatMap(AutoSplit.init(rawValue:)) ?? .off
         installedEngines = Set((UserDefaults.standard.stringArray(forKey: Self.installedKey) ?? []).compactMap(EngineChoice.init(rawValue:)))
 
         // Before anything records: repair what a crash or kill left behind.
@@ -334,9 +358,16 @@ final class RecordingController {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(self?.tickSeconds ?? 1.2))
                 guard let self, !Task.isCancelled else { return }
-                if let current = self.session, self.isEngineReady {
+                guard let current = self.session else { continue }
+                if self.isEngineReady {
                     _ = await self.step(current, final: false)
+                } else if !current.stepping {
+                    // No model yet: still track speech, so pauses (and auto-split) work from the start.
+                    current.stepping = true
+                    try? await self.feedDetector(current, now: self.recorder.sampleCount, final: false)
+                    current.stepping = false
                 }
+                self.maybeAutoSplit(current)
             }
         }
     }
@@ -478,6 +509,8 @@ final class RecordingController {
                 }
             }
         }
+        // Every finished part is copied: after Stop, a manual split or an auto-split.
+        if error == nil { copyWhenDone(noteID) }
     }
 
     /// One live step for `s`: finds newly finished utterances, commits them,
@@ -490,22 +523,7 @@ final class RecordingController {
         defer { s.stepping = false }
         do {
             let now = s.end ?? recorder.sampleCount
-            if let vad = s.detector {
-                if now > s.detectedUpTo {
-                    // The detector counts from the first sample it was given: this note's origin.
-                    let found = try await vad.feed(recorder.samples(in: s.detectedUpTo..<now))
-                    s.pending += found.map { Span(start: $0.start + s.origin, end: $0.end + s.origin) }
-                    s.detectedUpTo = now
-                    if !vad.inSpeech { s.quietAt = now }
-                }
-                if final {
-                    let found = try await vad.flush()
-                    s.pending += found.map { Span(start: $0.start + s.origin, end: min($0.end + s.origin, now)) }
-                }
-            } else if final || now - s.committedUpTo >= Self.maxChunk {
-                // No detector: treat everything as speech; the planner cuts at quiet points.
-                s.pending = [Span(start: s.committedUpTo, end: now)]
-            }
+            try await feedDetector(s, now: now, final: final)
 
             let batchReady = final || grouping == .utterances ||
                 (s.pending.first.map { now - $0.start >= Self.whisperBatch } ?? false)
@@ -535,6 +553,51 @@ final class RecordingController {
             if final { errorMessage = "Transcription failed — the recording is saved and can be retried." }
             return error.localizedDescription
         }
+    }
+
+    /// Passes new audio of `s` to its speech detector, collecting finished
+    /// utterances and noting when speech was last heard (for auto-split).
+    /// Runs even while no model is loaded, so nothing is missed.
+    private func feedDetector(_ s: LiveSession, now: Int, final: Bool) async throws {
+        if let vad = s.detector {
+            if now > s.detectedUpTo {
+                // The detector counts from the first sample it was given: this note's origin.
+                let found = try await vad.feed(recorder.samples(in: s.detectedUpTo..<now))
+                    .map { Span(start: $0.start + s.origin, end: $0.end + s.origin) }
+                s.pending += found
+                if let last = found.last { s.lastVoiceAt = max(s.lastVoiceAt ?? 0, last.end) }
+                s.detectedUpTo = now
+                if vad.inSpeech { s.lastVoiceAt = now } else { s.quietAt = now }
+            }
+            if final {
+                let found = try await vad.flush()
+                s.pending += found.map { Span(start: $0.start + s.origin, end: min($0.end + s.origin, now)) }
+            }
+        } else {
+            s.lastVoiceAt = now // no detector: can't tell silence apart, so assume speech
+            if final || now - s.committedUpTo >= Self.maxChunk {
+                // Treat everything as speech; the planner cuts at quiet points.
+                s.pending = [Span(start: s.committedUpTo, end: now)]
+            }
+        }
+    }
+
+    /// Splits the note being recorded when the auto-split rule says so.
+    private func maybeAutoSplit(_ s: LiveSession) {
+        guard s === session, isRecording else { return }
+        let speaking = s.detector?.inSpeech ?? true
+        if autoSplit.shouldSplit(noteStart: s.origin, now: recorder.sampleCount, speaking: speaking,
+                                 lastVoiceAt: s.lastVoiceAt, rate: Int(Self.rate)) {
+            split()
+        }
+    }
+
+    /// Puts a just-finished recording's transcript on the clipboard and says so.
+    private func copyWhenDone(_ noteID: Note.ID) {
+        guard copyWhenDone, let text = store.note(id: noteID)?.currentText,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        UIPasteboard.general.string = text
+        notice = "Transcript copied to clipboard"
     }
 
     /// Transcribes and commits every pending utterance of `s`, chunk by chunk.
@@ -854,6 +917,8 @@ private final class LiveSession {
     var end: Int?
     /// A step is running (live and final steps must not overlap).
     var stepping = false
+    /// Last moment speech was heard in this note (nil: nothing said yet).
+    var lastVoiceAt: Int?
     let translations = TaskGroupTracker()
 
     init(noteID: Note.ID, origin: Int, detector: SpeechDetector?) {
@@ -891,36 +956,34 @@ extension RecordingController {
     }
 
     /// Archives notes: compresses each one's audio to AAC (about a tenth of the
-    /// size) and moves it out of the main list. The WAV is only deleted once
-    /// the compressed copy has been checked and the note saved; if compression
-    /// fails the note stays as it was and you're told why.
+    /// size) and moves it out of the main list. If compression fails the note
+    /// stays as it was and you're told why.
     func archive(_ ids: [Note.ID]) {
+        runOnNotes(ids) { note in
+            if note.archived { return true }
+            let ok = await self.compressAudio(note.id)
+            if ok {
+                self.store.update(note.id) {
+                    $0.archived = true
+                    $0.archivedAt = .now
+                }
+            }
+            return ok
+        }
+    }
+
+    /// Compresses notes' audio to AAC (about a tenth of the size) but keeps them in the list.
+    func compress(_ ids: [Note.ID]) {
+        runOnNotes(ids) { note in await self.compressAudio(note.id) }
+    }
+
+    /// Runs `work` on each idle note in turn and reports any that couldn't be compressed.
+    private func runOnNotes(_ ids: [Note.ID], _ work: @escaping @MainActor (Note) async -> Bool) {
         Task {
             var failed = 0
             for id in ids {
-                guard let note = store.note(id: id), !note.archived, !busyIDs.contains(id), note.status != .inProgress else { continue }
-                if let wav = store.audioURL(for: note), wav.pathExtension.lowercased() == "wav",
-                   FileManager.default.fileExists(atPath: wav.path) {
-                    let m4aName = wav.deletingPathExtension().lastPathComponent + ".m4a"
-                    let m4a = store.recordingsURL.appendingPathComponent(m4aName)
-                    do {
-                        try await Task.detached { try AudioArchive.compress(wav, to: m4a) }.value
-                    } catch {
-                        failed += 1
-                        continue
-                    }
-                    store.update(id) {
-                        $0.audioFileName = m4aName
-                        $0.archived = true
-                        $0.archivedAt = .now
-                    }
-                    try? FileManager.default.removeItem(at: wav)
-                } else {
-                    store.update(id) {
-                        $0.archived = true
-                        $0.archivedAt = .now
-                    }
-                }
+                guard let note = store.note(id: id), !busyIDs.contains(id), note.status != .inProgress else { continue }
+                if await !work(note) { failed += 1 }
             }
             if failed > 0 {
                 errorMessage = failed == 1
@@ -928,6 +991,36 @@ extension RecordingController {
                     : "\(failed) notes couldn't be compressed, so they were left as they were."
             }
         }
+    }
+
+    /// WAV → AAC for one note. The WAV is only deleted once the compressed copy
+    /// has been checked and the note saved. True if done (or nothing to do).
+    private func compressAudio(_ id: Note.ID) async -> Bool {
+        guard let note = store.note(id: id), let wav = store.audioURL(for: note),
+              wav.pathExtension.lowercased() == "wav", FileManager.default.fileExists(atPath: wav.path) else { return true }
+        let m4aName = wav.deletingPathExtension().lastPathComponent + ".m4a"
+        let m4a = store.recordingsURL.appendingPathComponent(m4aName)
+        do {
+            try await Task.detached { try AudioArchive.compress(wav, to: m4a) }.value
+        } catch {
+            return false
+        }
+        store.update(id) { $0.audioFileName = m4aName }
+        try? FileManager.default.removeItem(at: wav)
+        return true
+    }
+
+    /// Current audio size of `notes` and roughly what it would be compressed (bytes).
+    func audioSizes(_ notes: [Note]) -> (now: Int, after: Int) {
+        var now = 0, after = 0
+        for note in notes {
+            guard let url = store.audioURL(for: note) else { continue }
+            let size = WavFile.fileSize(url)
+            now += size
+            // 16 kHz 16-bit WAV is 256 kbit/s; the archive format is 24 kbit/s.
+            after += url.pathExtension.lowercased() == "wav" ? size * 24 / 256 : size
+        }
+        return (now, after)
     }
 
     /// Back to the main list (the audio stays compressed).
@@ -952,7 +1045,8 @@ extension RecordingController {
         let ids = cleanupCandidates(action, days: days).map(\.id)
         switch action {
         case .archive: archive(ids)
-        case .delete: delete(ids)
+        case .compress: compress(ids)
+        case .deleteEmpty, .delete: delete(ids)
         }
     }
 

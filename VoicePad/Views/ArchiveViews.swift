@@ -60,7 +60,7 @@ struct ArchivedNotesView: View {
     }
 }
 
-/// Archive or delete every unpinned note older than 1, 7 or 30 days.
+/// Archive, compress or delete notes by age.
 struct CleanupView: View {
     @Environment(RecordingController.self) private var controller
     @Environment(\.dismiss) private var dismiss
@@ -69,12 +69,20 @@ struct CleanupView: View {
     @State private var confirmDelete = false
 
     var body: some View {
-        let count = controller.cleanupCandidates(action, days: days).count
+        let candidates = controller.cleanupCandidates(action, days: days)
+        let count = candidates.count
         let notes = count == 1 ? "1 note" : "\(count) notes"
+        let deleting = action == .delete || action == .deleteEmpty
         NavigationStack {
             Form {
-                Section("Unpinned notes older than") {
+                Section {
+                    Picker("Action", selection: $action) {
+                        ForEach(NoteCleanup.Action.allCases) { Text($0.label).tag($0) }
+                    }
+                }
+                Section("Notes older than") {
                     Picker("Age", selection: $days) {
+                        Text("Any age").tag(0)
                         Text("1 day").tag(1)
                         Text("7 days").tag(7)
                         Text("30 days").tag(30)
@@ -82,29 +90,21 @@ struct CleanupView: View {
                     .pickerStyle(.segmented)
                 }
                 Section {
-                    Picker("Action", selection: $action) {
-                        Label("Archive", systemImage: "archivebox").tag(NoteCleanup.Action.archive)
-                        Label("Delete", systemImage: "trash").tag(NoteCleanup.Action.delete)
-                    }
-                    .pickerStyle(.segmented)
-                } footer: {
-                    Text("Pinned notes, and notes being recorded or transcribed, are never touched.")
-                }
-                Section {
-                    Text(count == 0 ? "No notes match."
-                         : action == .archive
-                         ? "\(notes) will be archived: hidden from the list, audio compressed to about a tenth of its size."
-                         : "\(notes) and their audio will be permanently deleted.")
-                        .foregroundStyle(action == .delete && count > 0 ? .red : .primary)
-                    Button(action == .archive ? "Archive \(count)" : "Delete \(count)", role: action == .delete ? .destructive : nil) {
-                        if action == .delete {
+                    Text(summary(count: count, notes: notes, candidates: candidates))
+                        .foregroundStyle(deleting && count > 0 ? .red : .primary)
+                    Button("\(action.label) \(count)", role: deleting ? .destructive : nil) {
+                        if deleting {
                             confirmDelete = true
                         } else {
-                            controller.cleanUp(.archive, days: days)
+                            controller.cleanUp(action, days: days)
                             dismiss()
                         }
                     }
                     .disabled(count == 0)
+                } footer: {
+                    Text(action == .compress
+                         ? "Compress keeps notes in the list, pinned ones included, just smaller."
+                         : "Pinned notes, and notes being recorded or transcribed, are never touched.")
                 }
             }
             .navigationTitle("Clean up notes")
@@ -114,12 +114,28 @@ struct CleanupView: View {
             }
             .confirmationDialog("Delete \(notes)?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Delete \(count)", role: .destructive) {
-                    controller.cleanUp(.delete, days: days)
+                    controller.cleanUp(action, days: days)
                     dismiss()
                 }
             } message: {
                 Text("This permanently deletes their audio and every revision. It can't be undone.")
             }
+        }
+    }
+
+    private func summary(count: Int, notes: String, candidates: [Note]) -> String {
+        guard count > 0 else { return "No notes match." }
+        switch action {
+        case .archive:
+            return "\(notes) will be archived: hidden from the list, audio compressed to about a tenth of its size."
+        case .compress:
+            let sizes = controller.audioSizes(candidates)
+            let fmt = ByteCountFormatter()
+            return "\(notes): audio goes from \(fmt.string(fromByteCount: Int64(sizes.now))) to about \(fmt.string(fromByteCount: Int64(sizes.after)))."
+        case .deleteEmpty:
+            return "\(notes) with no speech, and their audio, will be permanently deleted."
+        case .delete:
+            return "\(notes) and their audio will be permanently deleted."
         }
     }
 }

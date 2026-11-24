@@ -10,3 +10,4 @@ Payload/
 VoicePad/Info.plist
 VoicePadWidgets/Info.plist
 Config/Local.xcconfig
+build-device/

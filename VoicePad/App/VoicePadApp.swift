@@ -17,6 +17,8 @@ struct VoicePadApp: App {
             ContentView()
                 .environment(store)
                 .environment(controller)
+                .preferredColorScheme(controller.themeMode.colorScheme)
+                .environment(\.pureBlack, controller.themeMode == .black)
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             // Start recording the moment the app is opened.

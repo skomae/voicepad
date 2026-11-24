@@ -23,6 +23,7 @@ struct PulsingDot: View {
 
 struct RecordBar: View {
     @Environment(RecordingController.self) private var controller
+    @Environment(\.pureBlack) private var pureBlack
 
     var body: some View {
         let recording = controller.isRecording
@@ -65,21 +66,7 @@ struct RecordBar: View {
                 }
                 .accessibilityLabel(recording ? "Stop recording" : "Start recording")
 
-                // Split: like a stopwatch lap — ends this note and starts the next without a gap.
-                Button {
-                    controller.split()
-                } label: {
-                    VStack(spacing: 2) {
-                        Image(systemName: "scissors").font(.title3)
-                        Text("Split").font(.caption.weight(.medium))
-                    }
-                    .frame(width: 72, height: 56)
-                    .contentShape(Rectangle())
-                }
-                .foregroundStyle(recording ? Color.primary : Color.secondary.opacity(0.5))
-                .disabled(!recording)
-                .sensoryFeedback(.impact, trigger: controller.partNumber) { old, new in new > old }
-                .accessibilityLabel("Split: finish this recording and start a new one")
+                SplitButton()
             }
             Text(recording
                  ? "Recording" + (controller.partNumber > 1 ? " · part \(controller.partNumber)" : "")
@@ -90,7 +77,7 @@ struct RecordBar: View {
         }
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .background(.bar)
+        .background { if pureBlack { Color.black } else { Rectangle().fill(.bar) } }
     }
 }
 
@@ -150,5 +137,50 @@ struct EngineStatusBadge: View {
         .lineLimit(1)
         .fixedSize()
         .padding(.horizontal, 6)
+    }
+}
+
+/// The scissors: tap to split now (like a stopwatch lap — ends this note and
+/// starts the next without a gap); press and hold, then slide up, to pick an
+/// auto-split rule. A badge shows the active rule.
+struct SplitButton: View {
+    @Environment(RecordingController.self) private var controller
+
+    var body: some View {
+        @Bindable var controller = controller
+        let recording = controller.isRecording
+        Menu {
+            Picker("Auto-split", selection: $controller.autoSplit) {
+                // Furthest from the button first, like Android's drag-up list.
+                ForEach(AutoSplit.allCases.reversed()) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: "scissors")
+                    .font(.title3)
+                    .overlay(alignment: .topTrailing) {
+                        if let badge = controller.autoSplit.badge {
+                            Text(badge)
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 4)
+                                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 5))
+                                .offset(x: 18, y: -8)
+                                .fixedSize()
+                        }
+                    }
+                Text(controller.autoSplit == .off ? "Split" : "Auto").font(.caption.weight(.medium))
+            }
+            .frame(width: 72, height: 56)
+            .contentShape(Rectangle())
+        } primaryAction: {
+            if recording { controller.split() }
+        }
+        .menuOrder(.fixed)
+        .foregroundStyle(recording ? Color.primary : Color.secondary.opacity(0.6))
+        .sensoryFeedback(.impact, trigger: controller.partNumber) { old, new in new > old }
+        .accessibilityLabel("Split")
+        .accessibilityHint("Starts a new note now. Touch and hold to set auto-split, currently \(controller.autoSplit.label).")
     }
 }

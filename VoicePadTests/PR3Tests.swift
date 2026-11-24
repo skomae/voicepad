@@ -48,10 +48,13 @@ final class NoteCleanupTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 100 * NoteCleanup.day)
 
     private func note(_ name: String, _ ageDays: Double, pinned: Bool = false, archived: Bool = false,
-                      status: TranscriptionStatus = .done) -> (String, Note) {
-        var n = Note(createdAt: now.addingTimeInterval(-ageDays * NoteCleanup.day), status: status)
+                      status: TranscriptionStatus = .done, text: String? = "something said",
+                      audio: String? = nil, partial: String? = nil) -> (String, Note) {
+        var n = Note(createdAt: now.addingTimeInterval(-ageDays * NoteCleanup.day), audioFileName: audio ?? "\(name).wav", status: status)
         n.pinned = pinned
         n.archived = archived
+        n.partialText = partial
+        if let text { n.revisions = [Revision(text: text, source: .transcription, engine: nil)] }
         return (name, n)
     }
 
@@ -61,8 +64,12 @@ final class NoteCleanupTests: XCTestCase {
         note("tenDays", 10),
         note("fortyDays", 40),
         note("pinnedOld", 40, pinned: true),
-        note("archivedOld", 40, archived: true),
+        note("archivedOld", 40, archived: true, audio: "archivedOld.m4a"),
         note("stillTranscribing", 40, status: .inProgress),
+        note("emptyOld", 40, text: ""),
+        note("emptyFresh", 0.1, text: ""),
+        note("waitingForModel", 40, status: .pending, text: nil),
+        note("failedWithPartial", 40, status: .failed, text: nil, partial: "half a sentence"),
     ]
 
     private func ids(_ action: NoteCleanup.Action, _ days: Int, busy: Set<String> = []) -> Set<String> {
@@ -71,20 +78,90 @@ final class NoteCleanupTests: XCTestCase {
         return Set(NoteCleanup.select(notes.map(\.1), action: action, olderThanDays: days, now: now, busy: busyIDs).map { names[$0.id]! })
     }
 
+    private func named(_ name: String) -> Note { notes.first { $0.0 == name }!.1 }
+
     func testOlderThan1_7And30Days() {
-        XCTAssertEqual(ids(.archive, 1), ["twoDays", "tenDays", "fortyDays"])
-        XCTAssertEqual(ids(.archive, 7), ["tenDays", "fortyDays"])
-        XCTAssertEqual(ids(.archive, 30), ["fortyDays"])
+        XCTAssertEqual(ids(.archive, 1), ["twoDays", "tenDays", "fortyDays", "emptyOld", "waitingForModel", "failedWithPartial"])
+        XCTAssertEqual(ids(.archive, 7), ["tenDays", "fortyDays", "emptyOld", "waitingForModel", "failedWithPartial"])
     }
 
-    func testPinnedAndBusyNotesAreNeverTouched() {
-        XCTAssertEqual(ids(.delete, 30), ["fortyDays", "archivedOld"])
-        XCTAssertEqual(ids(.delete, 30, busy: ["fortyDays"]), ["archivedOld"])
+    func testPinnedAndBusyNotesAreNeverDeletedOrArchived() {
+        let deleted = ids(.delete, 30, busy: ["fortyDays"])
+        XCTAssertFalse(deleted.contains("pinnedOld"))
+        XCTAssertFalse(deleted.contains("fortyDays"))
+        XCTAssertFalse(deleted.contains("stillTranscribing"))
+        XCTAssertTrue(deleted.contains("archivedOld"))
     }
 
-    func testArchivingSkipsArchivedNotesDeletingIncludesThem() {
+    func testArchivingSkipsNotesAlreadyArchived() {
         XCTAssertFalse(ids(.archive, 30).contains("archivedOld"))
-        XCTAssertTrue(ids(.delete, 30).contains("archivedOld"))
+    }
+
+    func testCompressTakesEveryUncompressedRecordingPinnedOnesTooButNotBusyOnes() {
+        let c = ids(.compress, 0)
+        XCTAssertTrue(c.contains("pinnedOld"))
+        XCTAssertTrue(c.contains("fresh"))
+        XCTAssertFalse(c.contains("archivedOld")) // already compressed
+        XCTAssertFalse(c.contains("stillTranscribing"))
+    }
+
+    func testDeleteEmptyOnlyTakesFinishedNotesWithNoText() {
+        XCTAssertEqual(ids(.deleteEmpty, 0), ["emptyOld", "emptyFresh"])
+        XCTAssertEqual(ids(.deleteEmpty, 7), ["emptyOld"])
+        // Waiting for a model, or a failure with recovered text, may hold speech: never "empty".
+        XCTAssertFalse(NoteCleanup.isEmpty(named("waitingForModel")))
+        XCTAssertFalse(NoteCleanup.isEmpty(named("failedWithPartial")))
+    }
+
+    func testAnyAgeMeansZeroDays() {
+        XCTAssertTrue(ids(.delete, 0).contains("fresh"))
+    }
+}
+
+/// Same cases as the Android app's AutoSplitTest.
+final class AutoSplitTests: XCTestCase {
+    private let r = 100 // samples per second, to keep numbers readable
+    private func s(_ seconds: Double) -> Int { Int((seconds * Double(r)).rounded()) }
+    private func split(_ m: AutoSplit, _ start: Double, _ now: Double, _ speaking: Bool, _ last: Double?) -> Bool {
+        m.shouldSplit(noteStart: s(start), now: s(now), speaking: speaking, lastVoiceAt: last.map(s), rate: r)
+    }
+
+    func testOffNeverSplits() {
+        XCTAssertFalse(split(.off, 0, 3600, false, 1))
+    }
+
+    func testSilenceModeSplitsOnceThePauseIsLongEnough() {
+        XCTAssertFalse(split(.silence10s, 0, 19, false, 10))  // 9 s quiet
+        XCTAssertTrue(split(.silence10s, 0, 20, false, 10))   // 10 s quiet
+        XCTAssertFalse(split(.silence10s, 0, 20, true, 10))   // talking again
+    }
+
+    func testNothingSaidYetMeansNoSplit() {
+        XCTAssertFalse(split(.silence10s, 0, 300, false, nil))
+        XCTAssertFalse(split(.every5min, 0, 400, false, nil))
+    }
+
+    func testIntervalModeWaitsForAPauseAfterTheInterval() {
+        XCTAssertFalse(split(.every5min, 0, 299, false, 290))   // before 5 min
+        XCTAssertFalse(split(.every5min, 0, 301, true, 301))    // still talking
+        XCTAssertFalse(split(.every5min, 0, 301, false, 300.5)) // pause too short
+        XCTAssertTrue(split(.every5min, 0, 301, false, 300))    // 1 s pause
+    }
+
+    func testIntervalModeSplitsAnywayAMinutePastTheInterval() {
+        XCTAssertFalse(split(.every5min, 0, 359, true, 359))
+        XCTAssertTrue(split(.every5min, 0, 360, true, 360))
+    }
+
+    func testIntervalCountsFromTheStartOfTheCurrentNote() {
+        XCTAssertFalse(split(.every15min, 1000, 1000 + 899, false, 1000 + 890))
+        XCTAssertTrue(split(.every15min, 1000, 1000 + 901, false, 1000 + 900))
+    }
+
+    func testShortSilenceOptionsSplitQuickly() {
+        XCTAssertFalse(split(.silence2s, 0, 11.9, false, 10))
+        XCTAssertTrue(split(.silence2s, 0, 12, false, 10))
+        XCTAssertTrue(split(.silence5s, 0, 15, false, 10))
     }
 }
 

@@ -80,6 +80,11 @@ struct ContentView: View {
                 Text("This permanently deletes the audio and every revision of its transcript.")
             }
             .overlay(alignment: .top) { ToastView(text: toast) }
+            .onChange(of: controller.notice) { _, message in
+                guard let message else { return }
+                show(message)
+                controller.notice = nil
+            }
         }
         .background { TranslationHost(translator: controller.translator) }
     }

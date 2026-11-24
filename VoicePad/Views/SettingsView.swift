@@ -10,6 +10,12 @@ struct SettingsView: View {
             Form {
                 Section {
                     Toggle("Record when app opens", isOn: $controller.autoRecordOnOpen)
+                    Toggle("Copy transcript when done", isOn: $controller.copyWhenDone)
+                    Picker("Theme", selection: $controller.themeMode) {
+                        ForEach(ThemeMode.allCases) { Text($0.label).tag($0) }
+                    }
+                } footer: {
+                    Text("Copy when done puts each finished recording (and each split-off part) on the clipboard.")
                 }
 
                 Section {
