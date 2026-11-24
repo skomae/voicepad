@@ -16,6 +16,15 @@ copied, edited, re-transcribed and rolled back through its revision history.
 
   Each downloads once on first use. Recording starts immediately; text
   catches up once the model is ready.
+- **Where models come from**: speech models, voices and the speaker model
+  download from GitHub Releases (k2-fsa/sherpa-onnx); translation packs
+  from Google ML Kit. Each downloads once, into VoicePad's own storage,
+  which Android deletes on uninstall. **Model folder** (Settings): choose a
+  folder (e.g. in Download) and every installed model is copied there; a
+  model missing after a reinstall is copied back from it instead of
+  downloaded, which also skips unpacking the archive on the phone. (An
+  access token wouldn't speed downloads up: GitHub serves public release
+  files from its CDN the same either way.)
 - **Quick model switcher**: tap the model name (top left) to switch between
   models already on the phone, e.g. Auto: Western ↔ Auto: Asian + English.
 - **Background voices** (ear button, top bar; also in Settings and the
@@ -73,15 +82,38 @@ copied, edited, re-transcribed and rolled back through its revision history.
   each utterance is detected at its pause, assigned to one of the two
   languages (writing system first, then the speech model's tag, then text
   language ID limited to just those two), and translated into the other.
-  Speech in progress shows live, in italics, translation included.
+  Speech in progress shows live, translation included.
   - **Layouts**: *Across, top / bottom* (default) splits the screen, the far half
     upside down, each half the whole conversation in one language — lay the
     phone between you; *Across, left / right* (the same split sideways, for a
     wide or unfolded screen with one person at each end); *Side by side*
     (one column per language, both reading the same way, for an
     unfolded or landscape screen); *Transcript* (original, pinyin and
-    translation together). Newest turn largest; text size adjustable
-    (18–96 sp); the screen stays on.
+    translation together). Text size adjustable (18–96 sp); the screen
+    stays on.
+  - **The newest thought owns the stage**: it's big at the bottom of each
+    side, lit in its speaker's colour (the glow follows their voice), and
+    everything older is small and dim above it — scroll up to read back.
+    While words arrive, the newest few are brightest on the speaker's side;
+    on the listener's side stand-in characters in *their* script flicker
+    where the translation will be and resolve into it when it lands.
+  - **Thinking pause** (conversation settings; Off / 3 / 5 / 8 s, default
+    5): a turn that stops mid-sentence — no sentence-ending punctuation, an
+    ellipsis, or a last word like "and" / 然后 — is held open instead of
+    being translated as a fragment. A ring round the microphone drains
+    while it's held and refills when the speaker goes on; it's translated
+    when the sentence is finished or the time runs out. Finished sentences
+    are translated straight away, as before.
+  - **Laptop posture and cover screen** (foldables): stand the phone half
+    open with the hinge across the screen and the upright half becomes the
+    stage while the flat half holds the controls and the conversation so far
+    in both languages. If the phone offers its cover screen to apps
+    (Android's dual-screen mode), their side is shown there, facing the
+    person opposite, and the inside is all yours, with a line saying what
+    their screen is showing. Conversation settings say what this phone
+    reports, and can turn the cover picture in 90° steps if it comes out
+    sideways. Without cover-screen support, both languages share the
+    upright half.
   - **One or more microphone channels**: with 1 channel, speakers are told
     apart **by voice** — a 28 MB CAM++ speaker-embedding model (downloaded
     once, on-device) fingerprints each utterance and groups them into
@@ -100,6 +132,30 @@ copied, edited, re-transcribed and rolled back through its revision history.
   - **Open when unfolded** (Settings, or the conversation settings): on a
     foldable, unfolding the phone opens conversation mode and folding it
     goes back to notes.
+  - **Layout button** next to the microphone: each tap moves to the next
+    layout; its icon shows the current one.
+  - **Crash guard**: before each risky native step (several mic channels,
+    telling voices apart, the cover screen, on-device voices) VoicePad notes
+    it on disk and clears the note afterwards. If the app closed with a note
+    left, the next launch says what it was doing and offers to turn that
+    off, holding it back until you answer. Crash reports include Android's
+    native backtrace where available, with Copy and Share.
+  - **Read aloud**: a speaker icon on every turn says it in that half's
+    language (tap again to stop); *Read translations aloud* (the speaker
+    button next to the microphone, or settings) says each
+    translation automatically once its speaker pauses. While the phone is
+    talking, the microphone ignores what it hears (its own voice), so the
+    reply starts after it. Voices run on the phone: **Kitten** nano v0.8
+    (37 MB with its pronunciation dictionary) for English and **MeloTTS**
+    (167 MB) for Mandarin, each downloaded the first time it's needed; other
+    languages use the phone's own text-to-speech. Kitten skips words missing
+    from its dictionary, so numbers, times and prices are spelled out first
+    ("3:45pm" → "three forty five pm") and a sentence that still has unknown
+    words goes to the phone's voice instead. Both voices were checked by
+    transcribing their output back with SenseVoice, which recovered the
+    text exactly. Every clip is cached (up to 150 MB), so replays are
+    instant. (Piper voices for other languages need a phonemiser that
+    sherpa-onnx 2.0 no longer includes, so they aren't offered.)
   - Pauses when the app goes to the background; note recording is paused
     while it's open and resumes after. Each listening stretch is saved as a
     note: its audio plus the speaker-labelled transcript with translations.
@@ -136,6 +192,13 @@ copied, edited, re-transcribed and rolled back through its revision history.
   for the right length before the WAV is deleted; if anything is off the
   note is left untouched. Archived notes can still be played, shared,
   unarchived and re-transcribed.
+- **Export** (⋮ → Export all notes…): saves a ZIP wherever you pick (the
+  phone, Drive…) in open formats: `notes.json` with every note — its
+  transcript and every earlier version, translation, language, model,
+  dates, pinned/archived — and `notes.md`, the same as readable Markdown.
+  Optionally the recordings too (`audio/…`, WAV or M4A, linked from both).
+  Conversations are exported like any note, with their speaker-labelled
+  transcript and translations.
 - **Clean up** (⋮ → Clean up…), for notes older than 1, 7 or 30 days or
   any age:
   - **Archive** unpinned notes (hidden, audio compressed);

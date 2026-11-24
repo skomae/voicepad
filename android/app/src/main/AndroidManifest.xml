@@ -27,6 +27,13 @@
     <!-- Keyboard mode is optional: don't hide the app from phones without Bluetooth. -->
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 
+    <!-- The phone's own text-to-speech engine, for languages without an on-device voice. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:name=".VoicePadApplication"
         android:allowBackup="true"

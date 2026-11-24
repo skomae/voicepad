@@ -20,7 +20,10 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
+import com.voicepad.app.conversation.ConversationController
 import com.voicepad.app.ui.ConversationScreen
+import com.voicepad.app.ui.CrashReportDialog
+import com.voicepad.app.ui.CrashGuardDialog
 import com.voicepad.app.ui.VoicePadScreen
 import com.voicepad.app.ui.VoicePadTheme
 import kotlinx.coroutines.launch
@@ -71,6 +74,12 @@ class MainActivity : ComponentActivity() {
             }
             VoicePadTheme(state.themeMode) {
                 val conversationState by conversation.state.collectAsStateWithLifecycle()
+                val crashedDuring = conversationState.crashedDuring.firstOrNull()
+                if (crashedDuring != null) {
+                    CrashGuardDialog(crashedDuring, onAnswer = { off -> conversation.answerCrashPrompt(crashedDuring, off) })
+                } else {
+                    CrashReportDialog()
+                }
                 val connected = state.transmitStatus == SinkStatus.CONNECTED
                 val typeOnKeyboard: ((String) -> Unit)? =
                     remember(connected) { if (connected) controller::typeText else null }
@@ -92,19 +101,31 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 WindowInfoTracker.getOrCreate(this@MainActivity).windowLayoutInfo(this@MainActivity).collect { info ->
-                    val fold = info.displayFeatures.filterIsInstance<FoldingFeature>().firstOrNull()
-                    conversation.onFoldStateChanged(fold != null)
+                    val hinge = info.displayFeatures.filterIsInstance<FoldingFeature>().firstOrNull()
+                    // Standing half open with the hinge across the screen: like a laptop / tabletop posture.
+                    val tabletop = hinge?.takeIf {
+                        it.state == FoldingFeature.State.HALF_OPENED && it.orientation == FoldingFeature.Orientation.HORIZONTAL
+                    }
+                    conversation.onFoldStateChanged(
+                        unfolded = hinge != null,
+                        fold = tabletop?.let { ConversationController.FoldLine(it.bounds.top, it.bounds.bottom) },
+                    )
                     // Separately: half-open with the hinge across the screen is tabletop posture.
-                    tabletopHinge = fold
-                        ?.takeIf {
-                            it.state == FoldingFeature.State.HALF_OPENED &&
-                                it.orientation == FoldingFeature.Orientation.HORIZONTAL
-                        }
-                        ?.let { TabletopHinge(top = it.bounds.top, bottom = it.bounds.bottom) }
+                    tabletopHinge = tabletop?.let { TabletopHinge(top = it.bounds.top, bottom = it.bounds.bottom) }
                 }
             }
         }
+        cover = CoverScreen(this, conversation, controller).also { it.start() }
     }
+
+    private var cover: CoverScreen? = null
+
+    override fun onDestroy() {
+        cover?.stop()
+        cover = null
+        super.onDestroy()
+    }
+
 
     override fun onStart() {
         super.onStart()

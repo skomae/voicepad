@@ -15,6 +15,10 @@ enum class ConversationLayout(val label: String) {
     SIDE_BY_SIDE("Side by side"),
     /** One list with original and translation: for following along yourself. */
     TRANSCRIPT("Transcript"),
+    ;
+
+    /** The layout after this one, for the cycle button. */
+    fun next(): ConversationLayout = entries[(ordinal + 1) % entries.size]
 }
 
 /**
@@ -39,6 +43,10 @@ data class Turn(
     val target: String,
     val translation: String? = null,
     val translationFailed: Boolean = false,
+    /** [translation] is missing or out of date: the turn is held open or being translated. */
+    val pending: Boolean = false,
+    /** Held open, untranslated, because it sounds unfinished: the speaker may be thinking. */
+    val held: Boolean = false,
     /** Pinyin or other Latin letters for [text], when it isn't written in Latin letters. */
     val romanization: String? = null,
     /** Same for [translation]. */
@@ -57,14 +65,52 @@ object Turns {
     /** Beyond this, a new turn starts anyway, so the newest words stay near the bottom. */
     const val MAX_TURN_CHARS = 240
 
-    /** Whether new speech from [speaker] in [language] starting at [start] continues [previous]. */
-    fun continues(previous: Turn?, session: Int, speaker: SpeakerRef?, language: String, start: Int, sampleRate: Int): Boolean =
+    /**
+     * Whether new speech from [speaker] in [language] starting at [start] continues [previous].
+     * [maxGapSeconds] is longer for a turn held open for a thinking pause.
+     */
+    fun continues(
+        previous: Turn?, session: Int, speaker: SpeakerRef?, language: String, start: Int, sampleRate: Int,
+        maxGapSeconds: Double = MAX_GAP_SECONDS,
+    ): Boolean =
         previous != null &&
             previous.session == session &&
             previous.speaker == speaker &&
             previous.language == language &&
-            start - previous.end <= MAX_GAP_SECONDS * sampleRate &&
+            start - previous.end <= maxGapSeconds * sampleRate &&
             previous.text.length < MAX_TURN_CHARS
+
+    private const val SENTENCE_END = ".?!。？！"
+    private const val CLOSERS = "\"'”’」』）)"
+
+    /** Words a sentence rarely ends on: the speaker is probably looking for what comes next. */
+    private val TRAILING_OFF = setOf(
+        "and", "but", "or", "so", "because", "um", "uh", "er", "like", "the", "a", "an", "to", "of", "with", "that", "if", "when",
+        "y", "o", "pero", "porque", "que", "de", "et", "ou", "mais", "parce", "und", "oder", "aber", "weil",
+    )
+    private val TRAILING_OFF_CJK = listOf("然后", "就是", "那个", "这个", "因为", "所以", "但是", "而且", "还有", "嗯", "呃", "えっと", "あの", "그리고", "그래서")
+
+    /**
+     * Whether [text] sounds like its speaker isn't done: no sentence-ending
+     * punctuation, an ellipsis, or a last word that leads somewhere ("and",
+     * "because", 然后). Such a turn is held open for a thinking pause
+     * instead of being translated as a fragment.
+     */
+    fun looksUnfinished(text: String): Boolean {
+        val t = text.trim().trimEnd { it in CLOSERS }
+        if (t.isEmpty()) return false
+        if (t.endsWith("...") || t.endsWith("…") || t.endsWith("。。")) return true
+        if (t.last() !in SENTENCE_END) {
+            // A short reply without punctuation ("ok", "好的") is complete; a longer run of words isn't.
+            val han = t.count { isCjk(it) }
+            return if (han > 0) han >= 5 else t.split(' ').count { it.isNotBlank() } >= 3
+        }
+        val body = t.trimEnd { it in SENTENCE_END || it.isWhitespace() }
+        if (TRAILING_OFF_CJK.any { body.endsWith(it) }) return true
+        // A lone "So." or "And." is a complete (if short) answer only when it's all there is.
+        val words = body.split(' ', ',', '，', '、').filter { it.isNotBlank() }
+        return words.size > 1 && words.last().lowercase() in TRAILING_OFF
+    }
 
     /** Joins two pieces of text: with a space, except between Chinese or Japanese characters. */
     fun join(a: String, b: String): String {

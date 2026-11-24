@@ -131,6 +131,10 @@ class RecordingController(
         val installedEngines: Set<EngineChoice> = emptySet(),
         val autoRecordOnOpen: Boolean = true,
         val autoTranslate: Boolean = true,
+        /** Hold the detected language for the whole sentence (Auto models). */
+        val stableLanguage: Boolean = true,
+        /** Preview with the fast SenseVoice-only pass; route fully at commit. */
+        val quickPreview: Boolean = true,
         val errorMessage: String? = null,
         /** Microphones currently connected. */
         val inputDevices: List<InputDevice> = emptyList(),
@@ -210,6 +214,8 @@ class RecordingController(
                 ?.let { runCatching { NoteTapAction.valueOf(it) }.getOrNull() } ?: NoteTapAction.EDIT,
             autoSplit = prefs.getString("autoSplit", null)
                 ?.let { runCatching { AutoSplit.valueOf(it) }.getOrNull() } ?: AutoSplit.OFF,
+            stableLanguage = prefs.getBoolean("stableLanguage", true),
+            quickPreview = prefs.getBoolean("quickPreview", true),
             inputDevices = inputs.devices.value,
             selectedInputKey = prefs.getString("inputDevice", null),
             llmEnabled = prefs.getBoolean("llmEnabled", false),
@@ -277,6 +283,10 @@ class RecordingController(
         var lastVoiceAt: Int? = null
         /** Ended with Stop (not a split). */
         var stoppedByUser = false
+        /** Language latched for the in-progress utterance (Auto: Asian + English). */
+        var latchedLanguage: String? = null
+        /** [quietAt] last time we checked, to detect a new utterance. */
+        var lastQuietAt = origin
     }
 
     private var session: LiveSession? = null
@@ -369,6 +379,16 @@ class RecordingController(
     private fun refreshInstalled() =
         _state.update { s -> s.copy(installedEngines = EngineChoice.entries.filter(models::isInstalled).toSet()) }
 
+    fun setStableLanguage(enabled: Boolean) {
+        prefs.edit { putBoolean("stableLanguage", enabled) }
+        _state.update { it.copy(stableLanguage = enabled) }
+    }
+
+    fun setQuickPreview(enabled: Boolean) {
+        prefs.edit { putBoolean("quickPreview", enabled) }
+        _state.update { it.copy(quickPreview = enabled) }
+    }
+
     fun loadEngine() {
         val choice = _state.value.activeEngine
         loadJob?.cancel()
@@ -418,10 +438,15 @@ class RecordingController(
     private val engineReady get() = _state.value.engineStatus == EngineStatus.Ready
 
     /** Runs one model call at a time on a background thread. */
-    private suspend fun transcribe(samples: FloatArray, normalize: Boolean = _state.value.backgroundVoices): Transcript = engineMutex.withLock {
+    private suspend fun transcribe(
+        samples: FloatArray,
+        languageHint: String? = null,
+        preview: Boolean = false,
+        normalize: Boolean = _state.value.backgroundVoices,
+    ): Transcript = engineMutex.withLock {
         val current = engine ?: throw IllegalStateException("The model isn't loaded.")
         withContext(Dispatchers.Default) {
-            current.transcribe(if (normalize) AudioLevel.normalize(samples) else samples)
+            current.transcribe(if (normalize) AudioLevel.normalize(samples) else samples, languageHint, preview)
         }
     }
 
@@ -634,14 +659,27 @@ class RecordingController(
 
             if (!final && s === session) {
                 // Preview: whatever is still uncommitted, but only while there's speech.
+                // A new utterance (quietAt advanced) re-decides the language.
+                if (s.quietAt != s.lastQuietAt) {
+                    s.latchedLanguage = null
+                    s.lastQuietAt = s.quietAt
+                }
                 val speaking = vad?.inSpeech ?: true
                 val tail = if (speaking || s.pending.isNotEmpty()) {
                     // The detector confirms speech ~0.25 s after it starts; back up a second.
                     val openStart = if (vad == null) s.committedUpTo else s.quietAt - AudioRecorder.SAMPLE_RATE
                     val from = minOf(s.pending.firstOrNull()?.start?.minus(PAD) ?: openStart, openStart)
-                    transcribe(recorder.samples(maxOf(from, s.committedUpTo, s.origin, now - MAX_CHUNK), now))
+                    val latch = _state.value.stableLanguage && vad != null
+                    transcribe(
+                        recorder.samples(maxOf(from, s.committedUpTo, s.origin, now - MAX_CHUNK), now),
+                        languageHint = if (latch) s.latchedLanguage else null,
+                        preview = _state.value.quickPreview,
+                    )
                 } else {
                     Transcript("", null)
+                }
+                if (_state.value.stableLanguage && vad != null && s.latchedLanguage == null && tail.text.isNotBlank()) {
+                    s.latchedLanguage = tail.language
                 }
                 if (tail.text != s.tail.text) {
                     s.tail = LiveSegment(tail.text, tail.language)
@@ -1018,7 +1056,7 @@ class RecordingController(
             val engines = mutableListOf<String>()
             for (chunk in chunks) {
                 val audio = withContext(Dispatchers.IO) { join(chunk.map { WavFile.readRange(file, it.start, it.end) }) }
-                val result = transcribe(audio, note.backgroundVoices)
+                val result = transcribe(audio, normalize = note.backgroundVoices)
                 text = join(text, result.text)
                 result.language?.let { languages += it }
                 result.engine?.let { engines += it }
@@ -1045,6 +1083,40 @@ class RecordingController(
             if (e is CancellationException) throw e
         } finally {
             decoded?.delete()
+        }
+    }
+
+    // endregion
+
+    // region Export
+
+    /** Notes an export would include. */
+    fun exportCandidates(includeArchived: Boolean): List<Note> =
+        store.notes.value.filter { it.id != _state.value.recordingNoteId && (includeArchived || !it.archived) }
+
+    /** Bytes of audio an export with recordings would hold. */
+    fun exportAudioBytes(includeArchived: Boolean): Long =
+        exportCandidates(includeArchived).sumOf { store.audioFile(it)?.takeIf { f -> f.isFile }?.length() ?: 0L }
+
+    /**
+     * Writes every note (see [com.voicepad.app.data.NoteExport]) as a ZIP to
+     * [uri], a file the user picked. Calls [onDone] with a message for them.
+     */
+    fun exportNotes(uri: android.net.Uri, includeAudio: Boolean, includeArchived: Boolean, onDone: (String) -> Unit) {
+        val notes = exportCandidates(includeArchived)
+        scope.launch {
+            val message = try {
+                val count = withContext(Dispatchers.IO) {
+                    val out = context.contentResolver.openOutputStream(uri, "wt") ?: error("Couldn't open the file.")
+                    out.use { com.voicepad.app.data.NoteExport.writeZip(it, notes, includeAudio) { n -> store.audioFile(n) } }
+                }
+                "Exported $count note${if (count == 1) "" else "s"}."
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                "Export failed: ${e.message ?: e}"
+            }
+            onDone(message)
         }
     }
 

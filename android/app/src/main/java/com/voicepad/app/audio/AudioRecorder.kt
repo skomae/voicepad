@@ -73,6 +73,10 @@ class AudioRecorder {
     @Volatile var isRunning = false
         private set
 
+    /** Set if capture itself failed (the microphone stopped delivering audio). */
+    @Volatile var captureError: String? = null
+        private set
+
     /**
      * While true the microphone keeps running (so resuming is instant) but
      * its audio is dropped: nothing reaches the recording, the file or the
@@ -170,7 +174,19 @@ class AudioRecorder {
         wavDataBytes = 0
 
         isRunning = true
-        startCapture(recorder)
+        captureError = null
+        try {
+            startCapture(recorder)
+        } catch (e: Throwable) {
+            // Undo, so a retry (e.g. with fewer channels) starts cleanly.
+            isRunning = false
+            record = null
+            runCatching { recorder.release() }
+            synchronized(wavLock) { runCatching { wav?.close() }; wav = null }
+            throw IllegalStateException(
+                if (requestedChannels > 1) "This microphone can't record $requestedChannels channels." else "The microphone couldn't start.", e
+            )
+        }
     }
 
     /**
@@ -226,7 +242,9 @@ class AudioRecorder {
         // voice as noise to remove; turn it off when capturing the room.
         noiseSuppressor?.release()
         noiseSuppressor = null
-        if (source != MediaRecorder.AudioSource.VOICE_RECOGNITION && NoiseSuppressor.isAvailable()) {
+        // Not for several channels: a vendor effect on a multi-channel stream is
+        // an unusual combination, and a suspect in native crashes seen there.
+        if (n == 1 && source != MediaRecorder.AudioSource.VOICE_RECOGNITION && NoiseSuppressor.isAvailable()) {
             noiseSuppressor = runCatching {
                 NoiseSuppressor.create(recorder.audioSessionId)?.apply { enabled = false }
             }.getOrNull()
@@ -244,9 +262,15 @@ class AudioRecorder {
     private fun stopCapture() {
         val old = record
         record = null // the read loop stops after its current buffer
-        thread?.join(1000)
+        // Stopping first wakes a read that's waiting for audio (a stalled
+        // microphone never delivers the next buffer otherwise).
+        old?.let { runCatching { it.stop() } }
+        val t = thread
+        t?.join(2000)
         thread = null
-        old?.run { stop(); release() }
+        // Releasing while the thread is still inside read() crashes natively:
+        // if it hasn't come out, leave the recorder to the garbage collector.
+        if (t == null || !t.isAlive) old?.release()
         noiseSuppressor?.release()
         noiseSuppressor = null
     }
@@ -307,7 +331,17 @@ class AudioRecorder {
     }
 
     private fun readLoop(recorder: AudioRecord) {
+        // An exception on this thread would close the whole app; report it instead.
+        try {
+            capture(recorder)
+        } catch (e: Throwable) {
+            captureError = "Recording stopped: ${e.message ?: e.javaClass.simpleName}"
+        }
+    }
+
+    private fun capture(recorder: AudioRecord) {
         val n = channelCount
+        var failures = 0
         val frames = SAMPLE_RATE / 10 // 100 ms
         val buffer = FloatArray(frames * n)
         val mix = if (n == 1) buffer else FloatArray(frames)
@@ -317,7 +351,17 @@ class AudioRecorder {
         var buffersSinceCheckpoint = 0
         while (isRunning && record === recorder) {
             val readValues = recorder.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
-            if (readValues <= 0) continue
+            if (readValues <= 0) {
+                if (!isRunning || record !== recorder) break
+                // An error, not audio: don't spin at full speed, and give up after ~2 s.
+                if (++failures >= 200) {
+                    captureError = "The microphone stopped delivering audio (error $readValues)."
+                    break
+                }
+                Thread.sleep(10)
+                continue
+            }
+            failures = 0
             val read = readValues / n
             if (read == 0) continue
             if (paused) {

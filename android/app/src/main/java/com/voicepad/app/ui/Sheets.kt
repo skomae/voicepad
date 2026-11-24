@@ -1,6 +1,10 @@
 package com.voicepad.app.ui
 
 import android.text.format.DateFormat
+import androidx.compose.foundation.clickable
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -245,6 +249,35 @@ fun SettingsSheet(
                 Switch(checked = state.tabletopLayout, onCheckedChange = controller::setTabletopLayout)
             }
             Spacer(Modifier.height(16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Stable language detection")
+                    Text(
+                        "Hold the detected language for the whole sentence instead of re-deciding as you speak. " +
+                            "Stops a single English-sounding word from flipping a Mandarin sentence to the English model. " +
+                            "Auto models only.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = state.stableLanguage, onCheckedChange = controller::setStableLanguage)
+            }
+            Spacer(Modifier.height(16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Fast live preview")
+                    Text(
+                        "Show a quicker preview while speaking and refine it once you pause. " +
+                            "Uses less power during long recordings. Auto models only.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = state.quickPreview, onCheckedChange = controller::setQuickPreview)
+            }
+            Spacer(Modifier.height(16.dp))
             MicrophoneSection(state, onSelect = controller::setInputDevice)
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -327,6 +360,7 @@ fun SettingsSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 8.dp),
             )
+            ModelFolderSection()
             HorizontalDivider(Modifier.padding(vertical = 8.dp))
             when (val status = state.engineStatus) {
                 EngineStatus.Idle -> Text("Model not loaded")
@@ -507,6 +541,43 @@ private fun MicOption(
             Text(title)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+    }
+}
+
+/**
+ * A folder outside the app (e.g. in Download) that keeps every downloaded
+ * model, so reinstalling VoicePad restores them instead of downloading again.
+ */
+@Composable
+private fun ModelFolderSection() {
+    val context = LocalContext.current
+    val folder = remember { com.voicepad.app.transcription.ModelFolder.get(context) }
+    val state by folder.state.collectAsStateWithLifecycle()
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) folder.choose(uri)
+    }
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    Text("Model folder", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 4.dp))
+    Text(
+        when {
+            state.unavailable -> "VoicePad can no longer reach the chosen folder (it may have been moved or deleted). Choose it again."
+            state.folderName != null -> "Models are also kept in \u201c${state.folderName}\u201d. After reinstalling VoicePad, " +
+                "choose the same folder and they're copied back instead of downloaded."
+            else -> "Models are downloaded from GitHub into VoicePad's own storage, which Android deletes when the app " +
+                "is uninstalled. Choose a folder (e.g. in Download) to keep a copy there: a reinstall then restores " +
+                "them from it in seconds instead of downloading them again."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = if (state.unavailable) MaterialTheme.colorScheme.error else muted,
+    )
+    state.busy?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+    state.error?.let {
+        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.clickable { folder.dismissError() })
+    }
+    Row {
+        TextButton(onClick = { pick.launch(null) }) { Text(if (state.folderName == null) "Choose folder" else "Change folder") }
+        if (state.folderName != null) TextButton(onClick = folder::forget) { Text("Stop using it") }
     }
 }
 

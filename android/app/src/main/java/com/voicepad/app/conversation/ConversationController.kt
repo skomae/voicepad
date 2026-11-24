@@ -4,8 +4,10 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.MediaRecorder
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
+import com.voicepad.app.CrashGuard
 import com.voicepad.app.RecordingController
 import com.voicepad.app.audio.AudioRecorder
 import com.voicepad.app.data.Note
@@ -18,6 +20,9 @@ import com.voicepad.app.data.withTranscription
 import com.voicepad.app.transcription.ChunkPlanner.Span
 import com.voicepad.app.transcription.EnglishTranslator
 import com.voicepad.app.transcription.SpeechDetector
+import com.voicepad.app.speech.SpeechOutput
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -61,6 +66,7 @@ import kotlin.coroutines.cancellation.CancellationException
 class ConversationController(
     private val context: Context,
     private val notes: RecordingController,
+    val speech: SpeechOutput,
 ) {
     data class Settings(
         val myLanguage: String = "en",
@@ -74,6 +80,19 @@ class ConversationController(
         val identifyVoices: Boolean = true,
         /** Open conversation mode when a foldable phone is unfolded. */
         val openOnUnfold: Boolean = false,
+        /** Read each translation aloud once its turn is finished. */
+        val autoSpeak: Boolean = false,
+        /**
+         * Seconds a turn that sounds unfinished is held open before it's
+         * translated anyway, so a pause to think doesn't cut it in two; 0 turns holding off.
+         */
+        val thinkingPause: Int = 5,
+        /** On a foldable, show their side on the cover screen when the phone offers it. */
+        val coverScreen: Boolean = true,
+        /** Quarter turns to rotate the cover screen's picture by, if the phone shows it sideways. */
+        val coverRotation: Int = 0,
+        /** Animate the stage even when the phone's own animations are off (e.g. by power saving). */
+        val forceAnimations: Boolean = false,
     ) {
         val pair: Pair<String, String> get() = myLanguage to theirLanguage
     }
@@ -86,6 +105,21 @@ class ConversationController(
         data class Failed(val message: String) : Readiness
     }
 
+    /** A turn held open: [endsAtMs] (uptime) is when it's translated unless speech resumes. */
+    data class Hold(val turnId: Long, val endsAtMs: Long, val totalMs: Long)
+
+    /** Where a half-open foldable bends, in window pixels from the top. */
+    data class FoldLine(val top: Int, val bottom: Int)
+
+    /** Whether their side can be shown on a foldable's cover screen. */
+    enum class Cover(val label: String) {
+        UNKNOWN("Not checked yet"),
+        UNSUPPORTED("This phone doesn't offer its cover screen to apps"),
+        UNAVAILABLE("Offered by this phone, but not available right now"),
+        AVAILABLE("Available"),
+        ACTIVE("Showing their side"),
+    }
+
     data class UiState(
         val visible: Boolean = false,
         val listening: Boolean = false,
@@ -93,6 +127,16 @@ class ConversationController(
         val turns: List<Turn> = emptyList(),
         /** Speech in progress: not final, may still change. */
         val live: Turn? = null,
+        /** A voice is being heard right now. */
+        val hearing: Boolean = false,
+        /** A finished utterance is being transcribed. */
+        val working: Boolean = false,
+        val hold: Hold? = null,
+        /** A foldable is open (flat or half open). */
+        val unfolded: Boolean = false,
+        /** Set while a foldable stands half open like a laptop. */
+        val fold: FoldLine? = null,
+        val cover: Cover = Cover.UNKNOWN,
         /** Channels actually being recorded. */
         val recordingChannels: Int = 1,
         /** The channels carry the same sound, so voices are told apart by sound instead. */
@@ -100,7 +144,15 @@ class ConversationController(
         val translation: Readiness = Readiness.Off,
         val voiceModel: Readiness = Readiness.Off,
         val message: String? = null,
+        /**
+         * Features that were running when the app last closed unexpectedly
+         * (a native crash, most likely): each is held back until the user
+         * says whether to turn it off. See [CrashGuard].
+         */
+        val crashedDuring: List<CrashGuard.Risky> = emptyList(),
     ) {
+        val layout: ConversationLayout get() = settings.layout
+
         /** How speakers are being told apart right now. */
         val speakerSource: SpeakerSource
             get() = when {
@@ -108,6 +160,8 @@ class ConversationController(
                 settings.identifyVoices && voiceModel == Readiness.Ready -> SpeakerSource.VOICE
                 else -> SpeakerSource.LANGUAGE
             }
+
+        val stage: Stage get() = Stage.of(turns, live, working)
     }
 
     companion object {
@@ -119,6 +173,9 @@ class ConversationController(
         private const val MAX_LIVE = SR * 20
         /** Average dB between the loudest and next channel below which channels count as identical. */
         private const val IDENTICAL_DB = 1.5f
+
+        /** Identifies a turn read out in one language, for the speaker icons. */
+        fun speechId(turnId: Long, language: String) = "$turnId:$language"
 
         /** Who said [turn], for labels and the saved transcript. */
         fun speakerLabel(turn: Turn): String = speakerLabel(turn.speaker, turn.language)
@@ -137,7 +194,12 @@ class ConversationController(
     private val translator by lazy { EnglishTranslator() }
     private val store: NoteStore get() = notes.store
 
-    private val _state = MutableStateFlow(UiState(settings = loadSettings()))
+    private val _state = MutableStateFlow(
+        UiState(
+            settings = loadSettings(),
+            crashedDuring = CrashGuard.crashedDuring,
+        )
+    )
     val state: StateFlow<UiState> = _state.asStateFlow()
     private val settings get() = _state.value.settings
 
@@ -155,6 +217,11 @@ class ConversationController(
         textSize = prefs.getInt("textSize", 34),
         identifyVoices = prefs.getBoolean("identifyVoices", true),
         openOnUnfold = prefs.getBoolean("openOnUnfold", false),
+        autoSpeak = prefs.getBoolean("autoSpeak", false),
+        thinkingPause = prefs.getInt("thinkingPause", 5),
+        coverScreen = prefs.getBoolean("coverScreen", true),
+        coverRotation = prefs.getInt("coverRotation", 0),
+        forceAnimations = prefs.getBoolean("forceAnimations", false),
     )
 
     private fun saveSettings(s: Settings) = prefs.edit {
@@ -165,6 +232,11 @@ class ConversationController(
         putInt("textSize", s.textSize)
         putBoolean("identifyVoices", s.identifyVoices)
         putBoolean("openOnUnfold", s.openOnUnfold)
+        putBoolean("autoSpeak", s.autoSpeak)
+        putInt("thinkingPause", s.thinkingPause)
+        putBoolean("coverScreen", s.coverScreen)
+        putInt("coverRotation", s.coverRotation)
+        putBoolean("forceAnimations", s.forceAnimations)
     }
 
     private fun changeSettings(transform: (Settings) -> Settings): Settings {
@@ -193,6 +265,13 @@ class ConversationController(
         }
     }
 
+    /** Switches to the next layout (the control strip's layout button); returns it. */
+    fun cycleLayout(): ConversationLayout {
+        val next = _state.value.layout.next()
+        setLayout(next)
+        return next
+    }
+
     fun setLayout(layout: ConversationLayout) { changeSettings { it.copy(layout = layout) } }
 
     fun setTextSize(size: Int) { changeSettings { it.copy(textSize = size.coerceIn(18, 96)) } }
@@ -204,12 +283,38 @@ class ConversationController(
 
     fun setOpenOnUnfold(enabled: Boolean) { changeSettings { it.copy(openOnUnfold = enabled) } }
 
+    fun setAutoSpeak(enabled: Boolean) {
+        // Only what's said from now on is read out, not the conversation so far.
+        if (enabled) spokenTurns += _state.value.turns.map { it.id }
+        changeSettings { it.copy(autoSpeak = enabled) }
+        if (!enabled) speech.stop()
+    }
+
+    /** Says [turn] in [language] (its original or its translation); tapping again stops it. */
+    fun speak(turn: Turn, language: String) {
+        val text = turn.textIn(language) ?: return
+        speech.say(speechId(turn.id, language), text, language)
+    }
+    fun setThinkingPause(seconds: Int) { changeSettings { it.copy(thinkingPause = seconds.coerceIn(0, 15)) } }
+
+    fun setCoverScreen(enabled: Boolean) { changeSettings { it.copy(coverScreen = enabled) } }
+
+    fun setCoverRotation(quarterTurns: Int) { changeSettings { it.copy(coverRotation = quarterTurns.mod(4)) } }
+
+    fun setForceAnimations(enabled: Boolean) { changeSettings { it.copy(forceAnimations = enabled) } }
+
+    /** Reported by the activity as the phone's cover screen comes and goes. */
+    fun setCover(cover: Cover) = _state.update { it.copy(cover = cover) }
+
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
     private fun showMessage(message: String) = _state.update { it.copy(message = message) }
 
     /** Clears the screen (everything is already saved as notes). */
-    fun clearTurns() = _state.update { it.copy(turns = emptyList(), live = null) }
+    fun clearTurns() {
+        heldTurnId = null
+        _state.update { it.copy(turns = emptyList(), live = null, hold = null) }
+    }
 
     // endregion
 
@@ -239,6 +344,8 @@ class ConversationController(
         pausedInBackground = false
         stopListening()
         _state.update { it.copy(visible = false, live = null, message = null) }
+        speech.stop()
+        releaseHeld()
         notes.leaveConversation()
     }
 
@@ -247,9 +354,10 @@ class ConversationController(
      * conversation mode (if that's switched on); folding again closes it if
      * unfolding opened it.
      */
-    fun onFoldStateChanged(unfolded: Boolean) {
+    fun onFoldStateChanged(unfolded: Boolean, fold: FoldLine? = null) {
         val previous = lastUnfolded
         lastUnfolded = unfolded
+        if (_state.value.unfolded != unfolded || _state.value.fold != fold) _state.update { it.copy(unfolded = unfolded, fold = fold) }
         if (previous == null || previous == unfolded) return
         if (unfolded && settings.openOnUnfold && !_state.value.visible) open(byUnfold = true)
         if (!unfolded && openedByUnfold && _state.value.visible) close()
@@ -286,7 +394,10 @@ class ConversationController(
     }
 
     /** One listening session: one recording, one saved note. */
-    private inner class Session(val number: Int, val noteId: String, val lanes: List<Lane>)
+    private inner class Session(val number: Int, val noteId: String, val lanes: List<Lane>) {
+        val startedAt = System.currentTimeMillis()
+        var silenceReported = false
+    }
 
     private var session: Session? = null
     private var sessionCount = 0
@@ -296,13 +407,70 @@ class ConversationController(
     private var nextTurnId = 1L
     private val translationJobs = mutableMapOf<Long, Job>()
     private var liveTranslateJob: Job? = null
+    /** The turn held open for a thinking pause, if any. */
+    private var heldTurnId: Long? = null
     private var separationTotal = 0f
     private var separationCount = 0
+    /** Turns already read aloud (or that shouldn't be). */
+    private val spokenTurns = mutableSetOf<Long>()
+    /**
+     * Stretches of the recording during which the phone was talking. Speech
+     * found there is the phone's own voice coming back through the mic.
+     */
+    private val muted = mutableListOf<IntRange>()
+    private var mutedFrom: Int? = null
+
+    init {
+        scope.launch {
+            speech.state.map { it.playing }.distinctUntilChanged().collect { playing ->
+                if (session == null) return@collect
+                val now = recorder.sampleCount
+                if (playing) {
+                    mutedFrom = now
+                } else {
+                    // The room keeps echoing for a moment after the voice stops.
+                    muted += (mutedFrom ?: now)..(now + SR * 3 / 10)
+                    mutedFrom = null
+                }
+            }
+        }
+    }
+
+    private fun isEcho(span: Span): Boolean {
+        val from = mutedFrom
+        if (from != null && span.end > from) return true
+        return muted.any { span.start < it.last && span.end > it.first }
+    }
 
     fun toggleListening() = if (_state.value.listening) stopListening() else startListening()
 
+    /**
+     * Answer to "VoicePad closed while [risky] — turn it off?". Either way
+     * the feature is no longer held back.
+     */
+    fun answerCrashPrompt(risky: CrashGuard.Risky, turnOff: Boolean) {
+        CrashGuard.resolved(risky)
+        _state.update { it.copy(crashedDuring = it.crashedDuring - risky) }
+        if (turnOff) when (risky) {
+            CrashGuard.Risky.MULTI_CHANNEL -> changeSettings { it.copy(channels = 1) }
+            CrashGuard.Risky.VOICE_ID -> changeSettings { it.copy(identifyVoices = false) }
+            CrashGuard.Risky.OUTER_SCREEN -> changeSettings { it.copy(coverScreen = false) }
+            CrashGuard.Risky.LOCAL_VOICE -> speech.setUseLocalVoices(false)
+        }
+        if (!_state.value.visible) return
+        if (risky == CrashGuard.Risky.VOICE_ID && settings.identifyVoices) ensureVoiceModel()
+        startListening()
+    }
+
+    private fun heldBack(risky: CrashGuard.Risky) = risky in _state.value.crashedDuring
+
+
+    private var multiChannelMarked = false
+
     fun startListening() {
         if (_state.value.listening || !_state.value.visible) return
+        // Don't risk the same crash again before the user has decided.
+        if (heldBack(CrashGuard.Risky.MULTI_CHANNEL) && settings.channels > 1) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             showMessage("Microphone access is needed for conversation mode.")
             return
@@ -336,6 +504,10 @@ class ConversationController(
             return
         }
         val got = recorder.channelCount
+        if (got > 1 && !multiChannelMarked) {
+            multiChannelMarked = true
+            CrashGuard.enter(CrashGuard.Risky.MULTI_CHANNEL)
+        }
         if (got < wanted && _state.value.message == null) {
             showMessage("The microphone gave $got channel${if (got == 1) "" else "s"} instead of $wanted.")
         }
@@ -347,6 +519,8 @@ class ConversationController(
         store.add(note)
         val s = Session(++sessionCount, note.id, List(got) { Lane(it) })
         session = s
+        muted.clear()
+        mutedFrom = if (speech.state.value.playing) 0 else null
         _state.update { it.copy(recordingChannels = got, channelsIdentical = false, live = null) }
         loopJob = scope.launch {
             while (isActive) {
@@ -369,11 +543,19 @@ class ConversationController(
 
     fun stopListening() {
         if (!_state.value.listening) return
-        _state.update { it.copy(listening = false, live = null) }
+        _state.update { it.copy(listening = false, live = null, hearing = false, working = false) }
         liveTranslateJob?.cancel()
-        val s = session ?: return
+        val s = session
+        if (s == null) {
+            releaseHeld()
+            return
+        }
         session = null
         recorder.stop()
+        if (multiChannelMarked) {
+            multiChannelMarked = false
+            CrashGuard.exit(CrashGuard.Risky.MULTI_CHANNEL) // stopped cleanly
+        }
         notes.endConversationInput()
         val job = loopJob
         loopJob = null
@@ -386,6 +568,7 @@ class ConversationController(
             } catch (e: Throwable) {
                 showMessage("Transcription failed: ${e.message ?: e}")
             }
+            releaseHeld()
             // Give translations of the last turns a moment to land in the note.
             withTimeoutOrNull(15_000) { translationJobs.values.toList().joinAll() }
             save(s)
@@ -398,21 +581,48 @@ class ConversationController(
      * turns, oldest first; then previews speech still in progress.
      */
     private suspend fun step(s: Session, final: Boolean) {
-        val now = recorder.sampleCount
-        for (lane in s.lanes) feed(lane, now, final)
-        if (!notes.isEngineReady) return // audio waits in memory (and on disk) until the model is ready
-        while (true) {
-            val lane = s.lanes.filter { it.pending.isNotEmpty() }.minByOrNull { it.pending.first().start } ?: break
-            val span = lane.pending.removeFirst()
-            lane.finishedUpTo = maxOf(lane.finishedUpTo, span.end)
-            finishUtterance(s, lane.channel, span)
+        recorder.captureError?.let { error ->
+            if (_state.value.message != error) showMessage(error)
         }
-        if (!final && session === s) updateLive(s, now)
+        val now = recorder.sampleCount
+        // Some phones accept a stereo recording and then deliver nothing.
+        if (!final && now == 0 && !s.silenceReported && System.currentTimeMillis() - s.startedAt > 3000) {
+            s.silenceReported = true
+            showMessage(
+                if (_state.value.recordingChannels > 1) "No sound is coming from the microphone in ${_state.value.recordingChannels} channels — switch to 1 channel in settings."
+                else "No sound is coming from the microphone."
+            )
+        }
+        for (lane in s.lanes) feed(lane, now, final)
+        val hearing = !final && s.lanes.any { it.detector?.inSpeech == true }
+        if (_state.value.hearing != hearing) _state.update { it.copy(hearing = hearing) }
+        if (!notes.isEngineReady) { // audio waits in memory (and on disk) until the model is ready
+            releaseHeldIfDue(s, now, hearing)
+            return
+        }
+        try {
+            while (true) {
+                val lane = s.lanes.filter { it.pending.isNotEmpty() }.minByOrNull { it.pending.first().start } ?: break
+                val span = lane.pending.removeFirst()
+                lane.finishedUpTo = maxOf(lane.finishedUpTo, span.end)
+                if (!final) _state.update { it.copy(working = true) }
+                finishUtterance(s, lane.channel, span, final)
+            }
+        } finally {
+            if (_state.value.working) _state.update { it.copy(working = false) }
+        }
+        if (final) releaseHeld() else releaseHeldIfDue(s, recorder.sampleCount, hearing)
+        if (!final && session === s) {
+            if (!speech.state.value.playing) updateLive(s, now)
+            if (settings.autoSpeak) speakSettled(s, now)
+        }
         // Audio still needed: utterances waiting for the model, and speech in progress.
         // (A channel nobody speaks on needs nothing, so it doesn't hold memory.)
         val keep = s.lanes.minOf { lane ->
             lane.pending.firstOrNull()?.start
-                ?: if (lane.detector?.inSpeech == true) lane.quietAt - SR else lane.detectedUpTo
+                // Speech in progress, but never more than the live preview reads: a noisy mic
+                // can keep its detector "in speech" for good, which would hold all audio in memory.
+                ?: if (lane.detector?.inSpeech == true) maxOf(lane.quietAt - SR, now - MAX_LIVE - SR) else lane.detectedUpTo
         }
         recorder.discardBefore(keep - PAD - SR)
     }
@@ -443,7 +653,25 @@ class ConversationController(
         ChannelAttribution.frameLevels(recorder.channelSamples(it, span.start, span.end))
     }
 
-    private suspend fun finishUtterance(s: Session, channel: Int, span: Span) {
+    /** Translates the held turn once its pause has outlasted the thinking window with nobody speaking. */
+    private fun releaseHeldIfDue(s: Session, now: Int, hearing: Boolean) {
+        val id = heldTurnId ?: return
+        val turn = _state.value.turns.firstOrNull { it.id == id }
+        if (turn == null || turn.session != s.number) return releaseHeld()
+        if (hearing || s.lanes.any { it.pending.isNotEmpty() }) return
+        if (now - turn.end >= settings.thinkingPause * SR) releaseHeld()
+    }
+
+    /** Stops holding the held turn open and translates it. */
+    private fun releaseHeld() {
+        val id = heldTurnId ?: return
+        heldTurnId = null
+        _state.update { st -> st.copy(hold = null, turns = st.turns.map { if (it.id == id) it.copy(held = false) else it }) }
+        translate(id)
+    }
+
+    private suspend fun finishUtterance(s: Session, channel: Int, span: Span, final: Boolean) {
+        if (isEcho(span)) return
         if (multiChannel) {
             val levels = levels(span)
             ChannelAttribution.separationDb(levels)?.let(::trackSeparation)
@@ -465,22 +693,38 @@ class ConversationController(
         val language = ConversationLanguages.spoken(pair, transcript.language, translator.languageCandidates(text), text, fallback)
         val speaker = channelSpeaker ?: voiceSpeaker(audio, language, pair)
 
-        val turn = if (Turns.continues(previous, s.number, speaker, language, span.start, SR) && previous === _state.value.turns.lastOrNull()) {
+        val window = settings.thinkingPause
+        // A turn held open for a thinking pause can be picked up again for as long as it's held.
+        val maxGap = if (previous?.held == true) maxOf(window.toDouble(), Turns.MAX_GAP_SECONDS) else Turns.MAX_GAP_SECONDS
+        val joinedTurn = if (
+            Turns.continues(previous, s.number, speaker, language, span.start, SR, maxGap) && previous === _state.value.turns.lastOrNull() &&
+            previous?.id !in spokenTurns // already read aloud: what follows is read as its own turn
+        ) {
             val joined = Turns.join(previous!!.text, text)
-            previous.copy(text = joined, end = span.end, romanization = translator.romanize(language, joined))
+            previous.copy(text = joined, end = span.end, romanization = translator.romanize(language, joined), pending = true)
         } else {
             Turn(
                 id = nextTurnId++, session = s.number, speaker = speaker, language = language, text = text,
                 target = ConversationLanguages.target(pair, language),
+                // Until the real translation lands, the preview's is better than nothing.
+                translation = _state.value.live?.takeIf { it.language == language }?.translation,
+                pending = true,
                 romanization = translator.romanize(language, text), start = span.start, end = span.end,
             )
         }
+        // Sounds unfinished: hold it open rather than translate a fragment.
+        val hold = !final && window > 0 && Turns.looksUnfinished(joinedTurn.text) && joinedTurn.text.length < Turns.MAX_TURN_CHARS
+        val turn = joinedTurn.copy(held = hold)
+        if (heldTurnId != null && heldTurnId != turn.id) releaseHeld()
+        heldTurnId = turn.id.takeIf { hold }
+        val totalMs = window * 1000L
+        val leftMs = (totalMs - (recorder.sampleCount - span.end) * 1000L / SR).coerceIn(0, totalMs)
         _state.update { st ->
             val turns = if (st.turns.lastOrNull()?.id == turn.id) st.turns.dropLast(1) + turn else st.turns + turn
-            st.copy(turns = turns, live = null)
+            st.copy(turns = turns, live = null, hold = if (hold) Hold(turn.id, SystemClock.uptimeMillis() + leftMs, totalMs) else null)
         }
         liveTranslateJob?.cancel()
-        translate(turn.id)
+        if (hold) translationJobs.remove(turn.id)?.cancel() else translate(turn.id)
         // Keep the transcript on disk in case the app dies.
         store.update(s.noteId) { it.copy(partialText = transcriptOf(s.number)) }
     }
@@ -498,10 +742,26 @@ class ConversationController(
         val model = embedder
         if (!settings.identifyVoices || model == null) return byLanguage
         val embedding = runCatching {
-            embedMutex.withLock { withContext(Dispatchers.Default) { model.embed(audio) } }
+            embedMutex.withLock { withContext(Dispatchers.Default) { CrashGuard.during(CrashGuard.Risky.VOICE_ID) { model.embed(audio) } } }
         }.getOrNull()
         if (embedding == null) return lastVoiceFor[language] ?: byLanguage
         return SpeakerRef(SpeakerSource.VOICE, voices.assign(embedding, language)).also { lastVoiceFor[language] = it }
+    }
+
+    /**
+     * Reads out translations of turns that are finished: translated, and no
+     * longer able to continue (the speaker has been quiet long enough).
+     */
+    private fun speakSettled(s: Session, now: Int) {
+        for (turn in _state.value.turns) {
+            if (turn.session != s.number || turn.id in spokenTurns) continue
+            val translation = turn.translation ?: continue
+            // Held open for a thinking pause, or its translation is being redone: not finished yet.
+            if (turn.held || turn.pending) continue
+            if (turn.id in translationJobs || now - turn.end < Turns.MAX_GAP_SECONDS * SR) continue
+            spokenTurns += turn.id
+            speech.enqueue(speechId(turn.id, turn.target), translation, turn.target)
+        }
     }
 
     private fun trackSeparation(db: Float) {
@@ -576,8 +836,10 @@ class ConversationController(
                 st.copy(turns = st.turns.map { t ->
                     if (t.id != id || t.text != source) t
                     else outcome.fold(
-                        onSuccess = { tr -> t.copy(translation = tr, translationFailed = false, translationRomanization = translator.romanize(t.target, tr)) },
-                        onFailure = { t.copy(translationFailed = true) },
+                        onSuccess = { tr ->
+                            t.copy(translation = tr, translationFailed = false, pending = false, translationRomanization = translator.romanize(t.target, tr))
+                        },
+                        onFailure = { t.copy(translationFailed = true, pending = false) },
                     )
                 })
             }
@@ -646,6 +908,7 @@ class ConversationController(
 
     private fun ensureVoiceModel() {
         if (embedder != null || embedderJob?.isActive == true) return
+        if (heldBack(CrashGuard.Risky.VOICE_ID)) return
         embedderJob = scope.launch {
             val downloading = !SpeakerEmbedder.isInstalled(context)
             _state.update { it.copy(voiceModel = Readiness.Preparing(if (downloading) 0.0 else null)) }

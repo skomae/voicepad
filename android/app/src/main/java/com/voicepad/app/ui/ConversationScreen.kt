@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -15,6 +16,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
@@ -35,6 +38,20 @@ import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.ViewAgenda
+import androidx.compose.material.icons.filled.VerticalSplit
+import androidx.compose.material.icons.filled.ViewColumn
+import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
+import com.voicepad.app.speech.LocalVoice
+import com.voicepad.app.speech.SpeechOutput
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -63,6 +80,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -81,6 +99,7 @@ import com.voicepad.app.conversation.ConversationLayout
 import com.voicepad.app.conversation.LanguageNames
 import com.voicepad.app.conversation.SpeakerRef
 import com.voicepad.app.conversation.SpeakerSource
+import com.voicepad.app.conversation.Stage
 import com.voicepad.app.conversation.Turn
 import com.voicepad.app.transcription.EngineChoice
 import kotlinx.coroutines.delay
@@ -97,8 +116,10 @@ import kotlinx.coroutines.delay
 fun ConversationScreen(conversation: ConversationController, notes: RecordingController) {
     val state by conversation.state.collectAsStateWithLifecycle()
     val notesState by notes.state.collectAsStateWithLifecycle()
+    val speechState by conversation.speech.state.collectAsStateWithLifecycle()
     var showSettings by remember { mutableStateOf(false) }
     var picking by remember { mutableStateOf<Side?>(null) }
+    val context = LocalContext.current
 
     BackHandler { conversation.close() }
     // Nobody should have to tap the screen to keep it awake mid-conversation.
@@ -118,6 +139,9 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
     }
 
     val settings = state.settings
+    // Read while drawing, so the microphone level moves the glow without recomposing the text.
+    val level = { levels.maxOrNull() ?: 0f }
+    val coverActive = state.cover == ConversationController.Cover.ACTIVE
     val controls: @Composable () -> Unit = {
         ControlStrip(
             state = state,
@@ -128,29 +152,43 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
             onPick = { picking = it },
             onSwap = conversation::swapLanguages,
             onSettings = { showSettings = true },
+            onToggleSpeak = {
+                val on = !state.settings.autoSpeak
+                conversation.setAutoSpeak(on)
+                Toast.makeText(context, if (on) "Reading translations aloud" else "Not reading aloud", Toast.LENGTH_SHORT).show()
+            },
+            onCycleLayout = {
+                val layout = conversation.cycleLayout()
+                Toast.makeText(context, layout.label, Toast.LENGTH_SHORT).show()
+            },
             onDismissMessage = conversation::dismissMessage,
             onRetryModels = { conversation.retryModels(); if (notesState.engineStatus is EngineStatus.Failed) notes.loadEngine() },
             onUseEngine = notes::selectModel,
         )
     }
 
+    CompositionLocalProvider(
+        LocalSpeak provides SpeakActions(speechState, onSpeak = conversation::speak, onDismissError = conversation.speech::dismissError),
+    ) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.fillMaxSize().systemBarsPadding()) {
+        if (state.fold != null || coverActive) {
+            LaptopLayout(state, level, controls)
+        } else Column(Modifier.fillMaxSize().systemBarsPadding()) {
             when (settings.layout) {
                 ConversationLayout.FACE_TO_FACE -> {
-                    LanguagePane(
-                        settings.theirLanguage, state, settings.textSize,
+                    StagePane(
+                        settings.theirLanguage, state, settings.textSize, level,
                         Modifier.weight(1f).fillMaxWidth().graphicsLayer { rotationZ = 180f },
                     )
                     controls()
-                    LanguagePane(settings.myLanguage, state, settings.textSize, Modifier.weight(1f).fillMaxWidth())
+                    StagePane(settings.myLanguage, state, settings.textSize, level, Modifier.weight(1f).fillMaxWidth())
                 }
                 ConversationLayout.FACE_TO_FACE_SIDEWAYS -> {
                     Row(Modifier.weight(1f).fillMaxWidth()) {
-                        LanguagePane(settings.myLanguage, state, settings.textSize, Modifier.weight(1f).fillMaxHeight())
+                        StagePane(settings.myLanguage, state, settings.textSize, level, Modifier.weight(1f).fillMaxHeight())
                         VerticalDivider()
-                        LanguagePane(
-                            settings.theirLanguage, state, settings.textSize,
+                        StagePane(
+                            settings.theirLanguage, state, settings.textSize, level,
                             Modifier.weight(1f).fillMaxHeight().graphicsLayer { rotationZ = 180f },
                         )
                     }
@@ -158,9 +196,9 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
                 }
                 ConversationLayout.SIDE_BY_SIDE -> {
                     Row(Modifier.weight(1f).fillMaxWidth()) {
-                        LanguagePane(settings.myLanguage, state, settings.textSize, Modifier.weight(1f).fillMaxHeight())
+                        StagePane(settings.myLanguage, state, settings.textSize, level, Modifier.weight(1f).fillMaxHeight())
                         VerticalDivider()
-                        LanguagePane(settings.theirLanguage, state, settings.textSize, Modifier.weight(1f).fillMaxHeight())
+                        StagePane(settings.theirLanguage, state, settings.textSize, level, Modifier.weight(1f).fillMaxHeight())
                     }
                     controls()
                 }
@@ -170,6 +208,7 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
                 }
             }
         }
+    }
     }
 
     picking?.let { side ->
@@ -191,96 +230,123 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
 
 internal enum class Side { MINE, THEIRS }
 
-private val SpeakerColors = listOf(
-    Color(0xFF1E88E5), Color(0xFFF4511E), Color(0xFF43A047),
-    Color(0xFF8E24AA), Color(0xFF00897B), Color(0xFFD81B60),
+/** Speaking turns aloud; absent (e.g. in previews, or on the cover screen) the speaker icons are hidden. */
+internal class SpeakActions(
+    val state: SpeechOutput.State,
+    val onSpeak: (Turn, String) -> Unit,
+    val onDismissError: () -> Unit,
 )
 
-private fun speakerColor(ref: SpeakerRef?): Color =
-    ref?.let { SpeakerColors[it.index % SpeakerColors.size] } ?: Color.Gray
+internal val LocalSpeak = staticCompositionLocalOf<SpeakActions?> { null }
 
-/** The whole conversation in one [language], newest at the bottom. */
+/** Speaker icon: says the turn in [language]; while it's being said, a stop icon. */
 @Composable
-internal fun LanguagePane(language: String, state: ConversationController.UiState, textSize: Int, modifier: Modifier) {
-    val turns = state.turns
-    val live = state.live
-    val listState = rememberLazyListState()
-    // Stay on the newest words unless the reader scrolled back.
-    LaunchedEffect(turns.size, turns.lastOrNull()?.text, live?.text) {
-        if (listState.firstVisibleItemIndex <= 1) listState.animateScrollToItem(0)
-    }
-    Column(modifier) {
-        Text(
-            LanguageNames.native(language),
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(start = 16.dp, top = 8.dp),
+internal fun SpeakButton(turn: Turn, language: String, tint: Color) {
+    val speak = LocalSpeak.current ?: return
+    if (turn.id < 0 || turn.textIn(language) == null) return
+    val active = speak.state.activeId == ConversationController.speechId(turn.id, language)
+    IconButton(onClick = { speak.onSpeak(turn, language) }, modifier = Modifier.size(32.dp)) {
+        Icon(
+            if (active) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
+            contentDescription = if (active) "Stop" else "Say it",
+            tint = tint,
+            modifier = Modifier.size(20.dp),
         )
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            if (turns.isEmpty() && live == null) {
-                Text(
-                    if (state.listening) "…" else "",
-                    fontSize = textSize.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.align(Alignment.Center),
-                )
-            }
-            LazyColumn(
-                state = listState,
-                reverseLayout = true,
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                if (live != null) {
-                    item(key = "live") { PaneTurn(live, language, textSize, isLive = true, newest = true) }
-                }
-                val newestFirst = turns.asReversed()
-                items(newestFirst.size, key = { newestFirst[it].id }) { i ->
-                    PaneTurn(newestFirst[i], language, textSize, isLive = false, newest = live == null && i == 0)
-                }
-            }
-        }
     }
 }
 
 /**
- * One turn as its reader sees it: in their language, big; the newest the
- * biggest. Translated turns also show what was actually said, small.
+ * A foldable standing half open like a laptop, or showing their side on its
+ * cover screen: the upright half is the stage, the flat half under your hands
+ * holds the controls and the conversation so far in both languages.
+ *
+ * With the cover screen showing their language to the person opposite, the
+ * upright half is all yours; without it, both languages share it side by side.
  */
 @Composable
-private fun PaneTurn(turn: Turn, language: String, textSize: Int, isLive: Boolean, newest: Boolean) {
-    val color = speakerColor(turn.speaker)
-    val size = if (newest) textSize else (textSize * 0.7f).toInt()
-    val original = turn.language == language
-    val main = turn.textIn(language) ?: if (turn.translationFailed) turn.text else "…"
-    // Double-tap types what this reader sees (finished turns only).
-    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).doubleTapToType(if (isLive || main == "…") "" else main)) {
-        Box(Modifier.width(5.dp).fillMaxHeight().background(color, RoundedCornerShape(3.dp)))
-        Spacer(Modifier.width(10.dp))
-        Column {
-            Text(
-                ConversationController.speakerLabel(turn) + if (isLive) " · speaking…" else "",
-                style = MaterialTheme.typography.labelLarge,
-                color = color,
-            )
-            Text(
-                main,
-                fontSize = size.sp,
-                lineHeight = (size * 1.2f).sp,
-                fontWeight = if (newest) FontWeight.SemiBold else FontWeight.Normal,
-                fontStyle = if (isLive) FontStyle.Italic else FontStyle.Normal,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (newest || isLive) 1f else 0.75f),
-            )
-            if (!original) {
-                Text(
-                    turn.text + (if (turn.translationFailed) "  (not translated)" else ""),
-                    fontSize = (size * 0.42f).coerceAtLeast(13f).sp,
-                    lineHeight = (size * 0.55f).coerceAtLeast(16f).sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+private fun LaptopLayout(state: ConversationController.UiState, level: () -> Float, controls: @Composable () -> Unit) {
+    val settings = state.settings
+    val fold = state.fold
+    val coverActive = state.cover == ConversationController.Cover.ACTIVE
+    val stage: @Composable (Modifier) -> Unit = { modifier ->
+        if (coverActive) {
+            StagePane(settings.myLanguage, state, settings.textSize, level, modifier, showHistory = fold == null)
+        } else Row(modifier) {
+            StagePane(settings.myLanguage, state, settings.textSize, level, Modifier.weight(1f).fillMaxHeight(), showHistory = false)
+            VerticalDivider()
+            StagePane(settings.theirLanguage, state, settings.textSize, level, Modifier.weight(1f).fillMaxHeight(), showHistory = false)
         }
+    }
+    if (fold == null) {
+        Column(Modifier.fillMaxSize().systemBarsPadding()) {
+            stage(Modifier.weight(1f).fillMaxWidth())
+            TheirScreenLine(state)
+            controls()
+        }
+        return
+    }
+    val density = LocalDensity.current
+    Column(Modifier.fillMaxSize()) {
+        stage(Modifier.height(with(density) { fold.top.toDp() }).fillMaxWidth().statusBarsPadding())
+        Spacer(Modifier.height(with(density) { (fold.bottom - fold.top).toDp() }))
+        Column(Modifier.weight(1f).fillMaxWidth().navigationBarsPadding()) {
+            TheirScreenLine(state)
+            TranscriptPane(state, 18, Modifier.weight(1f).fillMaxWidth())
+            controls()
+        }
+    }
+}
+
+/** You can't see the cover screen from your side: this says what the other person is looking at. */
+@Composable
+private fun TheirScreenLine(state: ConversationController.UiState) {
+    if (state.cover != ConversationController.Cover.ACTIVE) return
+    val stage = state.stage
+    val turn = stage.turn
+    val showing = when {
+        turn == null -> "waiting for someone to speak"
+        turn.language == state.settings.theirLanguage ->
+            if (stage.phase == Stage.Phase.SPEAKING) "their own words, as they speak" else "their own words"
+        else -> when (stage.phase) {
+            Stage.Phase.SPEAKING -> "your words, translated as you speak"
+            Stage.Phase.HOLDING -> "waiting while you think"
+            Stage.Phase.WORKING -> "your translation, on its way"
+            else -> "your translation"
+        }
+    }
+    Text(
+        "Their screen: $showing",
+        style = MaterialTheme.typography.labelLarge,
+        color = SpeakerColors[1],
+        modifier = Modifier.padding(start = 16.dp, top = 8.dp),
+    )
+}
+
+/**
+ * What a foldable's cover screen shows the person opposite: the stage in
+ * their language, and nothing to tap.
+ */
+@Composable
+fun CoverStage(conversation: ConversationController) {
+    val state by conversation.state.collectAsStateWithLifecycle()
+    var levels by remember { mutableStateOf(FloatArray(1)) }
+    LaunchedEffect(state.listening) {
+        while (state.listening) {
+            levels = conversation.channelLevels
+            delay(80)
+        }
+        levels = FloatArray(1)
+    }
+    val view = LocalView.current
+    DisposableEffect(Unit) {
+        view.keepScreenOn = true
+        onDispose { view.keepScreenOn = false }
+    }
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        StagePane(
+            state.settings.theirLanguage, state, state.settings.textSize, { levels.maxOrNull() ?: 0f },
+            Modifier.fillMaxSize().quarterTurns(state.settings.coverRotation).systemBarsPadding(),
+        )
     }
 }
 
@@ -311,12 +377,16 @@ internal fun TranscriptPane(state: ConversationController.UiState, textSize: Int
                 Box(Modifier.width(5.dp).fillMaxHeight().background(color, RoundedCornerShape(3.dp)))
                 Spacer(Modifier.width(10.dp))
                 Column {
-                    Text(
-                        (if (turn.speaker == null) "" else ConversationController.speakerLabel(turn) + " · ") +
-                            LanguageNames.native(turn.language) + if (isLive) " · speaking…" else "",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = color,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            (if (turn.speaker == null) "" else ConversationController.speakerLabel(turn) + " · ") +
+                                LanguageNames.native(turn.language) + if (isLive) " · speaking…" else "",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = color,
+                        )
+                        // Says the translation, for the other person.
+                        SpeakButton(turn, turn.target, color)
+                    }
                     Text(
                         turn.text,
                         fontSize = (size * 0.8f).sp,
@@ -356,31 +426,70 @@ internal fun ControlStrip(
     onDismissMessage: () -> Unit,
     onRetryModels: () -> Unit,
     onUseEngine: (EngineChoice) -> Unit,
+    onCycleLayout: () -> Unit = {},
+    onToggleSpeak: () -> Unit = {},
 ) {
     val settings = state.settings
     Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(vertical = 6.dp)) {
             StatusLines(state, notesState, onDismissMessage, onRetryModels, onUseEngine)
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
-                IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Leave conversation mode") }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.Center,
-                ) {
+            val languages = @Composable { modifier: Modifier ->
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier, horizontalArrangement = Arrangement.Center) {
                     LanguageButton(settings.myLanguage) { onPick(Side.MINE) }
                     IconButton(onClick = onSwap, modifier = Modifier.size(36.dp)) {
                         Icon(Icons.Default.SwapHoriz, contentDescription = "Swap languages")
                     }
                     LanguageButton(settings.theirLanguage) { onPick(Side.THEIRS) }
                 }
-                MicButton(state.listening, levels.maxOrNull() ?: 0f, onToggle)
-                Spacer(Modifier.width(6.dp))
+            }
+            // On a phone-width screen the languages get a row of their own above the buttons.
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val narrow = maxWidth < 440.dp
+            Column {
+            if (narrow) languages(Modifier.fillMaxWidth())
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
+                IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Leave conversation mode") }
+                val layoutButton = @Composable {
+                    // Tap to cycle through the layouts; the icon shows the current one.
+                    IconButton(onClick = onCycleLayout, modifier = Modifier.size(40.dp)) {
+                        Icon(layoutIcon(state.layout), contentDescription = "Layout: ${state.layout.label}. Tap for the next one.")
+                    }
+                }
+                if (narrow) {
+                    layoutButton()
+                    Spacer(Modifier.weight(1f))
+                } else {
+                    languages(Modifier.weight(1f))
+                }
+                MicButton(
+                    state.listening, levels.maxOrNull() ?: 0f, onToggle,
+                    hold = state.hold, refilled = state.hearing || state.live != null,
+                    holdColor = stageColor(state.stage.turn, settings.myLanguage),
+                )
+                // Read translations aloud: on (speaker) or off (crossed out).
+                IconButton(onClick = onToggleSpeak, modifier = Modifier.size(44.dp)) {
+                    Icon(
+                        if (settings.autoSpeak) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
+                        contentDescription = if (settings.autoSpeak) "Reading translations aloud. Tap to stop." else "Not reading aloud. Tap to read translations aloud.",
+                        tint = if (settings.autoSpeak) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(2.dp))
                 if (state.listening && state.recordingChannels > 1) ChannelMeters(levels)
-                IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, contentDescription = "Conversation settings") }
+                if (narrow) Spacer(Modifier.weight(1f)) else layoutButton()
+                IconButton(onClick = onSettings, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Settings, contentDescription = "Conversation settings") }
+            }
+            }
             }
         }
     }
+}
+
+private fun layoutIcon(layout: ConversationLayout): ImageVector = when (layout) {
+    ConversationLayout.FACE_TO_FACE -> Icons.Default.ViewAgenda
+    ConversationLayout.FACE_TO_FACE_SIDEWAYS -> Icons.Default.VerticalSplit
+    ConversationLayout.SIDE_BY_SIDE -> Icons.Default.ViewColumn
+    ConversationLayout.TRANSCRIPT -> Icons.AutoMirrored.Filled.ViewList
 }
 
 @Composable
@@ -391,7 +500,7 @@ private fun LanguageButton(code: String, onClick: () -> Unit) {
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier
-            .widthIn(max = 110.dp)
+            .widthIn(max = 140.dp)
             .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 10.dp),
@@ -399,7 +508,10 @@ private fun LanguageButton(code: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun MicButton(listening: Boolean, level: Float, onClick: () -> Unit) {
+private fun MicButton(
+    listening: Boolean, level: Float, onClick: () -> Unit,
+    hold: ConversationController.Hold?, refilled: Boolean, holdColor: Color,
+) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
@@ -412,6 +524,7 @@ private fun MicButton(listening: Boolean, level: Float, onClick: () -> Unit) {
             Box(Modifier.size(60.dp).scale(0.8f + level * 0.4f).background(RecordingRed.copy(alpha = 0.22f), CircleShape))
             Box(Modifier.size(48.dp).background(RecordingRed, CircleShape))
             Icon(Icons.Default.Mic, contentDescription = null, tint = Color.White)
+            HoldRing(hold, refilled, holdColor, Modifier.size(60.dp))
         } else {
             Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape))
             Icon(Icons.Default.MicOff, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -466,9 +579,10 @@ private fun StatusLines(
             val recommended = EngineChoice.recommendedFor(settings.myLanguage, settings.theirLanguage, notesState.installedEngines)
             add {
                 StatusText(
-                    "${engine.shortName} doesn't understand ${missing.joinToString(" or ") { LanguageNames.english(it) }}.",
+                    "${engine.shortName} doesn't understand ${missing.joinToString(" or ") { LanguageNames.english(it) }}." +
+                        if (recommended in notesState.installedEngines) "" else " ${recommended.shortName} is a ${recommended.approximateSize.removeSuffix(" download")} download.",
                     error = true,
-                    action = "Use ${recommended.shortName}" + if (recommended in notesState.installedEngines) "" else " (download)",
+                    action = "Use ${recommended.shortName}",
                     onAction = { onUseEngine(recommended) },
                 )
             }
@@ -489,6 +603,14 @@ private fun StatusLines(
         }
         if (state.listening && state.channelsIdentical) {
             add { StatusText("Your mic's channels carry the same sound, so speakers are told apart by voice instead.") }
+        }
+        LocalSpeak.current?.let { speak ->
+            speak.state.error?.let { add { StatusText(it, error = true, action = "OK", onAction = speak.onDismissError) } }
+            speak.state.voices.forEach { (voice, status) ->
+                if (status is SpeechOutput.VoiceStatus.Downloading) {
+                    add { StatusText("Downloading ${voice.displayName} voice… ${(status.progress * 100).toInt()}% (the phone's voice speaks meanwhile)") }
+                }
+            }
         }
         if (!state.listening) add { StatusText("Paused — tap the microphone to listen.") }
     }
@@ -566,11 +688,11 @@ private fun ConversationSettingsSheet(
             SectionTitle("Layout")
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ConversationLayout.entries.forEach { layout ->
-                    FilterChip(selected = settings.layout == layout, onClick = { conversation.setLayout(layout) }, label = { Text(layout.label) })
+                    FilterChip(selected = state.layout == layout, onClick = { conversation.setLayout(layout) }, label = { Text(layout.label) })
                 }
             }
             Text(
-                when (settings.layout) {
+                when (state.layout) {
                     ConversationLayout.FACE_TO_FACE -> "Lay the phone between you: the far half is upside down, in their language."
                     ConversationLayout.FACE_TO_FACE_SIDEWAYS ->
                         "Lay a wide or unfolded screen between you, one at each end: their half is turned round to face them."
@@ -615,6 +737,43 @@ private fun ConversationSettingsSheet(
                 style = MaterialTheme.typography.bodySmall, color = muted,
             )
 
+            SectionTitle("Thinking pause")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(0, 3, 5, 8).forEach { seconds ->
+                    FilterChip(
+                        selected = settings.thinkingPause == seconds,
+                        onClick = { conversation.setThinkingPause(seconds) },
+                        label = { Text(if (seconds == 0) "Off" else "$seconds s") },
+                    )
+                }
+            }
+            Text(
+                "When someone stops mid-sentence, their turn is held open this long (the ring round the " +
+                    "microphone drains) so they can find their words; it's translated when they finish the " +
+                    "sentence or the time runs out. Finished sentences are translated straight away.",
+                style = MaterialTheme.typography.bodySmall, color = muted,
+            )
+
+            SectionTitle("Cover screen")
+            ToggleRow(
+                title = "Show their side on the cover screen",
+                subtitle = "On an unfolded foldable, the outside screen shows the person opposite the conversation in " +
+                    "their language, and the inside is yours. Stand the phone half open like a laptop and the " +
+                    "flat half holds the controls. This phone: ${state.cover.label.replaceFirstChar { it.lowercase() }}.",
+                checked = settings.coverScreen,
+                onChange = conversation::setCoverScreen,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Turn its picture", Modifier.weight(1f))
+                listOf(0, 1, 2, 3).forEach { turns ->
+                    FilterChip(
+                        selected = settings.coverRotation == turns,
+                        onClick = { conversation.setCoverRotation(turns) },
+                        label = { Text("${turns * 90}°") },
+                    )
+                }
+            }
+
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             ToggleRow(
                 title = "Tell voices apart",
@@ -624,6 +783,19 @@ private fun ConversationSettingsSheet(
                 checked = settings.identifyVoices,
                 onChange = conversation::setIdentifyVoices,
             )
+            SpeechSettings(conversation, settings)
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            val systemAnimations = rememberSystemAnimationsOn()
+            ToggleRow(
+                title = "Animate even when the phone's animations are off",
+                subtitle = (if (systemAnimations) "The phone's animations are on, so the stage animates already. "
+                else "The phone's animations are off right now (often power saving), so the glow, the flickering " +
+                    "text while a translation is on its way and the thinking dots are switched off. ") +
+                    "Turn this on to show them anyway.",
+                checked = settings.forceAnimations,
+                onChange = conversation::setForceAnimations,
+            )
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
             ToggleRow(
                 title = "Open when the phone is unfolded",
                 subtitle = "On a foldable, unfolding it opens conversation mode; folding it again goes back to notes.",
@@ -655,5 +827,42 @@ private fun ToggleRow(title: String, subtitle: String, checked: Boolean, onChang
         }
         Spacer(Modifier.width(12.dp))
         Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+/** Reading aloud: automatically, and which voices. */
+@Composable
+private fun SpeechSettings(conversation: ConversationController, settings: ConversationController.Settings) {
+    val speech by conversation.speech.state.collectAsStateWithLifecycle()
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    ToggleRow(
+        title = "Read translations aloud",
+        subtitle = "Says each translation once its speaker pauses. The microphone ignores the phone's own voice " +
+            "meanwhile, so speak after it finishes. Tap the speaker icon on any turn to hear it again.",
+        checked = settings.autoSpeak,
+        onChange = conversation::setAutoSpeak,
+    )
+    ToggleRow(
+        title = "Use on-device voices",
+        subtitle = "Kitten for English and MeloTTS for Mandarin, run on the phone and downloaded the first time " +
+            "they're needed. Other languages, and English words Kitten doesn't know, use the phone's own voice. " +
+            "Every clip is kept, so replaying is instant.",
+        checked = speech.useLocalVoices,
+        onChange = conversation.speech::setUseLocalVoices,
+    )
+    if (speech.useLocalVoices) {
+        LocalVoice.entries.forEach { voice ->
+            val status = speech.voices[voice]
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(start = 4.dp)) {
+                Text("${voice.displayName} · ${voice.sizeLabel}", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                when (status) {
+                    SpeechOutput.VoiceStatus.Ready -> Text("Ready", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+                    is SpeechOutput.VoiceStatus.Downloading -> Text("${(status.progress * 100).toInt()}%", color = muted, style = MaterialTheme.typography.bodySmall)
+                    else -> TextButton(onClick = { conversation.speech.download(voice) }) {
+                        Text(if (status is SpeechOutput.VoiceStatus.Failed) "Retry download" else "Download")
+                    }
+                }
+            }
+        }
     }
 }
