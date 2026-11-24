@@ -15,6 +15,10 @@ enum class ConversationLayout(val label: String) {
     SIDE_BY_SIDE("Side by side"),
     /** One list with original and translation: for following along yourself. */
     TRANSCRIPT("Transcript"),
+    ;
+
+    /** The layout after this one, for the cycle button. */
+    fun next(): ConversationLayout = entries[(ordinal + 1) % entries.size]
 }
 
 /**

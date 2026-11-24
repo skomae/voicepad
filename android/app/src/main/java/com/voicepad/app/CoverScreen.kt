@@ -64,7 +64,8 @@ class CoverScreen(
                 }
                 launch {
                     conversation.state
-                        .map { it.visible && it.unfolded && it.settings.coverScreen }
+                        // Held back after a crash while it was showing, until the user decides.
+                        .map { it.visible && it.unfolded && it.settings.coverScreen && CrashGuard.Risky.OUTER_SCREEN !in it.crashedDuring }
                         .distinctUntilChanged()
                         .collect { want ->
                             wanted = want
@@ -81,6 +82,7 @@ class CoverScreen(
         wanted = false
         session?.close()
         session = null
+        mark(false)
     }
 
     private fun status(): WindowAreaCapability.Status? =
@@ -110,11 +112,14 @@ class CoverScreen(
         if (current != null || starting || refused) return
         if (status() != WindowAreaCapability.Status.WINDOW_AREA_STATUS_AVAILABLE) return
         starting = true
+        // Marked until the session ends: a crash while it's up points here.
+        mark(true)
         runCatching {
             areas?.presentContentOnWindowArea(area.token, activity, ContextCompat.getMainExecutor(activity), this)
         }.onFailure {
             starting = false
             refused = true
+            mark(false)
         }
     }
 
@@ -151,10 +156,19 @@ class CoverScreen(
     override fun onSessionEnded(t: Throwable?) {
         starting = false
         session = null
+        mark(false)
         // Ended while still wanted: the system or its owner closed it. Leave it closed.
         if (wanted) refused = true
         report()
     }
 
     override fun onContainerVisibilityChanged(isVisible: Boolean) {}
+
+    private var marked = false
+
+    private fun mark(on: Boolean) {
+        if (on == marked) return
+        marked = on
+        if (on) CrashGuard.enter(CrashGuard.Risky.OUTER_SCREEN) else CrashGuard.exit(CrashGuard.Risky.OUTER_SCREEN)
+    }
 }

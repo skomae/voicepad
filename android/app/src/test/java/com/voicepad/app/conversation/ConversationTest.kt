@@ -118,6 +118,12 @@ class ChannelAttributionTest {
         assertEquals(20f, ChannelAttribution.separationDb(levels)!!, 0.5f)
     }
 
+    @Test fun garbledLevelsDontCrash() {
+        val levels = listOf(floatArrayOf(Float.NaN, -20f), floatArrayOf(Float.NaN, -40f))
+        assertTrue(ChannelAttribution.owns(levels, 0))
+        assertFalse(ChannelAttribution.owns(levels, 1))
+    }
+
     @Test fun silenceIsNobody() {
         val levels = listOf(FloatArray(20) { -90f }, FloatArray(20) { -90f })
         assertEquals(null, ChannelAttribution.separationDb(levels))
@@ -185,5 +191,15 @@ class ConversationEngineTest {
         assertEquals(4, InputDeviceNaming.maxChannels(11, intArrayOf(), intArrayOf(0b1111), intArrayOf()))
         assertEquals(2, InputDeviceNaming.maxChannels(builtIn, intArrayOf(), intArrayOf(), intArrayOf()))
         assertEquals(1, InputDeviceNaming.maxChannels(bluetooth, intArrayOf(2), intArrayOf(), intArrayOf()))
+    }
+}
+
+class LayoutCycleTest {
+    @Test fun cyclesThroughEveryLayoutAndWrapsAround() {
+        var layout = ConversationLayout.FACE_TO_FACE
+        val seen = mutableListOf(layout)
+        repeat(ConversationLayout.entries.size - 1) { layout = layout.next(); seen += layout }
+        assertEquals(ConversationLayout.entries.toList(), seen)
+        assertEquals(ConversationLayout.FACE_TO_FACE, layout.next())
     }
 }

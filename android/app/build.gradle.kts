@@ -118,6 +118,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
     implementation("androidx.core:core-ktx:1.18.0")
+    // A user-chosen folder that keeps downloaded models across reinstalls.
+    implementation("androidx.documentfile:documentfile:1.1.0")
     // Fold state, to open conversation mode when a foldable is unfolded.
     implementation("androidx.window:window:1.5.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
