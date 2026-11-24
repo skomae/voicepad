@@ -109,6 +109,12 @@ class RecordingController(
         data class Failed(val message: String) : LlmStatus
     }
 
+    /** Progress of the first-run "pre-download models" flow. */
+    sealed interface PreloadStatus {
+        data object Idle : PreloadStatus
+        data class Running(val progress: Double, val label: String) : PreloadStatus
+    }
+
     data class UiState(
         val isRecording: Boolean = false,
         val startedAt: Long? = null,
@@ -140,6 +146,10 @@ class RecordingController(
         val stableLanguage: Boolean = true,
         /** Preview with the fast SenseVoice-only pass; route fully at commit. */
         val quickPreview: Boolean = true,
+        /** First launch with no models yet: offer to pre-download them now. */
+        val showSetup: Boolean = false,
+        /** Progress of the first-run pre-download (see [PreloadStatus]). */
+        val preload: PreloadStatus = PreloadStatus.Idle,
         val errorMessage: String? = null,
         /** Microphones currently connected. */
         val inputDevices: List<InputDevice> = emptyList(),
@@ -254,6 +264,7 @@ class RecordingController(
 
     private var engine: SpeechEngine? = null
     private var loadJob: Job? = null
+    private var preloadJob: Job? = null
     private var liveJob: Job? = null
     private var queueJob: Job? = null
     private var translateJob: Job? = null
@@ -318,6 +329,11 @@ class RecordingController(
         // Before anything records: repair what a crash or kill left behind.
         store.recoverAfterRestart()
         refreshInstalled()
+        // First launch with nothing downloaded: offer to pre-download before
+        // the app quietly starts fetching the active model.
+        _state.update {
+            it.copy(showSetup = !prefs.getBoolean("setupOffered", false) && it.installedEngines.isEmpty())
+        }
 
         inputs.onDevicesChanged = {
             val before = _state.value.inputDevices.map { it.key }.toSet()
@@ -416,6 +432,57 @@ class RecordingController(
         _state.update { it.copy(quickPreview = enabled) }
     }
 
+    /** Closes the first-run setup and continues with the normal start-up. */
+    fun dismissSetup() {
+        preloadJob?.cancel()
+        prefs.edit { putBoolean("setupOffered", true) }
+        _state.update { it.copy(showSetup = false, preload = PreloadStatus.Idle) }
+        appBecameActive()
+    }
+
+    /**
+     * First-run setup: downloads every model in [choices] (skipping ones
+     * already on the phone) so they work offline. Reports progress through
+     * [UiState.preload] and resumes the normal start-up when done.
+     */
+    fun preloadModels(choices: Collection<EngineChoice>) {
+        if (_state.value.preload is PreloadStatus.Running) return
+        val targets = choices.distinct().filterNot(models::isInstalled)
+        preloadJob?.cancel()
+        if (targets.isEmpty()) {
+            prefs.edit { putBoolean("setupOffered", true) }
+            _state.update { it.copy(showSetup = false, preload = PreloadStatus.Idle) }
+            appBecameActive()
+            return
+        }
+        preloadJob = scope.launch {
+            val failures = mutableListOf<String>()
+            var done = 0
+            for (choice in targets) {
+                _state.update { it.copy(preload = PreloadStatus.Running(done.toDouble() / targets.size, choice.displayName)) }
+                try {
+                    models.install(choice) { p ->
+                        _state.update { it.copy(preload = PreloadStatus.Running((done + p) / targets.size, choice.displayName)) }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    failures += "${choice.displayName}: ${e.message ?: e}"
+                }
+                done++
+            }
+            refreshInstalled()
+            prefs.edit { putBoolean("setupOffered", true) }
+            _state.update { it.copy(showSetup = false, preload = PreloadStatus.Idle) }
+            if (failures.isEmpty()) {
+                Toast.makeText(context, "Models are ready to use offline.", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "Some models couldn't be downloaded.", Toast.LENGTH_LONG).show()
+            }
+            appBecameActive()
+        }
+    }
+
     fun loadEngine() {
         val choice = _state.value.activeEngine
         loadJob?.cancel()
@@ -485,9 +552,14 @@ class RecordingController(
     fun appBecameActive() {
         translationTried.clear()
         processTranslations()
+        // First launch with no models: the setup sheet takes over. Don't
+        // quietly start downloading the active model or recording under it.
+        if (_state.value.showSetup) return
         if (engine == null && loadJob?.isActive != true) loadEngine() else processQueue()
         val s = _state.value
-        if (s.autoRecordOnOpen && !s.isRecording && !conversationActive) start()
+        val canRecord = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        if (s.autoRecordOnOpen && !s.isRecording && !conversationActive && canRecord) start()
     }
 
     fun toggle() {

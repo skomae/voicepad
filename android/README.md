@@ -16,6 +16,11 @@ copied, edited, re-transcribed and rolled back through its revision history.
 
   Each downloads once on first use. Recording starts immediately; text
   catches up once the model is ready.
+- **First-run offline setup**: the first time the app opens with no models
+  downloaded, it offers to pre-download the speech models you want (each
+  listed with what it does and its size), so recording works without a
+  connection. It also points at the **Model folder** option below, so a
+  reinstall can restore the models instead of downloading them again.
 - **Where models come from**: speech models, voices and the speaker model
   download from GitHub Releases (k2-fsa/sherpa-onnx); translation packs
   from Google ML Kit. Each downloads once, into VoicePad's own storage,

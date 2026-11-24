@@ -395,6 +395,13 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
             onDismiss = { showSettings = false },
         )
     }
+    if (state.showSetup) {
+        SetupSheet(
+            controller = controller,
+            state = state,
+            onDismiss = { controller.dismissSetup() },
+        )
+    }
     if (showArchive) {
         ModalBottomSheet(onDismissRequest = { showArchive = false }) {
             Text(
