@@ -783,6 +783,17 @@ private fun ConversationSettingsSheet(
             )
             SpeechSettings(conversation, settings)
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            val systemAnimations = rememberSystemAnimationsOn()
+            ToggleRow(
+                title = "Animate even when the phone's animations are off",
+                subtitle = (if (systemAnimations) "The phone's animations are on, so the stage animates already. "
+                else "The phone's animations are off right now (often power saving), so the glow, the flickering " +
+                    "text while a translation is on its way and the thinking dots are switched off. ") +
+                    "Turn this on to show them anyway.",
+                checked = settings.forceAnimations,
+                onChange = conversation::setForceAnimations,
+            )
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
             ToggleRow(
                 title = "Open when the phone is unfolded",
                 subtitle = "On a foldable, unfolding it opens conversation mode; folding it again goes back to notes.",
