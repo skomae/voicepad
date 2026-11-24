@@ -127,6 +127,10 @@ class RecordingController(
         val copyWhenDone: Boolean = true,
         /** Start a new note automatically after a silence or every few minutes. */
         val autoSplit: AutoSplit = AutoSplit.OFF,
+        /** Delete "No speech detected" notes and their audio once they are this old. */
+        val autoDeleteEmpty: NoteCleanup.AutoAge = NoteCleanup.AutoAge.OFF,
+        /** Compress notes' audio (WAV → AAC) once they are this old. */
+        val autoCompress: NoteCleanup.AutoAge = NoteCleanup.AutoAge.OFF,
         /** Models already on the phone, for the quick switcher. */
         val installedEngines: Set<EngineChoice> = emptySet(),
         val autoRecordOnOpen: Boolean = true,
@@ -181,6 +185,7 @@ class RecordingController(
         private val PAD = (PAD_SECONDS * AudioRecorder.SAMPLE_RATE).toInt()
         private const val TICK_MS = 1200L
         const val MAX_AUTO_ATTEMPTS = 3
+        private const val AUTO_CLEANUP_INTERVAL_MS = 15 * 60 * 1000L
         /**
          * Most robust to distant, noisy speech: in testing with echo and
          * background noise it made 10% word errors where Parakeet made 41%.
@@ -214,6 +219,10 @@ class RecordingController(
                 ?.let { runCatching { NoteTapAction.valueOf(it) }.getOrNull() } ?: NoteTapAction.EDIT,
             autoSplit = prefs.getString("autoSplit", null)
                 ?.let { runCatching { AutoSplit.valueOf(it) }.getOrNull() } ?: AutoSplit.OFF,
+            autoDeleteEmpty = prefs.getString("autoDeleteEmpty", null)
+                ?.let { runCatching { NoteCleanup.AutoAge.valueOf(it) }.getOrNull() } ?: NoteCleanup.AutoAge.OFF,
+            autoCompress = prefs.getString("autoCompress", null)
+                ?.let { runCatching { NoteCleanup.AutoAge.valueOf(it) }.getOrNull() } ?: NoteCleanup.AutoAge.OFF,
             stableLanguage = prefs.getBoolean("stableLanguage", true),
             quickPreview = prefs.getBoolean("quickPreview", true),
             inputDevices = inputs.devices.value,
@@ -294,6 +303,9 @@ class RecordingController(
     private val finishing = mutableSetOf<LiveSession>()
     private var tailTranslateJob: Job? = null
     private val liveTranslateMutex = Mutex()
+    private var autoCleanupJob: Job? = null
+    /** Notes whose audio failed to compress automatically; not retried until the app restarts. */
+    private val autoCompressFailed = mutableSetOf<String>()
 
     init {
         // Before anything records: repair what a crash or kill left behind.
@@ -319,6 +331,14 @@ class RecordingController(
 
         // Translate whenever a note gets new text (transcription, edit, restore).
         scope.launch { store.notes.collect { processTranslations() } }
+
+        // Automatic clean-up: now, then every so often while the app is alive.
+        scope.launch {
+            while (isActive) {
+                runAutoCleanup()
+                delay(AUTO_CLEANUP_INTERVAL_MS)
+            }
+        }
     }
 
     // region Microphone
@@ -1198,6 +1218,45 @@ class RecordingController(
             NoteCleanup.Action.ARCHIVE -> archive(ids)
             NoteCleanup.Action.COMPRESS -> compress(ids)
             NoteCleanup.Action.DELETE_EMPTY, NoteCleanup.Action.DELETE -> delete(ids)
+        }
+    }
+
+    fun setAutoDeleteEmpty(age: NoteCleanup.AutoAge) {
+        prefs.edit { putString("autoDeleteEmpty", age.name) }
+        _state.update { it.copy(autoDeleteEmpty = age) }
+        scope.launch { runAutoCleanup() }
+    }
+
+    fun setAutoCompress(age: NoteCleanup.AutoAge) {
+        prefs.edit { putString("autoCompress", age.name) }
+        _state.update { it.copy(autoCompress = age) }
+        scope.launch { runAutoCleanup() }
+    }
+
+    /**
+     * Deletes empty notes and compresses audio older than the chosen ages.
+     * Runs quietly: a note that can't be compressed is left as it was and
+     * skipped from then on, without an error each time. Compression waits
+     * while recording so it never competes with the live transcription.
+     */
+    private fun runAutoCleanup() {
+        if (autoCleanupJob?.isActive == true) return
+        val s = _state.value
+        if (s.autoDeleteEmpty == NoteCleanup.AutoAge.OFF && s.autoCompress == NoteCleanup.AutoAge.OFF) return
+        autoCleanupJob = scope.launch {
+            val now = System.currentTimeMillis()
+            val empty = NoteCleanup.autoSelect(store.notes.value, NoteCleanup.Action.DELETE_EMPTY, s.autoDeleteEmpty, now, busyIds())
+            if (empty.isNotEmpty()) delete(empty.map { it.id })
+            if (_state.value.isRecording) return@launch
+            val toCompress = NoteCleanup.autoSelect(store.notes.value, NoteCleanup.Action.COMPRESS, s.autoCompress, now, busyIds())
+                .filterNot { it.id in autoCompressFailed }
+            for (note in toCompress) {
+                if (_state.value.isRecording) break
+                // Re-check: it may have been deleted, re-transcribed or started finishing meanwhile.
+                val current = store.note(note.id) ?: continue
+                if (current.id in busyIds() || current.status != TranscriptionStatus.DONE) continue
+                if (!compressAudio(current.id)) autoCompressFailed += current.id
+            }
         }
     }
 

@@ -69,6 +69,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.voicepad.app.RecordingController
 import com.voicepad.app.RecordingController.EngineStatus
 import com.voicepad.app.RecordingController.LlmStatus
+import com.voicepad.app.data.NoteCleanup
 import com.voicepad.app.data.Note
 import com.voicepad.app.data.Revision
 import com.voicepad.app.llm.Guidance
@@ -191,6 +192,52 @@ fun HistorySheet(
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
+/** Delete "No speech detected" notes and/or compress audio once notes reach a chosen age. */
+@Composable
+private fun AutoCleanupSection(state: RecordingController.UiState, controller: RecordingController) {
+    Text("Automatic clean-up", style = MaterialTheme.typography.titleSmall)
+    Text(
+        "Runs when the app opens and every 15 minutes while it's running. Notes still recording or " +
+            "being transcribed are never touched.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(Modifier.height(8.dp))
+    AutoAgeRow(
+        title = "Delete \u201cNo speech detected\u201d notes after",
+        detail = "Removes the note and its audio permanently. Pinned notes are kept.",
+        selected = state.autoDeleteEmpty,
+        onSelect = controller::setAutoDeleteEmpty,
+    )
+    Spacer(Modifier.height(8.dp))
+    AutoAgeRow(
+        title = "Compress audio after",
+        detail = "Shrinks recordings to about a tenth of their size; notes stay in the list and still play. " +
+            "Each file is checked before the original is removed.",
+        selected = state.autoCompress,
+        onSelect = controller::setAutoCompress,
+    )
+}
+
+@Composable
+private fun AutoAgeRow(
+    title: String,
+    detail: String,
+    selected: NoteCleanup.AutoAge,
+    onSelect: (NoteCleanup.AutoAge) -> Unit,
+) {
+    Text(title)
+    Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.padding(top = 6.dp).horizontalScroll(rememberScrollState()),
+    ) {
+        NoteCleanup.AutoAge.entries.forEach { age ->
+            FilterChip(selected = selected == age, onClick = { onSelect(age) }, label = { Text(age.label) })
+        }
+    }
+}
+
 @Composable
 fun SettingsSheet(
     controller: RecordingController,
@@ -295,6 +342,8 @@ fun SettingsSheet(
                 Spacer(Modifier.width(12.dp))
                 Switch(checked = state.backgroundVoices, onCheckedChange = controller::setBackgroundVoices)
             }
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            AutoCleanupSection(state, controller)
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
