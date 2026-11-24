@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -98,6 +99,8 @@ fun NoteBubble(
     onTranslate: () -> Unit = {},
     onCopyText: (String) -> Unit = {},
     onArchive: () -> Unit = {},
+    /** Types the note on the paired Bluetooth host; null hides the menu item (not connected). */
+    onType: (() -> Unit)? = null,
     /** Small window: only the date and Copy under the bubble; the rest is in the long-press menu. */
     compact: Boolean = false,
 ) {
@@ -141,6 +144,9 @@ fun NoteBubble(
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 MenuItem("Copy", Icons.Default.ContentCopy) { menuOpen = false; onCopy() }
+                if (onType != null && note.currentText.isNotBlank()) {
+                    MenuItem("Type on paired device", Icons.Default.Keyboard) { menuOpen = false; onType() }
+                }
                 val translated = note.currentTranslation?.takeIf { it.status == TranslationStatus.DONE }
                 if (translated != null) {
                     MenuItem("Copy translation", Icons.Default.Translate) {

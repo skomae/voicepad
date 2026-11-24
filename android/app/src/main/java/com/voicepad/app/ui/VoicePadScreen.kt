@@ -101,6 +101,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.voicepad.app.RecordingController
 import com.voicepad.app.RecordingController.EngineStatus
 import com.voicepad.app.conversation.ConversationController
+import com.voicepad.app.transmit.SinkStatus
 import androidx.compose.material.icons.filled.Translate
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -173,6 +174,11 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
             onTranslate = { controller.translateNow(note.id) },
             onArchive = { if (note.archived) controller.unarchive(note.id) else controller.archive(listOf(note.id)) },
             onCopyText = ::copy,
+            onType = if (state.transmitStatus == SinkStatus.CONNECTED && !state.isTyping) {
+                { controller.typeNote(note.id) }
+            } else {
+                null
+            },
         )
     }
 
