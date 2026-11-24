@@ -54,7 +54,7 @@ fun shareRecording(context: Context, file: File?, transcript: String) {
     }
     val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
     val send = Intent(Intent.ACTION_SEND).apply {
-        type = "audio/wav"
+        type = if (file.extension == "m4a") "audio/mp4" else "audio/wav"
         putExtra(Intent.EXTRA_STREAM, uri)
         if (transcript.isNotBlank()) putExtra(Intent.EXTRA_TEXT, transcript)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)

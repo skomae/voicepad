@@ -119,28 +119,14 @@ fun RecordBar(controller: RecordingController, state: RecordingController.UiStat
                     }
                 }
 
-                // Split: like a stopwatch lap — ends this note and starts the next without a gap.
-                val view = LocalView.current
-                Column(
-                    Modifier
-                        .width(72.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable(enabled = state.isRecording) {
-                            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                            controller.split()
-                        }
-                        .padding(vertical = 6.dp)
-                        .semantics { contentDescription = "Split: finish this recording and start a new one" },
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    val tint = if (state.isRecording) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-                    Icon(Icons.Default.ContentCut, contentDescription = null, tint = tint)
-                    Text("Split", style = MaterialTheme.typography.labelMedium, color = tint)
-                }
+                // Split: tap for a new note now; drag up or long-press for auto-split.
+                SplitButton(controller, state)
             }
             Text(
                 if (state.isRecording) {
-                    "Recording" + (if (state.partNumber > 1) " · part ${state.partNumber}" else "") + " — tap ■ to stop"
+                    "Recording" + (if (state.partNumber > 1) " · part ${state.partNumber}" else "") +
+                        (if (state.backgroundVoices) " · background voices" else "") +
+                        (if (state.autoSplit != com.voicepad.app.data.AutoSplit.OFF) " · auto-split" else "") + " — tap ■ to stop"
                 } else {
                     "Not recording — tap ● to start"
                 },

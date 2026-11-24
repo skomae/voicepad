@@ -5,6 +5,7 @@ import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioRouting
+import android.media.audiofx.NoiseSuppressor
 import android.media.MediaRecorder
 import android.os.Handler
 import android.os.Looper
@@ -23,6 +24,18 @@ import kotlin.math.sqrt
 class AudioRecorder {
     companion object {
         const val SAMPLE_RATE = 16_000
+
+        /**
+         * Microphone setting for close speech or for the whole room. For the
+         * room: raw, unprocessed audio where the phone offers it, otherwise
+         * the camcorder setting (tuned for distant sound).
+         */
+        fun sourceFor(context: android.content.Context, backgroundVoices: Boolean): Int {
+            if (!backgroundVoices) return MediaRecorder.AudioSource.VOICE_RECOGNITION
+            val audio = context.getSystemService(android.media.AudioManager::class.java)
+            val unprocessed = audio.getProperty(android.media.AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED) == "true"
+            return if (unprocessed) MediaRecorder.AudioSource.UNPROCESSED else MediaRecorder.AudioSource.CAMCORDER
+        }
     }
 
     private val lock = Any()
@@ -53,7 +66,7 @@ class AudioRecorder {
     /** Called (on the main thread) when Android moves recording to another mic. */
     var onRoutingChanged: (() -> Unit)? = null
 
-    private var record: AudioRecord? = null
+    @Volatile private var record: AudioRecord? = null
     private var thread: Thread? = null
     private var wav: RandomAccessFile? = null
     private var wavDataBytes = 0L
@@ -81,25 +94,19 @@ class AudioRecorder {
         if (samples.size > SAMPLE_RATE * 120 && count < samples.size / 4) samples = samples.copyOf(samples.size / 2)
     }
 
-    @SuppressLint("MissingPermission") // Checked by the caller.
-    fun start(file: File, preferredDevice: AudioDeviceInfo? = null) {
+    private var preferred: AudioDeviceInfo? = null
+    private var source = MediaRecorder.AudioSource.VOICE_RECOGNITION
+    private var noiseSuppressor: NoiseSuppressor? = null
+
+    /**
+     * @param audioSource from [sourceFor]: close-talk voice recognition
+     *   normally, room-sound capture for background voices.
+     */
+    fun start(file: File, preferredDevice: AudioDeviceInfo? = null, audioSource: Int = MediaRecorder.AudioSource.VOICE_RECOGNITION) {
         if (isRunning) return
-        val minBuffer = AudioRecord.getMinBufferSize(
-            SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_FLOAT
-        )
-        val recorder = AudioRecord(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_FLOAT,
-            max(minBuffer, SAMPLE_RATE * 4 / 5), // ~200 ms of float samples
-        )
-        check(recorder.state == AudioRecord.STATE_INITIALIZED) { "Microphone is unavailable." }
-        recorder.setPreferredDevice(preferredDevice)
-        recorder.addOnRoutingChangedListener(
-            AudioRouting.OnRoutingChangedListener { updateRouting(it) },
-            Handler(Looper.getMainLooper()),
-        )
+        preferred = preferredDevice
+        source = audioSource
+        val recorder = openRecord()
 
         synchronized(lock) { count = 0; offset = 0 }
         level = 0f
@@ -110,20 +117,74 @@ class AudioRecorder {
         }
         wavDataBytes = 0
 
+        isRunning = true
+        startCapture(recorder)
+    }
+
+    /**
+     * Switches the microphone processing mid-recording (e.g. background
+     * voices on/off). Capture pauses for about a tenth of a second; the
+     * recording, its file and its positions carry on.
+     */
+    fun switchSource(audioSource: Int) {
+        if (audioSource == source) return
+        source = audioSource
+        if (!isRunning) return
+        stopCapture()
+        startCapture(openRecord())
+    }
+
+    @SuppressLint("MissingPermission") // Checked by the caller.
+    private fun openRecord(): AudioRecord {
+        val minBuffer = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_FLOAT
+        )
+        val recorder = AudioRecord(
+            source,
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_FLOAT,
+            max(minBuffer, SAMPLE_RATE * 4 / 5), // ~200 ms of float samples
+        )
+        check(recorder.state == AudioRecord.STATE_INITIALIZED) { "Microphone is unavailable." }
+        recorder.setPreferredDevice(preferred)
+        recorder.addOnRoutingChangedListener(
+            AudioRouting.OnRoutingChangedListener { updateRouting(it) },
+            Handler(Looper.getMainLooper()),
+        )
+        // Noise suppression is tuned for one nearby talker and treats a distant
+        // voice as noise to remove; turn it off when capturing the room.
+        noiseSuppressor?.release()
+        noiseSuppressor = null
+        if (source != MediaRecorder.AudioSource.VOICE_RECOGNITION && NoiseSuppressor.isAvailable()) {
+            noiseSuppressor = runCatching {
+                NoiseSuppressor.create(recorder.audioSessionId)?.apply { enabled = false }
+            }.getOrNull()
+        }
+        return recorder
+    }
+
+    private fun startCapture(recorder: AudioRecord) {
         recorder.startRecording()
         record = recorder
-        isRunning = true
         updateRouting(recorder)
         thread = Thread({ readLoop(recorder) }, "VoicePad-recorder").apply { start() }
+    }
+
+    private fun stopCapture() {
+        val old = record
+        record = null // the read loop stops after its current buffer
+        thread?.join(1000)
+        thread = null
+        old?.run { stop(); release() }
+        noiseSuppressor?.release()
+        noiseSuppressor = null
     }
 
     fun stop() {
         if (!isRunning) return
         isRunning = false
-        thread?.join(1000)
-        thread = null
-        record?.run { stop(); release() }
-        record = null
+        stopCapture()
         routedDeviceName = null
         level = 0f
         synchronized(wavLock) {
@@ -162,6 +223,7 @@ class AudioRecorder {
 
     /** Switches the live recording to [device] (null = system default). */
     fun setPreferredDevice(device: AudioDeviceInfo?) {
+        preferred = device
         record?.setPreferredDevice(device)
     }
 
@@ -177,7 +239,7 @@ class AudioRecorder {
         val buffer = FloatArray(SAMPLE_RATE / 10) // 100 ms
         val pcm = ByteArray(buffer.size * 2)
         var buffersSinceCheckpoint = 0
-        while (isRunning) {
+        while (isRunning && record === recorder) {
             val read = recorder.read(buffer, 0, buffer.size, AudioRecord.READ_BLOCKING)
             if (read <= 0) continue
 

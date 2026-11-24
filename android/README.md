@@ -16,6 +16,17 @@ copied, edited, re-transcribed and rolled back through its revision history.
 
   Each downloads once on first use. Recording starts immediately; text
   catches up once the model is ready.
+- **Quick model switcher**: tap the model name (top left) to switch between
+  models already on the phone, e.g. Auto: Western ↔ Auto: Asian + English.
+- **Background voices** (ear button, top bar; also in Settings and the
+  switcher): for announcements, a TV or someone across the room. Records
+  the room instead of just your voice (raw or camcorder microphone, noise
+  suppression off), evens out loudness, and switches to Whisper turbo. In
+  testing on distant, echoey speech with background noise, Whisper turbo
+  made 10% word errors where Parakeet made 41% (30% vs 65% in heavier
+  noise). A speech-enhancement model (GTCRN) was tried and left out: it made
+  results worse. Works mid-recording; notes remember the mode so
+  re-transcription treats them the same way.
 - **Silence trimming and pause-based splitting**: a bundled Silero
   voice-activity detector finds speech. Silence never reaches the model (no
   Whisper hallucinations on quiet stretches, less battery); Parakeet and
@@ -32,12 +43,21 @@ copied, edited, re-transcribed and rolled back through its revision history.
   ends the current note and starts a new one at that instant without
   stopping the microphone, so nothing is lost between them. The finished
   part transcribes in the background while you keep talking.
+- **Auto-split**: drag up on the scissors (or long-press) to pick a rule —
+  after 10 s / 30 s of silence, or every 5 / 15 / 30 minutes (at the first
+  pause after the interval, or a minute later regardless). Release on an
+  option to choose it; drag back to the button to cancel. A badge on the
+  scissors shows the active rule. A note with nothing said in it is never
+  split off. Tap still splits immediately.
 - **Clear recording state**: while recording, the top bar turns red with a
   pulsing REC, elapsed time and part number, the screen gets a red frame,
   and the bar under the button says "Recording — tap ■ to stop". When idle
   it says "Not recording" and the button shows a red dot in a ring.
-- **Background recording** continues via a foreground service with an
-  ongoing notification.
+- **Live notification** while recording: elapsed timer, the latest words
+  (expandable), and **Stop** / **Split** buttons; on Android 16 it's also a
+  **Live Update** with a "REC" chip in the status bar. After you stop it
+  shows "Finishing transcript…" until background transcription is done,
+  which also keeps Android from killing that work.
 - **Recordings are never lost to a model failure.** Every note saves its
   transcription status (recording → pending → transcribing → done/failed).
   Audio stays on disk until it has text; failed or waiting recordings show
@@ -65,6 +85,18 @@ copied, edited, re-transcribed and rolled back through its revision history.
   now, and pick one — or leave it on *Automatic*. The choice is remembered;
   if that mic is unplugged the phone's default is used, and recording
   switches back when it reconnects.
+- **Archive**: long-press a note → Archive. It leaves the main list (search
+  still finds it; ⋮ → Archived notes lists them) and its audio is compressed
+  from WAV to AAC (~1.9 → ~0.18 MB a minute). The compressed copy is checked
+  for the right length before the WAV is deleted; if anything is off the
+  note is left untouched. Archived notes can still be played, shared,
+  unarchived and re-transcribed.
+- **Clean up** (⋮ → Clean up…): archive or delete every **unpinned** note
+  older than 1, 7 or 30 days, with a count before you confirm. Notes being
+  recorded or transcribed are skipped.
+- **Your edits are final**: editing or restoring a note marks it done, a
+  transcription that finishes afterwards goes into the history behind your
+  edit, and an empty result never replaces text.
 - **Pin** notes to keep them in a *Pinned* section at the top.
 - **Full-text search** across every note — current text, every earlier
   revision and text recovered from unfinished transcriptions. All terms must

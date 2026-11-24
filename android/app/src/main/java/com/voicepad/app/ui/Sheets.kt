@@ -189,6 +189,22 @@ fun SettingsSheet(controller: RecordingController, state: RecordingController.Ui
             }
             Spacer(Modifier.height(16.dp))
             MicrophoneSection(state, onSelect = controller::setInputDevice)
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Capture background voices")
+                    Text(
+                        "For announcements, a TV or someone across the room. Records the whole room instead of " +
+                            "just your voice, evens out the loudness, and uses Whisper turbo (~560 MB download, " +
+                            "slower), which in testing made a quarter of the errors on distant, noisy speech. " +
+                            "Also picks up nearby chatter, so leave it off for normal notes.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = state.backgroundVoices, onCheckedChange = controller::setBackgroundVoices)
+            }
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {

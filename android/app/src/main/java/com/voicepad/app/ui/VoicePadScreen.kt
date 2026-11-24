@@ -5,6 +5,28 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import android.text.format.DateUtils
+import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.CleaningServices
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.runtime.mutableIntStateOf
+import com.voicepad.app.data.NoteCleanup
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Hearing
+import androidx.compose.material.icons.outlined.HearingDisabled
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Switch
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import com.voicepad.app.transcription.EngineChoice
 import androidx.compose.foundation.border
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material3.TopAppBarDefaults
@@ -85,6 +107,9 @@ fun VoicePadScreen(controller: RecordingController) {
     var historyId by remember { mutableStateOf<String?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     var confirmDeleteId by remember { mutableStateOf<String?>(null) }
+    var showArchive by remember { mutableStateOf(false) }
+    var showCleanup by remember { mutableStateOf(false) }
+    var overflowOpen by remember { mutableStateOf(false) }
     val player = remember { AudioPlayer() }
     DisposableEffect(Unit) { onDispose { player.stop() } }
 
@@ -93,11 +118,13 @@ fun VoicePadScreen(controller: RecordingController) {
     val searching = searchActive && query.isNotBlank()
     BackHandler(enabled = searchActive) { searchActive = false; query = "" }
 
-    val visibleNotes = notes.filter { it.id != state.recordingNoteId }
+    val visibleNotes = notes.filter { it.id != state.recordingNoteId && !it.archived }
+    val archivedNotes = notes.filter { it.archived }.sortedByDescending { it.archivedAt ?: it.createdAt }
     val pinnedNotes = visibleNotes.filter { it.pinned }.sortedByDescending { it.pinnedAt ?: 0L }
     val otherNotes = visibleNotes.filterNot { it.pinned }
     val results = remember(notes, query, searching) {
-        if (searching) NoteSearch.search(visibleNotes, query) else emptyList()
+        // Search also finds archived notes.
+        if (searching) NoteSearch.search(notes.filter { it.id != state.recordingNoteId }, query) else emptyList()
     }
     val terms = remember(query) { NoteSearch.terms(query) }
 
@@ -132,6 +159,7 @@ fun VoicePadScreen(controller: RecordingController) {
             onShare = { shareRecording(context, controller.store.audioFile(note), note.currentText) },
             onDelete = { confirmDeleteId = note.id },
             onTranslate = { controller.translateNow(note.id) },
+            onArchive = { if (note.archived) controller.unarchive(note.id) else controller.archive(listOf(note.id)) },
             onCopyText = ::copy,
         )
     }
@@ -162,13 +190,39 @@ fun VoicePadScreen(controller: RecordingController) {
                     title = {
                         if (recording) RecordingTitle(state) else IdleTitle()
                     },
-                    navigationIcon = { EngineStatusBadge(state, Modifier.padding(start = 12.dp), color = onBar) },
+                    navigationIcon = {
+                        ModelSwitcher(controller, state, onBar, onMoreModels = { showSettings = true })
+                    },
                     actions = {
+                        IconButton(onClick = { controller.setBackgroundVoices(!state.backgroundVoices) }) {
+                            Icon(
+                                if (state.backgroundVoices) Icons.Default.Hearing else Icons.Outlined.HearingDisabled,
+                                contentDescription = if (state.backgroundVoices) "Background voices on" else "Background voices off",
+                                tint = if (state.backgroundVoices && !recording) MaterialTheme.colorScheme.primary else onBar,
+                            )
+                        }
                         IconButton(onClick = { searchActive = true }) {
                             Icon(Icons.Default.Search, contentDescription = "Search")
                         }
                         IconButton(onClick = { showSettings = true }) {
                             Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        }
+                        Box {
+                            IconButton(onClick = { overflowOpen = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "More")
+                            }
+                            DropdownMenu(expanded = overflowOpen, onDismissRequest = { overflowOpen = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Archived notes (${archivedNotes.size})") },
+                                    leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) },
+                                    onClick = { overflowOpen = false; showArchive = true },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Clean up…") },
+                                    leadingIcon = { Icon(Icons.Default.CleaningServices, contentDescription = null) },
+                                    onClick = { overflowOpen = false; showCleanup = true },
+                                )
+                            }
                         }
                     },
                 )
@@ -263,7 +317,7 @@ fun VoicePadScreen(controller: RecordingController) {
             confirmButton = {
                 TextButton(onClick = {
                     if (player.playingId == id) player.stop()
-                    controller.store.delete(id)
+                    controller.delete(listOf(id))
                     confirmDeleteId = null
                 }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
             },
@@ -272,6 +326,192 @@ fun VoicePadScreen(controller: RecordingController) {
     }
     if (showSettings) {
         SettingsSheet(controller, state, onDismiss = { showSettings = false })
+    }
+    if (showArchive) {
+        ModalBottomSheet(onDismissRequest = { showArchive = false }) {
+            Text(
+                "Archived notes",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+            )
+            Text(
+                "Audio is kept compressed. Long-press a note to unarchive or delete it.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 20.dp),
+            )
+            if (archivedNotes.isEmpty()) {
+                Text("Nothing archived yet.", modifier = Modifier.padding(20.dp))
+            }
+            LazyColumn(
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                items(archivedNotes, key = { "archived-" + it.id }) { Bubble(it) }
+            }
+        }
+    }
+    if (showCleanup) {
+        CleanupDialog(controller, onDismiss = { showCleanup = false })
+    }
+}
+
+/** Archive or delete every unpinned note older than 1, 7 or 30 days. */
+@Composable
+private fun CleanupDialog(controller: RecordingController, onDismiss: () -> Unit) {
+    var action by remember { mutableStateOf(NoteCleanup.Action.ARCHIVE) }
+    var days by remember { mutableIntStateOf(7) }
+    val count = remember(action, days) { controller.cleanupCandidates(action, days).size }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Clean up notes") },
+        text = {
+            Column {
+                Text("Unpinned notes older than:", style = MaterialTheme.typography.bodyMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 8.dp)) {
+                    listOf(1 to "1 day", 7 to "7 days", 30 to "30 days").forEach { (d, label) ->
+                        FilterChip(selected = days == d, onClick = { days = d }, label = { Text(label) })
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = action == NoteCleanup.Action.ARCHIVE,
+                        onClick = { action = NoteCleanup.Action.ARCHIVE },
+                        label = { Text("Archive") },
+                        leadingIcon = { Icon(Icons.Default.Archive, null, Modifier.size(18.dp)) },
+                    )
+                    FilterChip(
+                        selected = action == NoteCleanup.Action.DELETE,
+                        onClick = { action = NoteCleanup.Action.DELETE },
+                        label = { Text("Delete") },
+                        leadingIcon = { Icon(Icons.Default.Delete, null, Modifier.size(18.dp)) },
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    when {
+                        count == 0 -> "No notes match."
+                        action == NoteCleanup.Action.ARCHIVE ->
+                            "$count note${if (count == 1) "" else "s"} will be archived: hidden from the list, audio compressed to about a tenth of its size."
+                        else -> "$count note${if (count == 1) "" else "s"} and their audio will be permanently deleted."
+                    },
+                    color = if (action == NoteCleanup.Action.DELETE && count > 0) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    "Pinned notes are never touched.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = count > 0,
+                onClick = {
+                    controller.cleanUp(action, days)
+                    onDismiss()
+                },
+            ) {
+                Text(
+                    if (action == NoteCleanup.Action.ARCHIVE) "Archive $count" else "Delete $count",
+                    color = if (action == NoteCleanup.Action.DELETE && count > 0) MaterialTheme.colorScheme.error else Color.Unspecified,
+                )
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/**
+ * Top-left: the model in use. Tap to switch between models already on the
+ * phone (both Autos, Whisper…) or toggle background voices.
+ */
+@Composable
+private fun ModelSwitcher(
+    controller: RecordingController,
+    state: RecordingController.UiState,
+    color: Color,
+    onMoreModels: () -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .padding(start = 8.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { open = true }
+                .padding(horizontal = 4.dp, vertical = 6.dp)
+                .semantics { contentDescription = "Model: ${state.activeEngine.shortName}. Tap to switch." },
+        ) {
+            EngineStatusBadge(state, color = color)
+            Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = color, modifier = Modifier.size(18.dp))
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            Text(
+                "Downloaded models",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+            )
+            val installed = EngineChoice.entries.filter { it in state.installedEngines }
+            if (installed.isEmpty()) {
+                Text(
+                    "None yet — the first one is downloading.",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+            }
+            installed.forEach { choice ->
+                val active = choice == state.activeEngine
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(choice.displayName, fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal)
+                            if (choice == RecordingController.BACKGROUND_ENGINE) {
+                                Text("Background voices", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    },
+                    leadingIcon = {
+                        if (active) Icon(Icons.Default.Check, contentDescription = "In use")
+                        else Spacer(Modifier.size(24.dp))
+                    },
+                    onClick = {
+                        open = false
+                        controller.selectModel(choice)
+                    },
+                )
+            }
+            HorizontalDivider()
+            DropdownMenuItem(
+                text = {
+                    Column {
+                        Text("Background voices")
+                        Text(
+                            "Announcements, TV across the room" +
+                                if (RecordingController.BACKGROUND_ENGINE !in state.installedEngines) " · ~560 MB download" else "",
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                },
+                leadingIcon = { Icon(Icons.Default.Hearing, contentDescription = null) },
+                trailingIcon = {
+                    Switch(checked = state.backgroundVoices, onCheckedChange = null)
+                },
+                onClick = { controller.setBackgroundVoices(!state.backgroundVoices) },
+            )
+            DropdownMenuItem(
+                text = { Text("More models…") },
+                leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                onClick = {
+                    open = false
+                    onMoreModels()
+                },
+            )
+        }
     }
 }
 
@@ -413,7 +653,7 @@ fun EngineStatusBadge(
         }
         Spacer(Modifier.width(4.dp))
         Text(
-            state.engineChoice.shortName,
+            state.activeEngine.shortName,
             style = MaterialTheme.typography.labelSmall,
             color = color,
         )

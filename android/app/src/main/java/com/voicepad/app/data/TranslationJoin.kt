@@ -22,12 +22,22 @@ object TranslationJoin {
 
     fun combine(parts: List<Part>, revisionId: String): NoteTranslation? {
         if (parts.isEmpty()) return null
-        val foreign = parts.mapNotNull { it.language }.filterNot(LanguageTags::isEnglish)
-        val language = foreign.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key
-            ?: return NoteTranslation(revisionId, TranslationStatus.NOT_NEEDED, parts.firstNotNullOfOrNull { it.language })
+        // A part whose "translation" is its own words was English all along
+        // (short utterances like "Yeah." are easily misdetected).
+        fun effectiveLanguage(p: Part) =
+            if (p.english != null && TextSimilarity.nearlySame(p.english, p.text)) "en" else p.language
+        // The label is the foreign language with the most text, not the most utterances.
+        val foreign = parts.mapNotNull { p -> effectiveLanguage(p)?.let { it to p.text.length } }
+            .filterNot { LanguageTags.isEnglish(it.first) }
+        val language = foreign.groupBy({ it.first }, { it.second }).mapValues { it.value.sum() }.maxByOrNull { it.value }?.key
+            ?: return NoteTranslation(revisionId, TranslationStatus.NOT_NEEDED, "en")
         val english = parts.mapNotNull { it.english }.joinToString(" ")
         val romanization = parts.mapNotNull { it.romanization }.joinToString(" ").ifBlank { null }
         val waiting = parts.any { !it.translated }
+        // Nothing to show if the English reads the same as what was said.
+        if (!waiting && TextSimilarity.nearlySame(english, parts.joinToString(" ") { it.text })) {
+            return NoteTranslation(revisionId, TranslationStatus.NOT_NEEDED, "en")
+        }
         return NoteTranslation(
             revisionId = revisionId,
             status = if (english.isBlank() && waiting) TranslationStatus.PENDING else TranslationStatus.DONE,
