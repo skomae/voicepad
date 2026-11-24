@@ -11,9 +11,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Box
@@ -45,7 +43,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Computer
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
@@ -53,6 +50,28 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.voicepad.app.transmit.KeyboardHost
+import android.view.HapticFeedbackConstants
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.window.Popup
+import kotlin.math.floor
+import androidx.compose.runtime.rememberUpdatedState
 
 /** Android 12+ needs these to register as a keyboard and to become discoverable. */
 private val bluetoothPermissions: Array<String> =
@@ -150,7 +169,7 @@ fun KeyboardButton(
         state.transmitError?.let { toast(it, long = true) }
     }
 
-    val onClick: () -> Unit = {
+    val handleClick: () -> Unit = {
         when (state.transmitStatus) {
             SinkStatus.CONNECTED -> if (state.isTyping) {
                 controller.stopTyping()
@@ -191,56 +210,190 @@ fun KeyboardButton(
 
     val colors = MaterialTheme.colorScheme
     val typing = state.transmitStatus == SinkStatus.CONNECTED && state.isTyping
-    // Sized and shaped like an IconButton. Drag down (or long-press) opens the
-    // keyboard menu. Deliberately never red: that's the recording colour.
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(48.dp)
-            .clip(CircleShape)
-            .background(if (typing) colors.primaryContainer else Color.Transparent, CircleShape)
-            .pointerInput(Unit) {
-                val threshold = 24.dp.toPx()
-                var pulled = 0f
-                var opened = false
-                detectVerticalDragGestures(
-                    onDragStart = { pulled = 0f; opened = false },
-                    onVerticalDrag = { change, dy ->
-                        change.consume()
-                        pulled += dy
-                        if (!opened && pulled > threshold) {
-                            opened = true
-                            showMenu = true
+    val view = LocalView.current
+    val stepPx = with(LocalDensity.current) { QUICK_STEP.toPx() }
+
+    // Pull down: quick-pick list of computers below the icon (like the split
+    // button's pull-up). Release on one to connect or switch to it.
+    var pulling by remember { mutableStateOf(false) }
+    var quick by remember { mutableStateOf(emptyList<QuickItem>()) }
+    var hover by remember { mutableIntStateOf(-1) }
+
+    fun pick(item: QuickItem) {
+        when (item) {
+            is QuickItem.Host -> {
+                if (!context.hasBluetoothPermissions()) {
+                    permissions.launch(bluetoothPermissions)
+                } else if (item.host.name == state.transmitHost && state.transmitStatus == SinkStatus.CONNECTED) {
+                    toast("Already typing on ${item.host.name}.")
+                } else if (controller.connectKeyboard(item.host.address)) {
+                    toast("Connecting to ${item.host.name}\u2026")
+                } else {
+                    toast("Couldn't connect to ${item.host.name}.", long = true)
+                }
+            }
+            QuickItem.More -> {
+                if (state.transmitStatus == SinkStatus.IDLE || state.transmitStatus == SinkStatus.FAILED) {
+                    if (context.hasBluetoothPermissions()) start() else permissions.launch(bluetoothPermissions)
+                }
+                showHosts = true
+            }
+            QuickItem.Menu -> showMenu = true
+        }
+    }
+
+    // The gesture loop below is set up once; read the latest handlers through these.
+    val latestClick by rememberUpdatedState(handleClick)
+    val latestPick by rememberUpdatedState<(QuickItem) -> Unit> { pick(it) }
+
+    // Sized and shaped like an IconButton. Tap: see [handleClick]; long-press:
+    // keyboard menu; pull down: quick-pick a computer. Deliberately never
+    // red: that's the recording colour.
+    Box {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(48.dp)
+                .clip(CircleShape)
+                .background(if (typing) colors.primaryContainer else Color.Transparent, CircleShape)
+                .semantics {
+                    role = Role.Button
+                    contentDescription = label
+                    onClick(label = label) { handleClick(); true }
+                    onLongClick("Keyboard options") { showMenu = true; true }
+                }
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown()
+                        var moved = false
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.first()
+                            val drop = change.position.y - down.position.y
+                            if (!change.pressed) {
+                                when {
+                                    moved -> {
+                                        quick.getOrNull(hover)?.let {
+                                            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                                            latestPick(it)
+                                        }
+                                        pulling = false
+                                    }
+                                    change.uptimeMillis - down.uptimeMillis >= viewConfiguration.longPressTimeoutMillis ->
+                                        showMenu = true
+                                    else -> latestClick()
+                                }
+                                break
+                            }
+                            if (!moved && drop > viewConfiguration.touchSlop) {
+                                moved = true
+                                quick = quickItems(controller)
+                                hover = -1
+                                pulling = true
+                                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                            }
+                            if (moved) {
+                                // Item i sits (i + 1) steps below the icon; above that cancels.
+                                val next = floor(drop / stepPx - 0.5f).toInt().coerceIn(-1, quick.lastIndex)
+                                if (next != hover) {
+                                    hover = next
+                                    view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+                                }
+                                change.consume()
+                            }
                         }
-                    },
+                    }
+                },
+        ) {
+            Icon(
+                Icons.Default.Keyboard,
+                contentDescription = null,
+                tint = when (state.transmitStatus) {
+                    SinkStatus.CONNECTED -> if (typing) colors.onPrimaryContainer else colors.primary
+                    SinkStatus.ADVERTISING, SinkStatus.REGISTERING -> colors.tertiary
+                    else -> colors.onSurface
+                },
+            )
+            if (state.transmitStatus == SinkStatus.CONNECTED && !typing) {
+                // A small dot so "connected" reads at a glance, even in monochrome themes.
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 10.dp, end = 10.dp)
+                        .size(7.dp)
+                        .background(colors.primary, CircleShape),
                 )
             }
-            .combinedClickable(
-                role = Role.Button,
-                onClickLabel = label,
-                onClick = onClick,
-                onLongClickLabel = "Keyboard options",
-                onLongClick = { showMenu = true },
-            ),
-    ) {
-        Icon(
-            Icons.Default.Keyboard,
-            contentDescription = label,
-            tint = when (state.transmitStatus) {
-                SinkStatus.CONNECTED -> if (typing) colors.onPrimaryContainer else colors.primary
-                SinkStatus.ADVERTISING, SinkStatus.REGISTERING -> colors.tertiary
-                else -> colors.onSurface
-            },
-        )
-        if (state.transmitStatus == SinkStatus.CONNECTED && !typing) {
-            // A small dot so "connected" reads at a glance, even in monochrome themes.
-            Box(
-                Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = 10.dp, end = 10.dp)
-                    .size(7.dp)
-                    .background(colors.primary, CircleShape),
-            )
+        }
+
+        if (pulling) {
+            // Line item i up with a finger dragged (i + 0.5 .. i + 1.5) steps below the icon's centre.
+            val drop = with(LocalDensity.current) { (24.dp + QUICK_STEP * 0.5f - 4.dp).roundToPx() }
+            Popup(alignment = Alignment.TopEnd, offset = IntOffset(0, drop)) {
+                Surface(shape = RoundedCornerShape(14.dp), tonalElevation = 6.dp, shadowElevation = 8.dp) {
+                    Column(Modifier.padding(vertical = 4.dp)) {
+                        quick.forEachIndexed { i, item ->
+                            val current = item is QuickItem.Host &&
+                                state.transmitStatus == SinkStatus.CONNECTED && item.host.name == state.transmitHost
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .padding(horizontal = 6.dp)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(if (i == hover) colors.primaryContainer else Color.Transparent)
+                                    .padding(horizontal = 10.dp)
+                                    .size(width = 240.dp, height = QUICK_STEP - 4.dp),
+                            ) {
+                                Icon(
+                                    when (item) {
+                                        is QuickItem.Host -> if (item.host.isComputer) Icons.Default.Computer else Icons.Default.Bluetooth
+                                        QuickItem.More -> Icons.Default.Add
+                                        QuickItem.Menu -> Icons.Default.Tune
+                                    },
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    when (item) {
+                                        is QuickItem.Host -> item.host.name
+                                        QuickItem.More -> "Pair or pick another…"
+                                        QuickItem.Menu -> "Keyboard settings…"
+                                    },
+                                    fontWeight = if (i == hover) FontWeight.SemiBold else FontWeight.Normal,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                if (current) Icon(Icons.Default.Check, contentDescription = "Connected", modifier = Modifier.size(18.dp))
+                            }
+                        }
+                        Text(
+                            if (hover < 0) "Release here to cancel" else "Release to choose",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = colors.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                        )
+                    }
+                }
+            }
         }
     }
 }
+
+/** Height of one row in the pull-down quick-pick list. */
+private val QUICK_STEP = 44.dp
+
+/** A row in the pull-down quick-pick list. */
+private sealed interface QuickItem {
+    data class Host(val host: KeyboardHost) : QuickItem
+    data object More : QuickItem
+    data object Menu : QuickItem
+}
+
+/** Up to 6 paired computers (remembered ones first), then "more" and "settings". */
+private fun quickItems(controller: RecordingController): List<QuickItem> =
+    controller.keyboardHosts()
+        .filter { it.isBonded && (it.isKnown || it.isComputer) }
+        .take(6)
+        .map { QuickItem.Host(it) } + QuickItem.More + QuickItem.Menu

@@ -354,7 +354,7 @@ fun SettingsSheet(
                     Text(
                         "Optionally run a tiny on-device model over the text before it's typed as a keyboard. " +
                             "Runs alongside the speech model; the picker recommends a size for this phone. " +
-                            "Also in the keyboard icon's menu (drag the icon down).",
+                            "Also in the keyboard icon's menu (long-press the icon).",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

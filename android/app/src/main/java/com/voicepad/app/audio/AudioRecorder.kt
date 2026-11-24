@@ -71,6 +71,7 @@ class AudioRecorder {
     private var requestedChannels = 1
 
     @Volatile var isRunning = false
+        private set
 
     /**
      * While true the microphone keeps running (so resuming is instant) but
@@ -78,7 +79,6 @@ class AudioRecorder {
      * live transcript.
      */
     @Volatile var paused = false
-        private set
 
     /** Set if the audio file could not be written (e.g. storage full). */
     @Volatile var writeError: String? = null

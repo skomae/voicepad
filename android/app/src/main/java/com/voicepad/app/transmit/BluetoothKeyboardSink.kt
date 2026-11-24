@@ -77,6 +77,13 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
     private val _scan = MutableStateFlow(ScanState())
     override val scan: StateFlow<ScanState> = _scan.asStateFlow()
 
+    /**
+     * A host to connect to once the keyboard is registered, or once the
+     * current host has disconnected (switching computers).
+     */
+    @Volatile
+    private var pendingConnect: String? = null
+
     /** The host [connect] is waiting on, for [connectTimeout]'s message. */
     @Volatile
     private var connectingTo: String? = null
@@ -116,7 +123,9 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
             if (registered && _state.value.status == SinkStatus.REGISTERING) {
                 main.removeCallbacks(registrationTimeout)
                 _state.value = SinkState(SinkStatus.ADVERTISING)
-                reconnectLastHost()
+                val pending = pendingConnect
+                pendingConnect = null
+                if (pending != null) connect(pending) else reconnectLastHost()
             } else if (!registered && profile != null) {
                 // The system dropped our registration (e.g. another app took the HID slot).
                 connected = null
@@ -139,6 +148,11 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
                     if (connected == device) connected = null
                     if (profile != null) {
                         _state.value = SinkState(if (registered) SinkStatus.ADVERTISING else SinkStatus.IDLE)
+                    }
+                    // Switching computers: the old one is gone, connect the new one.
+                    pendingConnect?.let {
+                        pendingConnect = null
+                        connect(it)
                     }
                 }
                 // CONNECTING / DISCONNECTING are transient; keep the current state.
@@ -219,6 +233,7 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
     }
 
     override fun stop() {
+        pendingConnect = null
         main.removeCallbacks(registrationTimeout)
         main.removeCallbacks(connectTimeout)
         connectingTo = null
@@ -316,9 +331,29 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
         )
     }
 
+    /**
+     * Connects to [address] from the phone side. Works from any state: turns
+     * keyboard mode on first if needed, and switches away from another
+     * connected computer.
+     */
     override fun connect(address: String): Boolean {
-        val hid = profile ?: return false
-        if (!registered) return false
+        val hid = profile
+        if (hid == null || !registered) {
+            pendingConnect = address
+            if (!wanted) start()
+            return _state.value.status != SinkStatus.FAILED && _state.value.status != SinkStatus.UNAVAILABLE
+        }
+        val current = connected
+        if (current != null) {
+            if (current.address == address) return true
+            pendingConnect = address
+            return try {
+                hid.disconnect(current)
+            } catch (_: SecurityException) {
+                pendingConnect = null
+                false
+            }
+        }
         val device = try {
             adapter?.getRemoteDevice(address)
         } catch (_: IllegalArgumentException) {

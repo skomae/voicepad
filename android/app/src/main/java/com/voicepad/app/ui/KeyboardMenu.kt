@@ -46,8 +46,8 @@ import com.voicepad.app.llm.LlmPrompt
 import com.voicepad.app.transmit.SinkStatus
 
 /**
- * Everything about keyboard mode in one sheet, opened by dragging the
- * keyboard icon down (or long-pressing it): connection, the LLM rewrite
+ * Everything about keyboard mode in one sheet, opened by long-pressing the
+ * keyboard icon (or "Keyboard settings…" in its pull-down list): connection, the LLM rewrite
  * toggle, and the prompt it follows.
  */
 @OptIn(ExperimentalMaterial3Api::class)

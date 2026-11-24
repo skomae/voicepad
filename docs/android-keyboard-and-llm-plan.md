@@ -377,8 +377,10 @@ Style presets only change the system instruction (e.g. *Formal email* adds
   the keyboard icon (latest note). Anything the app copies to the clipboard
   (Copy, copy translation, copy from history, auto-copy when a recording
   finishes) is also typed.
-- **Keyboard menu:** drag the keyboard icon down (or long-press it) for
-  connection controls, the LLM rewrite toggle and the prompt.
+- **Keyboard icon:** pull down for a quick-pick list of computers (release
+  on one to connect or switch to it; also "Pair or pick another…" and
+  "Keyboard settings…"). Long-press opens the keyboard menu: connection
+  controls, the LLM rewrite toggle and the prompt.
 - **Prompts:** two presets, *Clean up* (fix recognition, punctuation and
   capitalisation; keep wording) and *Polish* (drop filler words and false
   starts, fix grammar, split into sentences and paragraphs), plus your own
