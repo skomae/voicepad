@@ -20,10 +20,10 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
+import com.voicepad.app.conversation.ConversationController
 import com.voicepad.app.ui.ConversationScreen
 import com.voicepad.app.ui.CrashReportDialog
 import com.voicepad.app.ui.CrashGuardDialog
-import com.voicepad.app.ui.OuterScreenPresenter
 import com.voicepad.app.ui.VoicePadScreen
 import com.voicepad.app.ui.VoicePadTheme
 import kotlinx.coroutines.launch
@@ -33,7 +33,6 @@ class MainActivity : ComponentActivity() {
     private val controller get() = app.controller
     private val conversation get() = app.conversation
     private var askedForPermission = false
-    private lateinit var outerScreen: OuterScreenPresenter
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -73,22 +72,33 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        // The other person's side on a foldable's outer screen, when that layout is in use.
-        outerScreen = OuterScreenPresenter(this, conversation).also { it.start() }
         // A foldable reports a hinge (a folding feature) only while unfolded.
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 WindowInfoTracker.getOrCreate(this@MainActivity).windowLayoutInfo(this@MainActivity).collect { info ->
-                    conversation.onFoldStateChanged(info.displayFeatures.any { it is FoldingFeature })
+                    val hinge = info.displayFeatures.filterIsInstance<FoldingFeature>().firstOrNull()
+                    // Standing half open with the hinge across the screen: like a laptop.
+                    val laptop = hinge?.takeIf {
+                        it.state == FoldingFeature.State.HALF_OPENED && it.orientation == FoldingFeature.Orientation.HORIZONTAL
+                    }
+                    conversation.onFoldStateChanged(
+                        unfolded = hinge != null,
+                        fold = laptop?.let { ConversationController.FoldLine(it.bounds.top, it.bounds.bottom) },
+                    )
                 }
             }
         }
+        cover = CoverScreen(this, conversation, controller).also { it.start() }
     }
 
+    private var cover: CoverScreen? = null
+
     override fun onDestroy() {
-        outerScreen.stop()
+        cover?.stop()
+        cover = null
         super.onDestroy()
     }
+
 
     override fun onStart() {
         super.onStart()
