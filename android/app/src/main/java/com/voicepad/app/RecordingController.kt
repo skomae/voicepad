@@ -1,6 +1,9 @@
 package com.voicepad.app
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.widget.Toast
 import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
@@ -34,6 +37,7 @@ import com.voicepad.app.transcription.SherpaEngine
 import com.voicepad.app.transcription.SpeechDetector
 import com.voicepad.app.transcription.SpeechEngine
 import com.voicepad.app.transcription.Transcript
+import com.voicepad.app.ui.ThemeMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -90,6 +94,10 @@ class RecordingController(
         val engineChoice: EngineChoice = EngineChoice.PARAKEET_V3,
         /** Background voices (announcements, TV): room microphone, louder speech, Whisper turbo. */
         val backgroundVoices: Boolean = false,
+        /** Light, dark, pure black (OLED), or follow the phone. */
+        val themeMode: ThemeMode = ThemeMode.SYSTEM,
+        /** When a recording (or split part) finishes transcribing, copy it to the clipboard (with a toast). */
+        val copyWhenDone: Boolean = true,
         /** Start a new note automatically after a silence or every few minutes. */
         val autoSplit: AutoSplit = AutoSplit.OFF,
         /** Models already on the phone, for the quick switcher. */
@@ -147,6 +155,9 @@ class RecordingController(
             autoRecordOnOpen = prefs.getBoolean("autoRecord", true),
             autoTranslate = prefs.getBoolean("autoTranslate", true),
             backgroundVoices = prefs.getBoolean("backgroundVoices", false),
+            copyWhenDone = prefs.getBoolean("copyWhenDone", true),
+            themeMode = prefs.getString("theme", null)
+                ?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() } ?: ThemeMode.SYSTEM,
             autoSplit = prefs.getString("autoSplit", null)
                 ?.let { runCatching { AutoSplit.valueOf(it) }.getOrNull() } ?: AutoSplit.OFF,
             inputDevices = inputs.devices.value,
@@ -199,6 +210,8 @@ class RecordingController(
         var end: Int? = null
         /** Last moment speech was heard in this note (null: nothing said yet). */
         var lastVoiceAt: Int? = null
+        /** Ended with Stop (not a split). */
+        var stoppedByUser = false
     }
 
     private var session: LiveSession? = null
@@ -439,6 +452,7 @@ class RecordingController(
         recorder.stop()
         inputs.endRecording()
         current.end = recorder.sampleCount
+        current.stoppedByUser = true
         markFinishing(current)
         session = null
         tailTranslateJob?.cancel()
@@ -495,6 +509,8 @@ class RecordingController(
                     it.copy(status = TranscriptionStatus.FAILED, lastError = error, partialText = text.ifBlank { null })
                 }
             }
+            // Every finished part is copied: after Stop, a manual split or an auto-split.
+            if (error == null) copyWhenDone(noteId)
         } finally {
             s.detector?.release()
             unmarkFinishing(s)
@@ -577,6 +593,25 @@ class RecordingController(
                 s.pending += Span(s.committedUpTo, now)
             }
         }
+    }
+
+    fun setThemeMode(mode: ThemeMode) {
+        prefs.edit { putString("theme", mode.name) }
+        _state.update { it.copy(themeMode = mode) }
+    }
+
+    fun setCopyWhenDone(enabled: Boolean) {
+        prefs.edit { putBoolean("copyWhenDone", enabled) }
+        _state.update { it.copy(copyWhenDone = enabled) }
+    }
+
+    /** Puts a just-finished recording's transcript on the clipboard and says so with a toast. */
+    private fun copyWhenDone(noteId: String) {
+        if (!_state.value.copyWhenDone) return
+        val text = store.note(noteId)?.currentText?.takeIf { it.isNotBlank() } ?: return
+        val clipboard = context.getSystemService(ClipboardManager::class.java)
+        clipboard.setPrimaryClip(ClipData.newPlainText("VoicePad transcript", text))
+        Toast.makeText(context, "Transcript copied to clipboard", Toast.LENGTH_SHORT).show()
     }
 
     fun setAutoSplit(mode: AutoSplit) {
@@ -919,28 +954,24 @@ class RecordingController(
      * the compressed copy has been checked and the note saved; if compression
      * fails the note stays as it was and you're told why.
      */
-    fun archive(ids: Collection<String>) {
+    fun archive(ids: Collection<String>) = runOnNotes(ids) { note ->
+        if (note.archived) return@runOnNotes true
+        val ok = compressAudio(note.id)
+        if (ok) store.update(note.id) { it.copy(archived = true, archivedAt = System.currentTimeMillis()) }
+        ok
+    }
+
+    /** Compresses notes' audio to AAC (about a tenth of the size) but keeps them in the list. */
+    fun compress(ids: Collection<String>) = runOnNotes(ids) { note -> compressAudio(note.id) }
+
+    /** Runs [work] on each idle note in turn and reports any that couldn't be compressed. */
+    private fun runOnNotes(ids: Collection<String>, work: suspend (Note) -> Boolean) {
         scope.launch {
             var failed = 0
             for (id in ids) {
                 val note = store.note(id) ?: continue
-                if (note.archived || id in busyIds() || note.status == TranscriptionStatus.IN_PROGRESS) continue
-                val wav = store.audioFile(note)
-                try {
-                    if (wav != null && wav.exists() && wav.extension == "wav") {
-                        val m4aName = wav.nameWithoutExtension + ".m4a"
-                        val m4a = File(store.recordingsDir, m4aName)
-                        withContext(Dispatchers.IO) { AudioArchive.compress(wav, m4a) }
-                        store.update(id) { it.copy(audioFileName = m4aName, archived = true, archivedAt = System.currentTimeMillis()) }
-                        wav.delete()
-                    } else {
-                        store.update(id) { it.copy(archived = true, archivedAt = System.currentTimeMillis()) }
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Throwable) {
-                    failed++
-                }
+                if (id in busyIds() || note.status == TranscriptionStatus.IN_PROGRESS) continue
+                if (!work(note)) failed++
             }
             if (failed > 0) {
                 showError(
@@ -948,6 +979,27 @@ class RecordingController(
                     else "$failed notes couldn't be compressed, so they were left as they were."
                 )
             }
+        }
+    }
+
+    /**
+     * WAV → AAC for one note. The WAV is only deleted once the compressed copy
+     * has been checked and the note saved. True if done (or nothing to do).
+     */
+    private suspend fun compressAudio(id: String): Boolean {
+        val note = store.note(id) ?: return true
+        val wav = store.audioFile(note)
+        if (wav == null || !wav.exists() || wav.extension != "wav") return true
+        return try {
+            val m4aName = wav.nameWithoutExtension + ".m4a"
+            withContext(Dispatchers.IO) { AudioArchive.compress(wav, File(store.recordingsDir, m4aName)) }
+            store.update(id) { it.copy(audioFileName = m4aName) }
+            wav.delete()
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            false
         }
     }
 
@@ -964,8 +1016,22 @@ class RecordingController(
         val ids = cleanupCandidates(action, days).map { it.id }
         when (action) {
             NoteCleanup.Action.ARCHIVE -> archive(ids)
-            NoteCleanup.Action.DELETE -> delete(ids)
+            NoteCleanup.Action.COMPRESS -> compress(ids)
+            NoteCleanup.Action.DELETE_EMPTY, NoteCleanup.Action.DELETE -> delete(ids)
         }
+    }
+
+    /** Current audio size of [notes] and roughly what it would be compressed (bytes). */
+    fun audioSizes(notes: List<Note>): Pair<Long, Long> {
+        var now = 0L
+        var after = 0L
+        for (note in notes) {
+            val size = store.audioFile(note)?.takeIf { it.exists() }?.length() ?: continue
+            now += size
+            // 16 kHz 16-bit WAV is 256 kbit/s; the archive format is 24 kbit/s.
+            after += if (note.audioFileName?.endsWith(".wav") == true) size * 24 / 256 else size
+        }
+        return now to after
     }
 
     // endregion

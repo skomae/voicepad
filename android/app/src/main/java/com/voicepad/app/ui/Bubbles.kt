@@ -98,6 +98,8 @@ fun NoteBubble(
     onTranslate: () -> Unit = {},
     onCopyText: (String) -> Unit = {},
     onArchive: () -> Unit = {},
+    /** Small window: only the date and Copy under the bubble; the rest is in the long-press menu. */
+    compact: Boolean = false,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
@@ -167,7 +169,20 @@ fun NoteBubble(
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(metadata(note), style = MaterialTheme.typography.labelSmall, color = colors.onSurfaceVariant)
+            Text(
+                metadata(note),
+                style = MaterialTheme.typography.labelSmall,
+                color = colors.onSurfaceVariant,
+                maxLines = 1,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            if (compact) {
+                if (note.pinned) {
+                    Icon(Icons.Default.PushPin, contentDescription = "Pinned", modifier = Modifier.padding(horizontal = 4.dp).size(14.dp), tint = colors.primary)
+                }
+                SmallAction(Icons.Default.ContentCopy, "Copy", onCopy)
+                return@Row
+            }
             IconButton(onClick = onTogglePin, modifier = Modifier.size(32.dp)) {
                 Icon(
                     if (note.pinned) Icons.Default.PushPin else Icons.Outlined.PushPin,

@@ -50,4 +50,11 @@ class AutoSplitTest {
         assertFalse(m.shouldSplit(noteStart, s(1000.0 + 899), false, s(1000.0 + 890), r))
         assertTrue(m.shouldSplit(noteStart, s(1000.0 + 901), false, s(1000.0 + 900), r))
     }
+
+    @Test
+    fun `short silence options split quickly`() {
+        assertFalse(AutoSplit.SILENCE_2S.shouldSplit(0, s(11.9), false, s(10.0), r))
+        assertTrue(AutoSplit.SILENCE_2S.shouldSplit(0, s(12.0), false, s(10.0), r))
+        assertTrue(AutoSplit.SILENCE_5S.shouldSplit(0, s(15.0), false, s(10.0), r))
+    }
 }

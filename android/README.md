@@ -43,8 +43,17 @@ copied, edited, re-transcribed and rolled back through its revision history.
   ends the current note and starts a new one at that instant without
   stopping the microphone, so nothing is lost between them. The finished
   part transcribes in the background while you keep talking.
+- **Theme** (Settings): System, Light, Dark or **Pure black (OLED)** —
+  true #000000 background, bars and sheets, with cards on near-black so they
+  stay readable. Status-bar icons follow the app's theme.
+- **Copy when done** (Settings, on by default): whenever a recording finishes
+  transcribing — after Stop, a split or an auto-split — it's copied to the
+  clipboard with a toast.
+- **Small windows** (pop-up / split screen / narrow phones): a compact layout
+  with the model as a status dot, title on one line, Background voices and
+  Settings in ⋮, a smaller record button, and only Copy under each bubble.
 - **Auto-split**: drag up on the scissors (or long-press) to pick a rule —
-  after 10 s / 30 s of silence, or every 5 / 15 / 30 minutes (at the first
+  after 2 / 3 / 5 / 10 / 30 s of silence, or every 5 / 15 / 30 minutes (at the first
   pause after the interval, or a minute later regardless). Release on an
   option to choose it; drag back to the button to cancel. A badge on the
   scissors shows the active rule. A note with nothing said in it is never
@@ -127,9 +136,15 @@ copied, edited, re-transcribed and rolled back through its revision history.
   for the right length before the WAV is deleted; if anything is off the
   note is left untouched. Archived notes can still be played, shared,
   unarchived and re-transcribed.
-- **Clean up** (⋮ → Clean up…): archive or delete every **unpinned** note
-  older than 1, 7 or 30 days, with a count before you confirm. Notes being
-  recorded or transcribed are skipped.
+- **Clean up** (⋮ → Clean up…), for notes older than 1, 7 or 30 days or
+  any age:
+  - **Archive** unpinned notes (hidden, audio compressed);
+  - **Compress audio** of every uncompressed recording, pinned ones too,
+    keeping them in the list — shows the space before → after;
+  - **Delete empty** "No speech detected" notes and their audio (never ones
+    still waiting for or retrying transcription);
+  - **Delete** unpinned notes.
+  Notes being recorded or transcribed are always skipped.
 - **Your edits are final**: editing or restoring a note marks it done, a
   transcription that finishes afterwards goes into the history behind your
   edit, and an empty result never replaces text.
