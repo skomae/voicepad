@@ -88,8 +88,28 @@ xcodegen generate
 open VoicePad.xcodeproj
 ```
 
-Pick your development team under *Signing & Capabilities*, then run on a
-device. The simulator runs everything except live recording if the Mac's
+### Install on your iPhone
+
+1. Xcode → Settings → Accounts → add your Apple ID. A free account works
+   (the app then expires after 7 days; running it from Xcode again renews
+   it); a paid developer account lasts a year and allows TestFlight.
+2. Create `Config/Local.xcconfig` (not committed, survives
+   `xcodegen generate`) with your team ID (shown in Accounts) and, with a
+   free account, a bundle ID of your own:
+
+   ```
+   DEVELOPMENT_TEAM = ABCDE12345
+   VOICEPAD_BUNDLE_ID = com.yourname.voicepad
+   ```
+3. Plug in the iPhone, unlock it and tap Trust. Turn on Settings → Privacy &
+   Security → Developer Mode and restart.
+4. `xcodegen generate`, open `VoicePad.xcodeproj`, pick your iPhone as the
+   run destination and press Run. With a free account, trust yourself under
+   Settings → General → VPN & Device Management the first time.
+
+The first launch downloads the speech model (about 500 MB), so use Wi-Fi.
+Keep the same team and bundle ID afterwards: changing either installs a new
+app with empty data, and the models download again. The simulator runs everything except live recording if the Mac's
 audio input isn't reachable from it, and Apple's Translation framework
 doesn't translate there.
 

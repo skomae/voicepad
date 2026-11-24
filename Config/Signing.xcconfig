@@ -1,0 +1,9 @@
+// Signing defaults, shared by the app and its widget extension.
+// Put your own values in Config/Local.xcconfig (not committed), e.g.
+//   DEVELOPMENT_TEAM = ABCDE12345
+//   VOICEPAD_BUNDLE_ID = com.yourname.voicepad
+// so they survive `xcodegen generate`.
+VOICEPAD_BUNDLE_ID = com.voicepad.app
+CODE_SIGN_STYLE = Automatic
+
+#include? "Local.xcconfig"

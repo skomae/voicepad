@@ -9,3 +9,4 @@ Payload/
 *.ipa
 VoicePad/Info.plist
 VoicePadWidgets/Info.plist
+Config/Local.xcconfig
