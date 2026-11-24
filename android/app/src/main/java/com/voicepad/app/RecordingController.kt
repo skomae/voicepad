@@ -5,12 +5,14 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
+import com.voicepad.app.audio.AudioArchive
 import com.voicepad.app.audio.AudioInputs
 import com.voicepad.app.audio.AudioRecorder
 import com.voicepad.app.audio.InputDevice
 import com.voicepad.app.audio.RecordingService
 import com.voicepad.app.audio.WavFile
 import com.voicepad.app.data.Note
+import com.voicepad.app.data.NoteCleanup
 import com.voicepad.app.data.NoteStore
 import com.voicepad.app.data.NoteTranslation
 import com.voicepad.app.data.RevisionSource
@@ -18,7 +20,7 @@ import com.voicepad.app.data.TranscriptionStatus
 import com.voicepad.app.data.TextSimilarity
 import com.voicepad.app.data.TranslationJoin
 import com.voicepad.app.data.TranslationStatus
-import com.voicepad.app.data.withRevision
+import com.voicepad.app.data.withTranscription
 import com.voicepad.app.transcription.AudioLevel
 import com.voicepad.app.transcription.AutoEngine
 import com.voicepad.app.transcription.ChunkPlanner
@@ -471,10 +473,16 @@ class RecordingController(
             val text = s.committedText
             store.update(noteId) {
                 if (error == null) {
-                    val done = it.withRevision(text, RevisionSource.TRANSCRIPTION, engineLabel(s.engines), mostCommon(s.languages))
+                    val done = it.withTranscription(text, RevisionSource.TRANSCRIPTION, engineLabel(s.engines), mostCommon(s.languages))
                         .copy(status = TranscriptionStatus.DONE, lastError = null, partialText = null)
-                    // Reuse the live translation when every part of it finished.
-                    done.copy(translation = liveTranslationFor(s.segments, done.revisions.last().id))
+                    // Reuse the live translation when every part of it finished
+                    // (and the transcription is the current text, not behind an edit).
+                    val current = done.revisions.lastOrNull()
+                    if (current != null && current.source == RevisionSource.TRANSCRIPTION && current.text == text.trim()) {
+                        done.copy(translation = liveTranslationFor(s.segments, current.id))
+                    } else {
+                        done
+                    }
                 } else {
                     it.copy(status = TranscriptionStatus.FAILED, lastError = error, partialText = text.ifBlank { null })
                 }
@@ -700,13 +708,13 @@ class RecordingController(
 
     /** Re-runs the current model over a note's audio (manual retry or re-transcribe). */
     fun retranscribe(noteId: String) {
-        scope.launch { transcribeSaved(noteId) }
+        scope.launch { transcribeSaved(noteId, userRequested = true) }
     }
 
     /** Retries every recording that still needs text, ignoring the auto-retry limit. */
     fun retryAll() {
         scope.launch {
-            for (note in store.notes.value.filter { it.needsTranscription }) transcribeSaved(note.id)
+            for (note in store.notes.value.filter { it.needsTranscription }) transcribeSaved(note.id, userRequested = true)
         }
     }
 
@@ -732,11 +740,11 @@ class RecordingController(
         }
     }
 
-    private suspend fun transcribeSaved(noteId: String) {
+    private suspend fun transcribeSaved(noteId: String, userRequested: Boolean = false) {
         val note = store.note(noteId) ?: return
         if (note.status == TranscriptionStatus.IN_PROGRESS || note.status == TranscriptionStatus.RECORDING) return
-        val file = store.audioFile(note)
-        if (file == null || !file.exists()) {
+        val stored = store.audioFile(note)
+        if (stored == null || !stored.exists()) {
             store.update(noteId) { it.copy(status = TranscriptionStatus.FAILED, lastError = "The audio file is missing.") }
             return
         }
@@ -749,7 +757,13 @@ class RecordingController(
         val source = if (note.revisions.isEmpty()) RevisionSource.TRANSCRIPTION else RevisionSource.RETRANSCRIPTION
 
         store.update(noteId) { it.copy(status = TranscriptionStatus.IN_PROGRESS, attempts = it.attempts + 1) }
+        // Archived notes are compressed: decode to a temporary WAV first.
+        val decoded = if (stored.extension == "wav") null else File(context.cacheDir, "${note.id}.decoded.wav")
         try {
+            val file = if (decoded == null) stored else withContext(Dispatchers.IO) {
+                AudioArchive.decodeToWav(stored, decoded)
+                decoded
+            }
             val total = withContext(Dispatchers.IO) { WavFile.sampleCount(file) }
             // Find the speech by streaming the file through the detector in
             // 10 s blocks, so memory stays small however long it is.
@@ -787,8 +801,11 @@ class RecordingController(
                 result.engine?.let { engines += it }
             }
             val engineName = engineLabel(engines)
+            if (text.isBlank() && store.note(noteId)?.currentText?.isNotBlank() == true) {
+                showError("No speech found on re-transcription — the existing text was kept.")
+            }
             store.update(noteId) {
-                it.withRevision(text, source, engineName, mostCommon(languages)).copy(
+                it.withTranscription(text, source, engineName, mostCommon(languages), userRequested).copy(
                     status = TranscriptionStatus.DONE,
                     lastError = null,
                     partialText = null,
@@ -803,6 +820,71 @@ class RecordingController(
             }
             if (hadText) showError("Re-transcription failed: $message")
             if (e is CancellationException) throw e
+        } finally {
+            decoded?.delete()
+        }
+    }
+
+    // endregion
+
+    // region Archive and clean-up
+
+    /** Notes that must not be archived or deleted right now. */
+    private fun busyIds(): Set<String> =
+        (finishing.map { it.noteId } + listOfNotNull(session?.noteId)).toSet()
+
+    /**
+     * Archives notes: compresses each one's audio to AAC (about a tenth of the
+     * size) and moves it out of the main list. The WAV is only deleted once
+     * the compressed copy has been checked and the note saved; if compression
+     * fails the note stays as it was and you're told why.
+     */
+    fun archive(ids: Collection<String>) {
+        scope.launch {
+            var failed = 0
+            for (id in ids) {
+                val note = store.note(id) ?: continue
+                if (note.archived || id in busyIds() || note.status == TranscriptionStatus.IN_PROGRESS) continue
+                val wav = store.audioFile(note)
+                try {
+                    if (wav != null && wav.exists() && wav.extension == "wav") {
+                        val m4aName = wav.nameWithoutExtension + ".m4a"
+                        val m4a = File(store.recordingsDir, m4aName)
+                        withContext(Dispatchers.IO) { AudioArchive.compress(wav, m4a) }
+                        store.update(id) { it.copy(audioFileName = m4aName, archived = true, archivedAt = System.currentTimeMillis()) }
+                        wav.delete()
+                    } else {
+                        store.update(id) { it.copy(archived = true, archivedAt = System.currentTimeMillis()) }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    failed++
+                }
+            }
+            if (failed > 0) {
+                showError(
+                    if (failed == 1) "1 note couldn't be compressed, so it was left as it was."
+                    else "$failed notes couldn't be compressed, so they were left as they were."
+                )
+            }
+        }
+    }
+
+    /** Back to the main list (the audio stays compressed). */
+    fun unarchive(id: String) = store.update(id) { it.copy(archived = false, archivedAt = null) }
+
+    fun delete(ids: Collection<String>) = store.deleteMany(ids.filterNot { it in busyIds() })
+
+    /** Unpinned notes older than [days] that [cleanUp] would touch. */
+    fun cleanupCandidates(action: NoteCleanup.Action, days: Int): List<Note> =
+        NoteCleanup.select(store.notes.value, action, days, System.currentTimeMillis(), busyIds())
+
+    fun cleanUp(action: NoteCleanup.Action, days: Int) {
+        val ids = cleanupCandidates(action, days).map { it.id }
+        when (action) {
+            NoteCleanup.Action.ARCHIVE -> archive(ids)
+            NoteCleanup.Action.DELETE -> delete(ids)
         }
     }
 

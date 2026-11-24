@@ -21,7 +21,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.History
@@ -95,6 +97,7 @@ fun NoteBubble(
     matchedInEarlierRevision: Boolean = false,
     onTranslate: () -> Unit = {},
     onCopyText: (String) -> Unit = {},
+    onArchive: () -> Unit = {},
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
@@ -157,6 +160,9 @@ fun NoteBubble(
                     Icons.Default.Refresh,
                     enabled = engineStatus == EngineStatus.Ready && !working,
                 ) { menuOpen = false; onRetranscribe() }
+                MenuItem(if (note.archived) "Unarchive" else "Archive", if (note.archived) Icons.Default.Unarchive else Icons.Default.Archive) {
+                    menuOpen = false; onArchive()
+                }
                 MenuItem("Delete", Icons.Default.Delete, tint = colors.error) { menuOpen = false; onDelete() }
             }
         }
@@ -360,6 +366,7 @@ private fun metadata(note: Note): String {
     )
     if (note.durationSeconds > 0) parts += DateUtils.formatElapsedTime(note.durationSeconds.toLong())
     note.revisions.lastOrNull()?.source?.takeIf { it != RevisionSource.TRANSCRIPTION }?.let { parts += it.label.lowercase() }
+    if (note.archived) parts += "archived"
     return parts.joinToString(" · ")
 }
 

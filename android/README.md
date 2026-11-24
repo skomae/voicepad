@@ -79,6 +79,18 @@ copied, edited, re-transcribed and rolled back through its revision history.
   now, and pick one — or leave it on *Automatic*. The choice is remembered;
   if that mic is unplugged the phone's default is used, and recording
   switches back when it reconnects.
+- **Archive**: long-press a note → Archive. It leaves the main list (search
+  still finds it; ⋮ → Archived notes lists them) and its audio is compressed
+  from WAV to AAC (~1.9 → ~0.18 MB a minute). The compressed copy is checked
+  for the right length before the WAV is deleted; if anything is off the
+  note is left untouched. Archived notes can still be played, shared,
+  unarchived and re-transcribed.
+- **Clean up** (⋮ → Clean up…): archive or delete every **unpinned** note
+  older than 1, 7 or 30 days, with a count before you confirm. Notes being
+  recorded or transcribed are skipped.
+- **Your edits are final**: editing or restoring a note marks it done, a
+  transcription that finishes afterwards goes into the history behind your
+  edit, and an empty result never replaces text.
 - **Pin** notes to keep them in a *Pinned* section at the top.
 - **Full-text search** across every note — current text, every earlier
   revision and text recovered from unfinished transcriptions. All terms must
