@@ -235,7 +235,9 @@ class AudioRecorder {
         // voice as noise to remove; turn it off when capturing the room.
         noiseSuppressor?.release()
         noiseSuppressor = null
-        if (source != MediaRecorder.AudioSource.VOICE_RECOGNITION && NoiseSuppressor.isAvailable()) {
+        // Not for several channels: a vendor effect on a multi-channel stream is
+        // an unusual combination, and a suspect in native crashes seen there.
+        if (n == 1 && source != MediaRecorder.AudioSource.VOICE_RECOGNITION && NoiseSuppressor.isAvailable()) {
             noiseSuppressor = runCatching {
                 NoiseSuppressor.create(recorder.audioSessionId)?.apply { enabled = false }
             }.getOrNull()

@@ -120,6 +120,11 @@ class ConversationController(
         val translation: Readiness = Readiness.Off,
         val voiceModel: Readiness = Readiness.Off,
         val message: String? = null,
+        /**
+         * The app closed while recording this many channels (a crash, most
+         * likely): ask whether to go back to one before recording again.
+         */
+        val crashedWithChannels: Int? = null,
     ) {
         val layout: ConversationLayout get() = layoutOverride ?: settings.layout
 
@@ -162,7 +167,13 @@ class ConversationController(
     private val translator by lazy { EnglishTranslator() }
     private val store: NoteStore get() = notes.store
 
-    private val _state = MutableStateFlow(UiState(settings = loadSettings()))
+    private val _state = MutableStateFlow(
+        UiState(
+            settings = loadSettings(),
+            // Still marked from last time: it never stopped cleanly.
+            crashedWithChannels = prefs.getInt("multiChannelRecording", 0).takeIf { it > 1 },
+        )
+    )
     val state: StateFlow<UiState> = _state.asStateFlow()
     private val settings get() = _state.value.settings
 
@@ -399,8 +410,26 @@ class ConversationController(
 
     fun toggleListening() = if (_state.value.listening) stopListening() else startListening()
 
+    /**
+     * Answer to "VoicePad closed while recording N channels — switch back to
+     * one?": [useOneChannel] switches; either way, listening (re)starts.
+     */
+    fun answerCrashPrompt(useOneChannel: Boolean) {
+        prefs.edit { remove("multiChannelRecording") }
+        _state.update { it.copy(crashedWithChannels = null) }
+        if (useOneChannel) changeSettings { it.copy(channels = 1) }
+        if (_state.value.visible) startListening()
+    }
+
+    /** Marks a multi-channel recording as running, written to disk at once so a crash can't lose it. */
+    private fun markMultiChannel(channels: Int?) {
+        prefs.edit(commit = true) { if (channels != null && channels > 1) putInt("multiChannelRecording", channels) else remove("multiChannelRecording") }
+    }
+
     fun startListening() {
         if (_state.value.listening || !_state.value.visible) return
+        // Don't risk the same crash again before the user has decided.
+        if (_state.value.crashedWithChannels != null && settings.channels > 1) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             showMessage("Microphone access is needed for conversation mode.")
             return
@@ -434,6 +463,7 @@ class ConversationController(
             return
         }
         val got = recorder.channelCount
+        markMultiChannel(got)
         if (got < wanted && _state.value.message == null) {
             showMessage("The microphone gave $got channel${if (got == 1) "" else "s"} instead of $wanted.")
         }
@@ -474,6 +504,7 @@ class ConversationController(
         val s = session ?: return
         session = null
         recorder.stop()
+        markMultiChannel(null) // stopped cleanly
         notes.endConversationInput()
         val job = loopJob
         loopJob = null
@@ -526,7 +557,9 @@ class ConversationController(
         // (A channel nobody speaks on needs nothing, so it doesn't hold memory.)
         val keep = s.lanes.minOf { lane ->
             lane.pending.firstOrNull()?.start
-                ?: if (lane.detector?.inSpeech == true) lane.quietAt - SR else lane.detectedUpTo
+                // Speech in progress, but never more than the live preview reads: a noisy mic
+                // can keep its detector "in speech" for good, which would hold all audio in memory.
+                ?: if (lane.detector?.inSpeech == true) maxOf(lane.quietAt - SR, now - MAX_LIVE - SR) else lane.detectedUpTo
         }
         recorder.discardBefore(keep - PAD - SR)
     }
