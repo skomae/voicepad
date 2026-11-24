@@ -71,6 +71,11 @@ import com.voicepad.app.llm.Guidance
 import com.voicepad.app.llm.LlmChoice
 import com.voicepad.app.transcription.EngineChoice
 import java.util.Date
+import androidx.compose.foundation.layout.Box
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -223,6 +228,8 @@ fun SettingsSheet(
                 Spacer(Modifier.width(12.dp))
                 Switch(checked = state.copyWhenDone, onCheckedChange = controller::setCopyWhenDone)
             }
+            Spacer(Modifier.height(12.dp))
+            NoteTapSetting(state.noteTapAction, onSelect = controller::setNoteTapAction)
             Spacer(Modifier.height(16.dp))
             MicrophoneSection(state, onSelect = controller::setInputDevice)
             Spacer(Modifier.height(12.dp))
@@ -485,6 +492,42 @@ private fun MicOption(
         Column {
             Text(title)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/** "Tap a note to": any long-press menu action, or nothing. */
+@Composable
+private fun NoteTapSetting(current: NoteTapAction, onSelect: (NoteTapAction) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Tap a note to")
+            Text(
+                "Long-press still opens the full menu, and double-tap types the note while a keyboard is connected.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Box {
+            TextButton(onClick = { open = true }) {
+                Text(current.label)
+                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+            }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                NoteTapAction.entries.forEach { action ->
+                    DropdownMenuItem(
+                        text = { Text(action.label) },
+                        onClick = { open = false; onSelect(action) },
+                        leadingIcon = if (action == current) {
+                            { Icon(Icons.Default.Check, contentDescription = "Selected") }
+                        } else {
+                            null
+                        },
+                    )
+                }
+            }
         }
     }
 }

@@ -49,6 +49,7 @@ import com.voicepad.app.transcription.Transcript
 import com.voicepad.app.transmit.KeyboardHost
 import com.voicepad.app.transmit.SinkStatus
 import com.voicepad.app.transmit.createKeyboardSink
+import com.voicepad.app.ui.NoteTapAction
 import com.voicepad.app.ui.ThemeMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -117,6 +118,8 @@ class RecordingController(
         val backgroundVoices: Boolean = false,
         /** Light, dark, pure black (OLED), or follow the phone. */
         val themeMode: ThemeMode = ThemeMode.SYSTEM,
+        /** What a single tap on a note bubble does. */
+        val noteTapAction: NoteTapAction = NoteTapAction.EDIT,
         /** When a recording (or split part) finishes transcribing, copy it to the clipboard (with a toast). */
         val copyWhenDone: Boolean = true,
         /** Start a new note automatically after a silence or every few minutes. */
@@ -197,6 +200,8 @@ class RecordingController(
             copyWhenDone = prefs.getBoolean("copyWhenDone", true),
             themeMode = prefs.getString("theme", null)
                 ?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() } ?: ThemeMode.SYSTEM,
+            noteTapAction = prefs.getString("noteTapAction", null)
+                ?.let { runCatching { NoteTapAction.valueOf(it) }.getOrNull() } ?: NoteTapAction.EDIT,
             autoSplit = prefs.getString("autoSplit", null)
                 ?.let { runCatching { AutoSplit.valueOf(it) }.getOrNull() } ?: AutoSplit.OFF,
             inputDevices = inputs.devices.value,
@@ -650,6 +655,11 @@ class RecordingController(
                 s.pending += Span(s.committedUpTo, now)
             }
         }
+    }
+
+    fun setNoteTapAction(action: NoteTapAction) {
+        prefs.edit { putString("noteTapAction", action.name) }
+        _state.update { it.copy(noteTapAction = action) }
     }
 
     fun setThemeMode(mode: ThemeMode) {

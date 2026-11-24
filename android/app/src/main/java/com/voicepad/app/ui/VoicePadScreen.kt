@@ -164,6 +164,7 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
     fun Bubble(note: Note, highlight: List<String> = emptyList(), matchedEarlier: Boolean = false) {
         NoteBubble(
             compact = compact,
+            tapAction = state.noteTapAction,
             note = note,
             engineStatus = state.engineStatus,
             isPlaying = player.playingId == note.id,

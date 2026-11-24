@@ -103,6 +103,8 @@ fun NoteBubble(
     onType: (() -> Unit)? = null,
     /** Small window: only the date and Copy under the bubble; the rest is in the long-press menu. */
     compact: Boolean = false,
+    /** What a single tap does (Settings > "Tap a note to"). */
+    tapAction: NoteTapAction = NoteTapAction.EDIT,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
@@ -112,6 +114,26 @@ fun NoteBubble(
     // Text in a failed or waiting note is only what was recovered so far.
     val bodyText = if (hasText) note.currentText else note.partialText.orEmpty()
     val solid = hasText || note.status == TranscriptionStatus.DONE
+    val translated = note.currentTranslation?.takeIf { it.status == TranslationStatus.DONE }
+    val copyTranslation = translated?.let { t ->
+        { onCopyText(listOfNotNull(t.romanization, t.english).joinToString("\n")) }
+    }
+    // Same actions as the long-press menu; null where the action doesn't apply.
+    val onTap: (() -> Unit)? = when (tapAction) {
+        NoteTapAction.EDIT -> onEdit
+        NoteTapAction.COPY -> onCopy
+        NoteTapAction.TYPE -> onType?.takeIf { hasText }
+        NoteTapAction.COPY_TRANSLATION -> copyTranslation
+        NoteTapAction.TRANSLATE -> onTranslate.takeIf { hasText && translated == null }
+        NoteTapAction.PIN -> onTogglePin
+        NoteTapAction.HISTORY -> onHistory
+        NoteTapAction.PLAY -> onPlay
+        NoteTapAction.SHARE -> onShare
+        NoteTapAction.RETRANSCRIBE -> onRetranscribe.takeIf { engineStatus == EngineStatus.Ready && !working }
+        NoteTapAction.ARCHIVE -> onArchive
+        NoteTapAction.DELETE -> onDelete
+        NoteTapAction.NOTHING -> null
+    }
 
     Column(BubbleStartInset, horizontalAlignment = Alignment.End) {
         Box {
@@ -120,7 +142,8 @@ fun NoteBubble(
                     .background(if (solid) colors.primary else colors.surfaceVariant, BubbleShape)
                     .then(if (failed) Modifier.border(1.5.dp, colors.error, BubbleShape) else Modifier)
                     .combinedClickable(
-                        onClick = onEdit,
+                        onClickLabel = tapAction.label.takeIf { onTap != null },
+                        onClick = { onTap?.invoke() },
                         onLongClick = { menuOpen = true },
                         // Only while a keyboard is connected, so a single tap
                         // otherwise edits without waiting out a double-tap.
@@ -153,11 +176,10 @@ fun NoteBubble(
                 if (onType != null && note.currentText.isNotBlank()) {
                     MenuItem("Type on paired device", Icons.Default.Keyboard) { menuOpen = false; onType() }
                 }
-                val translated = note.currentTranslation?.takeIf { it.status == TranslationStatus.DONE }
-                if (translated != null) {
+                if (copyTranslation != null) {
                     MenuItem("Copy translation", Icons.Default.Translate) {
                         menuOpen = false
-                        onCopyText(listOfNotNull(translated.romanization, translated.english).joinToString("\n"))
+                        copyTranslation()
                     }
                 } else if (hasText) {
                     MenuItem("Translate to English", Icons.Default.Translate) { menuOpen = false; onTranslate() }
