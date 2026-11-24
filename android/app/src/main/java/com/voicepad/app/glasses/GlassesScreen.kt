@@ -1,5 +1,6 @@
 package com.voicepad.app.glasses
 
+import android.icu.text.Transliterator
 import com.voicepad.app.conversation.Stage
 import com.voicepad.app.conversation.Turn
 import com.voicepad.app.transcription.LanguageTags
@@ -23,6 +24,10 @@ enum class GlassesScope(val label: String, val description: String) {
  *
  * Wide characters (Chinese, Japanese, Korean) count as two of the 40
  * columns, which is why a Chinese line fits around 20 characters.
+ *
+ * When the reader's language is Chinese, every Chinese turn gets a pinyin
+ * line below it, so language learners can read the pronunciation as well
+ * as the characters.
  */
 object GlassesScreen {
     const val LINES = 5
@@ -32,6 +37,25 @@ object GlassesScreen {
     private const val THEM = "> "
     /** Marks a turn of your own. */
     private const val ME = "- "
+
+    /** ICU transliterator: converts Chinese characters to pinyin with tone marks. */
+    private val hanToPinyin by lazy { Transliterator.getInstance("Han-Latin") }
+
+    /** True if [language] is a Chinese variety. */
+    private fun isChinese(language: String): Boolean =
+        language.startsWith("zh", ignoreCase = true) || language.startsWith("yue", ignoreCase = true)
+
+    /**
+     * Converts Chinese characters in [text] to pinyin with tone marks.
+     * Non-Chinese text (English, numbers, punctuation) passes through unchanged.
+     */
+    private fun toPinyin(text: String): String {
+        val raw = hanToPinyin.transliterate(text)
+        // ICU's Han-Latin output adds spaces between syllables but also between
+        // words that were separated by punctuation. Normalise: trim the leading
+        // space ICU puts before the first syllable, collapse multiple spaces.
+        return raw.trimStart().replace(Regex(" +"), " ")
+    }
 
     /**
      * The page for [stage]: [LINES] lines of at most [COLUMNS] columns, always
@@ -74,12 +98,17 @@ object GlassesScreen {
         }
         val text = turn.textIn(myLanguage)
         if (text == null) {
-            // Their words, not translated yet: the page keeps the last translation
-            // up and this says something is coming, rather than flashing a script
-            // the reader can't read. (A failed translation shows what was said.)
             return if (turn.translationFailed) mark(gutter, wrap(turn.text, COLUMNS - gutter.length)) else listOf(gutter + "…")
         }
-        return mark(gutter, wrap(text, COLUMNS - gutter.length))
+        val lines = mark(gutter, wrap(text, COLUMNS - gutter.length))
+
+        // When the reader sees Chinese on the glasses, add a pinyin line below.
+        val showPinyin = isChinese(myLanguage) && text.any { isWide(it) }
+        if (!showPinyin) return lines
+
+        val pinyin = toPinyin(text)
+        val pinyinLines = mark(gutter, wrap(pinyin, COLUMNS - gutter.length))
+        return lines + pinyinLines
     }
 
     /** Puts [gutter] at the start of a turn's first line; later lines line up under it. */
