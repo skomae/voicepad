@@ -46,6 +46,7 @@ import androidx.compose.ui.platform.LocalContext
 import android.widget.Toast
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import com.voicepad.app.speech.LocalVoice
@@ -145,6 +146,11 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
             onPick = { picking = it },
             onSwap = conversation::swapLanguages,
             onSettings = { showSettings = true },
+            onToggleSpeak = {
+                val on = !state.settings.autoSpeak
+                conversation.setAutoSpeak(on)
+                Toast.makeText(context, if (on) "Reading translations aloud" else "Not reading aloud", Toast.LENGTH_SHORT).show()
+            },
             onCycleLayout = {
                 val layout = conversation.cycleLayout()
                 Toast.makeText(context, layout.label, Toast.LENGTH_SHORT).show()
@@ -416,6 +422,7 @@ internal fun ControlStrip(
     onRetryModels: () -> Unit,
     onUseEngine: (EngineChoice) -> Unit,
     onCycleLayout: () -> Unit = {},
+    onToggleSpeak: () -> Unit = {},
 ) {
     val settings = state.settings
     Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
@@ -450,7 +457,15 @@ internal fun ControlStrip(
                     languages(Modifier.weight(1f))
                 }
                 MicButton(state.listening, levels.maxOrNull() ?: 0f, onToggle)
-                Spacer(Modifier.width(6.dp))
+                // Read translations aloud: on (speaker) or off (crossed out).
+                IconButton(onClick = onToggleSpeak, modifier = Modifier.size(44.dp)) {
+                    Icon(
+                        if (settings.autoSpeak) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
+                        contentDescription = if (settings.autoSpeak) "Reading translations aloud. Tap to stop." else "Not reading aloud. Tap to read translations aloud.",
+                        tint = if (settings.autoSpeak) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(2.dp))
                 if (state.listening && state.recordingChannels > 1) ChannelMeters(levels)
                 if (narrow) Spacer(Modifier.weight(1f)) else layoutButton()
                 IconButton(onClick = onSettings, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Settings, contentDescription = "Conversation settings") }

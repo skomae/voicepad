@@ -118,8 +118,9 @@ copied, edited, re-transcribed and rolled back through its revision history.
     conversation mode on a phone that supports it; also a layout in the
     conversation settings, with a note if the outer screen isn't available.
   - **Read aloud**: a speaker icon on every turn says it in that half's
-    language (tap again to stop); *Read translations aloud* says each
-    translation automatically once its speaker pauses. While the phone is
+    language (tap again to stop); *Read translations aloud* (the speaker button next
+    to the microphone, or settings) says each translation automatically once
+    its speaker pauses. While the phone is
     talking, the microphone ignores what it hears (its own voice), so the
     reply starts after it. Voices run on the phone: **Kitten** nano v0.8
     (37 MB with its pronunciation dictionary) for English and **MeloTTS**
