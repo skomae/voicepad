@@ -28,6 +28,16 @@ struct RecordBar: View {
     var body: some View {
         let recording = controller.isRecording
         VStack(spacing: 6) {
+            if controller.isRecording, controller.noSoundWarning {
+                Label("No sound is coming in from the microphone. This part isn't being captured.", systemImage: "mic.slash.fill")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.recordingRed, in: RoundedRectangle(cornerRadius: 10))
+                    .padding(.horizontal, 12)
+                    .accessibilityAddTraits(.updatesFrequently)
+            }
             if let error = controller.errorMessage {
                 Text(error)
                     .font(.footnote)

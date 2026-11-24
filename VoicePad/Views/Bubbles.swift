@@ -249,6 +249,7 @@ struct LiveBubble: View {
     }
 
     private var displayText: String {
+        if controller.noSoundWarning { return "No sound is coming in from the microphone…" }
         if !controller.liveText.isEmpty { return controller.liveText }
         switch controller.engineStatus {
         case .ready: return controller.liveRecordOnly ? "Recording… the text comes when you stop" : "Listening…"

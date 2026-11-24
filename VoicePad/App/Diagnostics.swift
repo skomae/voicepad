@@ -14,3 +14,15 @@ enum Diagnostics {
         try? text.write(to: url, atomically: true, encoding: .utf8)
     }
 }
+
+/// Test switches read from Documents/debug.json (copied onto a test phone), to
+/// narrow down device-only problems without a new build each time.
+enum DebugFlags {
+    private static let flags: [String: Bool] = {
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("debug.json")
+        guard let data = try? Data(contentsOf: url) else { return [:] }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Bool] ?? [:]
+    }()
+
+    static func on(_ name: String) -> Bool { flags[name] ?? false }
+}

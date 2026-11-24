@@ -53,6 +53,10 @@ final class RecordingController {
     var errorMessage: String?
     /// The note being recorded right now, if any.
     private(set) var recordingNoteID: Note.ID?
+    /// The microphone is delivering only digital silence right now: nothing is
+    /// being captured. Shown as a warning while recording.
+    private(set) var noSoundWarning = false
+
     /// The note being recorded started before the model was ready, so it is
     /// only being recorded; its text comes once it's stopped (or split).
     private(set) var liveRecordOnly = false
@@ -212,7 +216,7 @@ final class RecordingController {
         // Stop and Split from the Lock Screen / Dynamic Island.
         RecordingActions.stop = { [weak self] in self?.stop() }
         RecordingActions.split = { [weak self] in self?.split() }
-        liveActivity.observe { [weak self] in self?.liveActivityState }
+        if !DebugFlags.on("noLiveActivity") { liveActivity.observe { [weak self] in self?.liveActivityState } }
 
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
@@ -287,12 +291,14 @@ final class RecordingController {
     }
 
     func loadEngine() {
-        loadVoiceActivity()
+        if DebugFlags.on("skipModelLoad") { Diagnostics.log("debug: model load skipped"); return }
+        if DebugFlags.on("skipVAD") { Diagnostics.log("debug: VAD skipped") } else { loadVoiceActivity() }
         let choice = activeEngine
         let loadID = UUID()
         engineLoadID = loadID
         engine = nil
         engineStatus = .loading(.starting)
+        Diagnostics.log("model load start: \(choice.rawValue)")
         let newEngine = choice.makeEngine()
         loadTask = Task {
             do {
@@ -301,13 +307,15 @@ final class RecordingController {
                 let loading = UncheckedBox(newEngine)
                 try await Task.detached(priority: .utility) { try await loading.value.load { progress in
                     Task { @MainActor in
-                        guard self.engineLoadID == loadID, case .loading = self.engineStatus else { return }
+                        guard self.engineLoadID == loadID, case .loading(let old) = self.engineStatus else { return }
+                        if old.stage != progress.stage { Diagnostics.log("model stage: \(progress.stage)") }
                         self.engineStatus = .loading(progress)
                     }
                 } }.value
                 guard engineLoadID == loadID else { return }
                 engine = newEngine
                 engineStatus = .ready
+                Diagnostics.log("model ready: \(choice.rawValue)")
                 installedEngines.insert(choice)
                 UserDefaults.standard.set(installedEngines.map(\.rawValue), forKey: Self.installedKey)
                 processQueue()
@@ -394,8 +402,15 @@ final class RecordingController {
 
     // MARK: Stuck microphone
 
+    /// For the diagnostics log: is the app really in front, and is the phone unlocked?
+    private var appState: String {
+        let state = ["active", "inactive", "background"][UIApplication.shared.applicationState.rawValue]
+        return "app=\(state) unlocked=\(UIApplication.shared.isProtectedDataAvailable)"
+    }
+
     @ObservationIgnored private var resumeAfterInterruption = false
     @ObservationIgnored private var silenceRestarts = 0
+    @ObservationIgnored private var loggedFirstSignal = false
     @ObservationIgnored private var lastSilenceRestart = Date.distantPast
     private static let stuckSilence = Int(3 * rate)
 
@@ -403,8 +418,18 @@ final class RecordingController {
     /// microphone always hears something): reopen it, at most every 8 s, and
     /// say so if that keeps failing.
     private func checkForStuckMicrophone() {
-        guard isRecording else { return }
+        guard isRecording else { noSoundWarning = false; return }
+        // Warn quickly: 1.5 s of exact zeros means nothing at all is reaching VoicePad.
+        let silent = recorder.silentSamples >= Int(1.5 * Self.rate)
+        if silent != noSoundWarning {
+            noSoundWarning = silent
+            Diagnostics.log((silent ? "warning shown: no sound " : "warning cleared: sound is coming in ") + appState)
+        }
         guard recorder.silentSamples >= Self.stuckSilence else {
+            if !loggedFirstSignal, recorder.hasSignal {
+                loggedFirstSignal = true
+                Diagnostics.log("first sound after start")
+            }
             if silenceRestarts > 0, recorder.hasSignal {
                 Diagnostics.log("microphone recovered after \(silenceRestarts) reopen(s)")
                 silenceRestarts = 0
@@ -412,10 +437,11 @@ final class RecordingController {
             }
             return
         }
+        guard !DebugFlags.on("noReopen") else { return }
         guard Date.now.timeIntervalSince(lastSilenceRestart) >= 8 else { return }
         lastSilenceRestart = .now
         silenceRestarts += 1
-        Diagnostics.log("silent input, reopening (\(silenceRestarts)): " + recorder.describeInput())
+        Diagnostics.log("silent input, reopening (\(silenceRestarts)): " + appState + " " + recorder.describeInput())
         if AVAudioApplication.shared.isInputMuted { try? AVAudioApplication.shared.setInputMuted(false) }
         try? recorder.restartCapture(newEngine: silenceRestarts >= 2)
         if silenceRestarts >= 3 {
@@ -467,14 +493,15 @@ final class RecordingController {
             return
         }
         // Activating the session can reset the route; re-apply the chosen mic.
-        inputs.apply(selectedInputID)
+        if DebugFlags.on("noApplyInput") { Diagnostics.log("debug: input not re-applied") } else { inputs.apply(selectedInputID) }
 
         beginNote(fileName: fileName, origin: 0, part: 1)
         isRecording = true
 
-        Diagnostics.log("start: " + recorder.describeInput())
+        Diagnostics.log("start: " + appState + " " + recorder.describeInput())
         silenceRestarts = 0
         lastSilenceRestart = .distantPast
+        loggedFirstSignal = false
 
         meterTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -551,6 +578,7 @@ final class RecordingController {
         finishing.append(current)
         session = nil
         isRecording = false
+        noSoundWarning = false
         level = 0
         startedAt = nil
         recordingNoteID = nil
