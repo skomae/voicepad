@@ -86,6 +86,11 @@ targets:
       - VoicePad/Translation/TranslationJoin.swift
       - VoicePad/Transcription/ChunkPlanner.swift
       - VoicePad/Transcription/AudioLevel.swift
+      - VoicePad/Transcription/EngineChoice.swift
+      - VoicePad/Conversation/Turns.swift
+      - VoicePad/Conversation/Stage.swift
+      - VoicePad/Conversation/ConversationLanguages.swift
+      - VoicePad/Conversation/SpeakerClustering.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.voicepad.tests
