@@ -44,7 +44,30 @@ val downloadSileroVad by tasks.registering {
         tmp.renameTo(target)
     }
 }
-tasks.named("preBuild") { dependsOn(downloadSherpaOnnx, downloadSileroVad) }
+// llama.cpp source for the on-device LLM engine; fetched once and kept out of
+// git (like the sherpa-onnx AAR and Silero VAD above).
+val llamaCppVersion = "1.0.0"
+val llamaCppDir = layout.projectDirectory.dir("cpp/llama.cpp")
+
+val downloadLlamaCpp by tasks.registering {
+    description = "Downloads the llama.cpp source used by the on-device LLM engine."
+    val marker = llamaCppDir.file(".complete")
+    outputs.file(marker)
+    onlyIf { !marker.asFile.exists() }
+    doLast {
+        val url = "https://github.com/ggml-org/llama.cpp/archive/refs/tags/v$llamaCppVersion.tar.gz"
+        logger.lifecycle("Downloading $url")
+        llamaCppDir.asFile.mkdirs()
+        val tmp = File(llamaCppDir.asFile, "llama.cpp.tar.gz")
+        URI(url).toURL().openStream().use { input -> tmp.outputStream().use { input.copyTo(it) } }
+        project.exec {
+            commandLine("tar", "-xzf", tmp.absolutePath, "-C", llamaCppDir.asFile.absolutePath, "--strip-components=1")
+        }
+        tmp.delete()
+        marker.asFile.writeText(llamaCppVersion)
+    }
+}
+tasks.named("preBuild") { dependsOn(downloadSherpaOnnx, downloadSileroVad, downloadLlamaCpp) }
 
 // Release signing comes from environment variables (set by CI from repo
 // secrets). Without them the release build falls back to the debug key.
@@ -53,6 +76,7 @@ val keystorePath: String? = System.getenv("VOICEPAD_KEYSTORE_PATH")
 android {
     namespace = "com.voicepad.app"
     compileSdk = 36
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "com.voicepad.app"
@@ -60,6 +84,23 @@ android {
         targetSdk = 36
         versionCode = (System.getenv("VOICEPAD_VERSION_CODE") ?: "1").toInt()
         versionName = System.getenv("VOICEPAD_VERSION_NAME") ?: "0.1.0"
+
+        externalNativeBuild {
+            cmake {
+                arguments += listOf(
+                    "-DCMAKE_BUILD_TYPE=Release",
+                    "-DBUILD_SHARED_LIBS=ON",
+                    "-DLLAMA_BUILD_APP=OFF",
+                    "-DLLAMA_BUILD_COMMON=ON",
+                    "-DLLAMA_OPENSSL=OFF",
+                    "-DGGML_NATIVE=OFF",
+                    "-DGGML_BACKEND_DL=ON",
+                    "-DGGML_CPU_ALL_VARIANTS=ON",
+                    "-DGGML_LLAMAFILE=OFF",
+                    "-DLLAMA_CPP_DIR=${llamaCppDir.asFile.absolutePath}",
+                )
+            }
+        }
     }
 
     signingConfigs {
@@ -95,6 +136,13 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    externalNativeBuild {
+        cmake {
+            path("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     packaging {
