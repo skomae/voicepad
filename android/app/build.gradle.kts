@@ -147,7 +147,10 @@ android {
     }
 
     packaging {
-        jniLibs.useLegacyPackaging = false
+        // Extract native libraries to nativeLibraryDir: llama.cpp loads its CPU
+        // backend variants from there at runtime (GGML_BACKEND_DL), the same
+        // as upstream's examples/llama.android (extractNativeLibs=true).
+        jniLibs.useLegacyPackaging = true
     }
 }
 

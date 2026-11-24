@@ -10,4 +10,4 @@ interface LlmEngine {
 }
 
 /** Loads the llama.cpp engine for [modelFile]; see [LlamaEngine.create] for failures. */
-fun createLlmEngine(modelFile: File): LlmEngine = LlamaEngine.create(modelFile)
+fun createLlmEngine(modelFile: File, nativeLibDir: String): LlmEngine = LlamaEngine.create(modelFile, nativeLibDir)

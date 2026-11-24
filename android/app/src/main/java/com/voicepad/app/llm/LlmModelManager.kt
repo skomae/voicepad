@@ -17,6 +17,15 @@ class LlmModelManager(context: Context) {
     fun isInstalled(choice: LlmChoice) =
         file(choice).exists() && File(modelsDir, choice.fileName + ".complete").exists()
 
+    /** Whether the installed file at least starts like a GGUF model (magic "GGUF"). */
+    fun looksValid(choice: LlmChoice): Boolean {
+        val f = file(choice)
+        if (!f.isFile || f.length() < 4) return false
+        val magic = ByteArray(4)
+        return runCatching { f.inputStream().use { it.read(magic) } == 4 && String(magic, Charsets.US_ASCII) == "GGUF" }
+            .getOrDefault(false)
+    }
+
     /** Deletes a choice's files (e.g. after they failed to load) so they download fresh. */
     fun discard(choice: LlmChoice) {
         file(choice).delete()

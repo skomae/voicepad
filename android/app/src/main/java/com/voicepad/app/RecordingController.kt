@@ -1295,7 +1295,7 @@ class RecordingController(
             try {
                 llmModels.install(choice) { p -> setLlmStatus(LlmStatus.Loading(p, true)) }
                 setLlmStatus(LlmStatus.Loading(1.0, false))
-                val engine = withContext(Dispatchers.Default) { createLlmEngine(llmModels.file(choice)) }
+                val engine = withContext(Dispatchers.Default) { createLlmEngine(llmModels.file(choice), context.applicationInfo.nativeLibraryDir) }
                 llmMutex.withLock {
                     if (isActive) {
                         llm = engine
@@ -1308,8 +1308,9 @@ class RecordingController(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: LlamaEngine.ModelLoadException) {
-                // Likely a corrupt download: remove it so Retry fetches it again.
-                llmModels.discard(choice)
+                // Only throw the download away if it isn't a GGUF file at all;
+                // otherwise Retry would re-download hundreds of MB for nothing.
+                if (!llmModels.looksValid(choice)) llmModels.discard(choice)
                 setLlmStatus(LlmStatus.Failed(e.message ?: e.toString()))
             } catch (e: Throwable) {
                 setLlmStatus(LlmStatus.Failed(e.message ?: e.toString()))

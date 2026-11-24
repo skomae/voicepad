@@ -1,3 +1,4 @@
+#include <android/log.h>
 #include <jni.h>
 
 #include <algorithm>
@@ -6,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "ggml-backend.h"
 #include "llama.h"
 
 namespace {
@@ -22,6 +24,25 @@ struct LlmHandle {
 };
 
 std::once_flag g_backend_once;
+bool g_has_cpu = false;
+
+// llama.cpp's own messages go to logcat (tag VoicePadLLM); the latest
+// warning/error is kept so a failed load can say why.
+std::mutex g_log_mutex;
+std::string g_last_error;
+
+void log_to_android(ggml_log_level level, const char * text, void *) {
+    int prio = ANDROID_LOG_DEBUG;
+    if (level == GGML_LOG_LEVEL_ERROR) prio = ANDROID_LOG_ERROR;
+    else if (level == GGML_LOG_LEVEL_WARN) prio = ANDROID_LOG_WARN;
+    else if (level == GGML_LOG_LEVEL_INFO) prio = ANDROID_LOG_INFO;
+    __android_log_write(prio, "VoicePadLLM", text);
+    if (level == GGML_LOG_LEVEL_ERROR || level == GGML_LOG_LEVEL_WARN) {
+        std::lock_guard<std::mutex> lock(g_log_mutex);
+        g_last_error = text;
+        while (!g_last_error.empty() && (g_last_error.back() == '\n' || g_last_error.back() == ' ')) g_last_error.pop_back();
+    }
+}
 
 std::string to_std(JNIEnv * env, jstring s) {
     if (!s) return {};
@@ -71,9 +92,33 @@ bool tokenize(const llama_vocab * vocab, const std::string & text, std::vector<l
 
 extern "C" {
 
+// Loads ggml's CPU backend. It is built as separate per-CPU-feature
+// libraries (GGML_BACKEND_DL + GGML_CPU_ALL_VARIANTS); the best one for this
+// SoC is picked from the extracted native library directory. Without this
+// no backend exists and every model load fails. Returns whether a CPU
+// backend is available.
+JNIEXPORT jboolean JNICALL
+Java_com_voicepad_app_llm_LlamaJni_init(JNIEnv * env, jclass, jstring native_lib_dir) {
+    const std::string dir = to_std(env, native_lib_dir);
+    std::call_once(g_backend_once, [&dir] {
+        llama_log_set(log_to_android, nullptr);
+        __android_log_print(ANDROID_LOG_INFO, "VoicePadLLM", "Loading ggml backends from %s", dir.c_str());
+        ggml_backend_load_all_from_path(dir.c_str());
+        llama_backend_init();
+        g_has_cpu = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU) != nullptr;
+    });
+    return g_has_cpu ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_voicepad_app_llm_LlamaJni_lastError(JNIEnv * env, jclass) {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    return env->NewStringUTF(g_last_error.c_str());
+}
+
 JNIEXPORT jlong JNICALL
 Java_com_voicepad_app_llm_LlamaJni_create(JNIEnv * env, jclass, jstring path, jint threads) {
-    std::call_once(g_backend_once, [] { llama_backend_init(); });
+    if (!g_has_cpu) return 0;
 
     const std::string p = to_std(env, path);
     if (p.empty()) return 0;

@@ -28,20 +28,32 @@ class LlamaEngine private constructor(private val handle: Long) : LlmEngine {
         }
 
         /**
-         * Loads [modelFile]. Throws [ModelLoadException] if the file can't be
-         * loaded, or [IllegalStateException] if the native library is missing.
+         * Loads [modelFile], using the CPU backend libraries in
+         * [nativeLibDir]. Throws [ModelLoadException] if llama.cpp rejects
+         * the file, or [IllegalStateException] if the engine itself can't run.
          */
-        fun create(modelFile: File): LlamaEngine {
+        fun create(modelFile: File, nativeLibDir: String): LlamaEngine {
             nativeLoadError?.let { throw IllegalStateException("On-device LLM isn't available in this build.", it) }
+            if (!LlamaJni.init(nativeLibDir)) {
+                throw IllegalStateException(
+                    "llama.cpp found no CPU backend in $nativeLibDir" +
+                        LlamaJni.lastError().takeIf { it.isNotBlank() }?.let { " ($it)" }.orEmpty(),
+                )
+            }
             if (!modelFile.exists()) throw ModelLoadException("Model file is missing.")
             val handle = LlamaJni.create(modelFile.absolutePath, THREADS)
-            if (handle == 0L) throw ModelLoadException("Couldn't load ${modelFile.name}.")
+            if (handle == 0L) {
+                val why = LlamaJni.lastError().takeIf { it.isNotBlank() } ?: "unknown error"
+                throw ModelLoadException("Couldn't load ${modelFile.name}: $why")
+            }
             return LlamaEngine(handle)
         }
     }
 }
 
 internal object LlamaJni {
+    @JvmStatic external fun init(nativeLibDir: String): Boolean
+    @JvmStatic external fun lastError(): String
     @JvmStatic external fun create(path: String, threads: Int): Long
     @JvmStatic external fun complete(handle: Long, system: String, user: String, maxTokens: Int): ByteArray?
     @JvmStatic external fun release(handle: Long)
