@@ -91,6 +91,8 @@ class ConversationController(
         val coverScreen: Boolean = true,
         /** Quarter turns to rotate the cover screen's picture by, if the phone shows it sideways. */
         val coverRotation: Int = 0,
+        /** Animate the stage even when the phone's own animations are off (e.g. by power saving). */
+        val forceAnimations: Boolean = false,
     ) {
         val pair: Pair<String, String> get() = myLanguage to theirLanguage
     }
@@ -219,6 +221,7 @@ class ConversationController(
         thinkingPause = prefs.getInt("thinkingPause", 5),
         coverScreen = prefs.getBoolean("coverScreen", true),
         coverRotation = prefs.getInt("coverRotation", 0),
+        forceAnimations = prefs.getBoolean("forceAnimations", false),
     )
 
     private fun saveSettings(s: Settings) = prefs.edit {
@@ -233,6 +236,7 @@ class ConversationController(
         putInt("thinkingPause", s.thinkingPause)
         putBoolean("coverScreen", s.coverScreen)
         putInt("coverRotation", s.coverRotation)
+        putBoolean("forceAnimations", s.forceAnimations)
     }
 
     private fun changeSettings(transform: (Settings) -> Settings): Settings {
@@ -296,6 +300,8 @@ class ConversationController(
     fun setCoverScreen(enabled: Boolean) { changeSettings { it.copy(coverScreen = enabled) } }
 
     fun setCoverRotation(quarterTurns: Int) { changeSettings { it.copy(coverRotation = quarterTurns.mod(4)) } }
+
+    fun setForceAnimations(enabled: Boolean) { changeSettings { it.copy(forceAnimations = enabled) } }
 
     /** Reported by the activity as the phone's cover screen comes and goes. */
     fun setCover(cover: Cover) = _state.update { it.copy(cover = cover) }

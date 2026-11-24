@@ -2,13 +2,9 @@ package com.voicepad.app.ui
 
 import android.os.SystemClock
 import android.provider.Settings
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Easing
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -90,7 +86,14 @@ internal fun stageColor(turn: Turn?, myLanguage: String): Color = when {
 
 /** False when the phone's animations are switched off (Settings → Accessibility → Remove animations). */
 @Composable
-internal fun rememberMotionEnabled(): Boolean {
+internal fun rememberMotionEnabled(force: Boolean = false): Boolean {
+    val systemOn = rememberSystemAnimationsOn()
+    return force || systemOn
+}
+
+/** Whether the phone's own animations are on (power saving and accessibility settings can turn them off). */
+@Composable
+internal fun rememberSystemAnimationsOn(): Boolean {
     val context = LocalContext.current
     return remember {
         Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) != 0f
@@ -116,7 +119,7 @@ internal fun StagePane(
 ) {
     val stage = state.stage
     val turn = stage.turn
-    val motion = rememberMotionEnabled()
+    val motion = rememberMotionEnabled(state.settings.forceAnimations)
     val color = stageColor(turn, state.settings.myLanguage)
     val listState = rememberLazyListState()
     // Stay on the newest words unless the reader scrolled back.
@@ -241,12 +244,16 @@ private fun TranslatedText(turn: Turn, phase: Phase, language: String, textSize:
     val pending = turn.pending && !turn.translationFailed
 
     // 0 → 1 as a finished translation takes over from the stand-ins.
-    val reveal = remember(turn.id) { Animatable(1f) }
+    val reveal = remember(turn.id) { mutableFloatStateOf(1f) }
     var wasPending by remember(turn.id) { mutableStateOf(pending) }
     LaunchedEffect(turn.id, pending) {
         if (wasPending && !pending && motion) {
-            reveal.snapTo(0f)
-            reveal.animateTo(1f, tween(durationMillis = 550, easing = LinearEasing))
+            // Driven by the frame clock, so it also plays when the phone's animations are off but forced on here.
+            val start = withFrameMillis { it }
+            reveal.floatValue = 0f
+            while (reveal.floatValue < 1f) {
+                withFrameMillis { now -> reveal.floatValue = ((now - start) / 550f).coerceAtMost(1f) }
+            }
         }
         wasPending = pending
     }
@@ -330,9 +337,7 @@ private fun HistoryTurn(turn: Turn, language: String, textSize: Int) {
 @Composable
 private fun Aura(color: Color, phase: Phase, level: () -> Float, motion: Boolean, modifier: Modifier) {
     val breath = if (motion && (phase == Phase.HOLDING || phase == Phase.WORKING)) {
-        rememberInfiniteTransition(label = "aura").animateFloat(
-            0f, 1f, infiniteRepeatable(tween(if (phase == Phase.HOLDING) 2400 else 700), RepeatMode.Reverse), label = "breath",
-        )
+        rememberCycle(if (phase == Phase.HOLDING) 2400 else 700, reverse = true, easing = FastOutSlowInEasing)
     } else null
     Canvas(modifier) {
         val alpha = when (phase) {
@@ -370,9 +375,7 @@ private fun HearingBars(color: Color, level: () -> Float) {
 /** Three dots breathing in turn: the speaker is thinking, and the turn is still theirs. */
 @Composable
 private fun ThinkingDots(color: Color) {
-    val t by rememberInfiniteTransition(label = "dots").animateFloat(
-        0f, 1f, infiniteRepeatable(tween(2400, easing = LinearEasing)), label = "t",
-    )
+    val t by rememberCycle(2400)
     Canvas(Modifier.size(width = 30.dp, height = 10.dp)) {
         val r = size.height / 2
         repeat(3) { i ->
@@ -385,9 +388,8 @@ private fun ThinkingDots(color: Color) {
 /** The two sides' colours circling each other: the models are working between the languages. */
 @Composable
 private fun Orbit(modifier: Modifier) {
-    val angle by rememberInfiniteTransition(label = "orbit").animateFloat(
-        0f, (2 * PI).toFloat(), infiniteRepeatable(tween(900, easing = LinearEasing)), label = "angle",
-    )
+    val cycle by rememberCycle(900)
+    val angle = cycle * (2 * PI).toFloat()
     Canvas(modifier) {
         val r = size.minDimension * 0.3f
         val dot = size.minDimension * 0.17f
@@ -442,4 +444,25 @@ internal fun Modifier.quarterTurns(quarterTurns: Int): Modifier {
             placeable.placeWithLayer((width - placeable.width) / 2, (height - placeable.height) / 2) { rotationZ = 90f * n }
         }
     }
+}
+
+/**
+ * A value cycling 0 → 1 every [periodMs] (back down again when [reverse]),
+ * driven by the frame clock. Unlike Compose's transitions it keeps moving
+ * when the phone's animations are switched off, for "animate anyway".
+ */
+@Composable
+private fun rememberCycle(periodMs: Int, reverse: Boolean = false, easing: Easing = LinearEasing): State<Float> {
+    val value = remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(periodMs, reverse) {
+        val start = withFrameMillis { it }
+        val span = if (reverse) 2L * periodMs else periodMs.toLong()
+        while (true) {
+            withFrameMillis { now ->
+                val p = ((now - start) % span).toFloat() / periodMs
+                value.floatValue = easing.transform(if (reverse && p > 1f) 2f - p else p.coerceAtMost(1f))
+            }
+        }
+    }
+    return value
 }
