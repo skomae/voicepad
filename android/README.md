@@ -80,7 +80,8 @@ copied, edited, re-transcribed and rolled back through its revision history.
     wide or unfolded screen with one person at each end); *Side by side*
     (one column per language, both reading the same way, for an
     unfolded or landscape screen); *Transcript* (original, pinyin and
-    translation together). Newest turn largest; text size adjustable
+    translation together). The layout button next to the microphone cycles
+    through them (its icon shows the current one). Newest turn largest; text size adjustable
     (18–96 sp); the screen stays on.
   - **One or more microphone channels**: with 1 channel, speakers are told
     apart **by voice** — a 28 MB CAM++ speaker-embedding model (downloaded

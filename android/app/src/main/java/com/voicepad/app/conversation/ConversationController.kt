@@ -220,6 +220,13 @@ class ConversationController(
         }
     }
 
+    /** Switches to the next layout (the control strip's layout button); returns it. */
+    fun cycleLayout(): ConversationLayout {
+        val next = _state.value.layout.next(_state.value.outerScreen != OuterScreen.UNSUPPORTED)
+        setLayout(next)
+        return next
+    }
+
     fun setLayout(layout: ConversationLayout) {
         layoutChosen = true
         changeSettings { it.copy(layout = layout) }

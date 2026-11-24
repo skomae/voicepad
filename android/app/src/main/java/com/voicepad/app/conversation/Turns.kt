@@ -21,6 +21,14 @@ enum class ConversationLayout(val label: String) {
      * person facing the back of the phone.
      */
     OUTER_SCREEN("Outer screen"),
+    ;
+
+    /** The layout after this one, for the cycle button; skips the outer screen where there is none. */
+    fun next(outerScreenSupported: Boolean): ConversationLayout {
+        val usable = entries.filter { it != OUTER_SCREEN || outerScreenSupported }
+        val at = usable.indexOf(this)
+        return usable[(at + 1) % usable.size] // not in the list (-1) → the first one
+    }
 }
 
 /**

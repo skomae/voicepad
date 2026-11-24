@@ -187,3 +187,19 @@ class ConversationEngineTest {
         assertEquals(1, InputDeviceNaming.maxChannels(bluetooth, intArrayOf(2), intArrayOf(), intArrayOf()))
     }
 }
+
+class LayoutCycleTest {
+    @Test fun cyclesThroughEveryLayoutAndWrapsAround() {
+        var layout = ConversationLayout.FACE_TO_FACE
+        val seen = mutableListOf(layout)
+        repeat(ConversationLayout.entries.size - 1) { layout = layout.next(outerScreenSupported = true); seen += layout }
+        assertEquals(ConversationLayout.entries.toList(), seen)
+        assertEquals(ConversationLayout.FACE_TO_FACE, layout.next(outerScreenSupported = true))
+    }
+
+    @Test fun skipsTheOuterScreenWhereThereIsNone() {
+        assertEquals(ConversationLayout.FACE_TO_FACE, ConversationLayout.TRANSCRIPT.next(outerScreenSupported = false))
+        // Stuck on the outer screen without one (e.g. a model change): moves on to the first layout.
+        assertEquals(ConversationLayout.FACE_TO_FACE, ConversationLayout.OUTER_SCREEN.next(outerScreenSupported = false))
+    }
+}
