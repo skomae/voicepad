@@ -139,6 +139,7 @@ final class ConversationController {
     @ObservationIgnored private var embedder: SpeakerEmbedder?
     @ObservationIgnored private var embedderTask: Task<Void, Never>?
     @ObservationIgnored private var prepareTask: Task<Void, Never>?
+    @ObservationIgnored private var lastSilenceRestart = Date.distantPast
 
     init(notes: RecordingController) {
         self.notes = notes
@@ -375,6 +376,12 @@ final class ConversationController {
         defer { s.stepping = false }
         do {
             let now = recorder.sampleCount
+            if !final, recorder.silentSamples >= Self.rate * 3, Date.now.timeIntervalSince(lastSilenceRestart) >= 8 {
+                // Exact digital silence for seconds: the input is stuck; reopen it.
+                lastSilenceRestart = .now
+                Diagnostics.log("conversation: silent input, reopening: " + recorder.describeInput())
+                try? recorder.restartCapture()
+            }
             try await feed(s, now: now, final: final)
             let isHearing = !final && (s.detector?.inSpeech ?? false)
             if hearing != isHearing { hearing = isHearing }

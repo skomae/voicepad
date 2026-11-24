@@ -19,9 +19,9 @@ final class AudioRecorder: @unchecked Sendable {
 
     static let sampleRate: Double = 16_000
 
-    /// One engine for the recorder's lifetime. (Making a fresh engine for each
-    /// recording made iPhones deliver nothing but digital silence.)
-    private let engine = AVAudioEngine()
+    /// One engine, replaced only if iOS resets its audio services.
+    private var engine = AVAudioEngine()
+    private var observers: [NSObjectProtocol] = []
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: AudioRecorder.sampleRate,
@@ -40,6 +40,8 @@ final class AudioRecorder: @unchecked Sendable {
     private var currentLevel: Float = 0
     private var currentWriteError: String?
     private var signalSeen = false
+    /// Recording position where the last non-silent audio ended.
+    private var lastSignalAt = 0
     private var rawPeak: Float = 0
     private var rawBuffers = 0
 
@@ -113,6 +115,7 @@ final class AudioRecorder: @unchecked Sendable {
 
     func start(writingTo url: URL, roomCapture: Bool = false) throws {
         guard !isRunning else { return }
+        if observers.isEmpty { observeEngine() }
         self.roomCapture = roomCapture
 
         let session = AVAudioSession.sharedInstance()
@@ -126,6 +129,7 @@ final class AudioRecorder: @unchecked Sendable {
         samples.removeAll(keepingCapacity: true)
         offset = 0
         signalSeen = false
+        lastSignalAt = 0
         currentLevel = 0
         currentWriteError = nil
         self.writer = writer
@@ -164,14 +168,48 @@ final class AudioRecorder: @unchecked Sendable {
 
     /// Reopens the microphone without ending the recording (its file and
     /// positions carry on), e.g. when it delivers only silence.
-    func restartCapture() throws {
+    func restartCapture(newEngine: Bool = false) throws {
         guard isRunning else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         engine.reset()
-        try AVAudioSession.sharedInstance().setActive(true)
-        lock.lock(); signalSeen = false; lock.unlock()
+        if newEngine { engine = AVAudioEngine(); observeEngine() }
+        // Hand the input back to iOS and take it again, so a stuck route is rebuilt.
+        let session = AVAudioSession.sharedInstance()
+        try? session.setActive(false)
+        try session.setCategory(.playAndRecord, mode: Self.mode(roomCapture: roomCapture),
+                                options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP])
+        try session.setActive(true)
+        lock.lock()
+        signalSeen = false
+        lastSignalAt = offset + samples.count
+        lock.unlock()
         try startCapture()
+    }
+
+    /// Samples in a row, up to now, that were exact digital silence. A real
+    /// microphone is never perfectly silent, so a long run means the input is stuck.
+    var silentSamples: Int {
+        lock.lock(); defer { lock.unlock() }
+        return offset + samples.count - lastSignalAt
+    }
+
+    /// Called (on the main queue) when iOS reconfigures the audio hardware or
+    /// resets its audio services under a running recording.
+    var onNeedsRestart: ((_ newEngine: Bool) -> Void)?
+
+    private func observeEngine() {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = [
+            NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+                guard let self, self.isRunning else { return }
+                self.onNeedsRestart?(false)
+            },
+            NotificationCenter.default.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
+                guard let self, self.isRunning else { return }
+                self.onNeedsRestart?(true)
+            },
+        ]
     }
 
     /// One line about the audio route and format, for Documents/diagnostics.log.
@@ -212,6 +250,12 @@ final class AudioRecorder: @unchecked Sendable {
         guard isRunning else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        // Let go of the microphone completely. A stopped engine still holds the
+        // iPhone's input, and notes and conversation mode each have a recorder:
+        // after switching modes, the other one got nothing but silence.
+        engine.reset()
+        engine = AVAudioEngine()
+        observeEngine()
         isRunning = false
         lock.lock()
         let writer = self.writer
@@ -263,8 +307,11 @@ final class AudioRecorder: @unchecked Sendable {
 
         let silent = chunk.allSatisfy { $0 == 0 }
         lock.lock()
-        if !silent { signalSeen = true }
         samples.append(contentsOf: chunk)
+        if !silent {
+            signalSeen = true
+            lastSignalAt = offset + samples.count
+        }
         currentLevel = normalised
         if currentWriteError == nil, let writer {
             do {

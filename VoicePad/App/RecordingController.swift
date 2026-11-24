@@ -215,8 +215,30 @@ final class RecordingController {
             forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
         ) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
-            Task { @MainActor in self?.stop() }
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            Task { @MainActor in
+                guard let self else { return }
+                switch type {
+                case .began:
+                    // A call or another app took the microphone: save what we have.
+                    Diagnostics.log("interruption began")
+                    self.resumeAfterInterruption = self.isRecording
+                    self.stop()
+                case .ended:
+                    // Pick up again with a fresh note once the microphone is free.
+                    Diagnostics.log("interruption ended")
+                    if self.resumeAfterInterruption, !self.isRecording, !self.conversationActive {
+                        self.resumeAfterInterruption = false
+                        await self.start()
+                    }
+                @unknown default: break
+                }
+            }
+        }
+        recorder.onNeedsRestart = { [weak self] newEngine in
+            guard let self, self.isRecording else { return }
+            Diagnostics.log("audio reconfigured (new engine: \(newEngine)); reopening the microphone")
+            try? self.recorder.restartCapture(newEngine: newEngine)
         }
     }
 
@@ -364,6 +386,37 @@ final class RecordingController {
         await start()
     }
 
+    // MARK: Stuck microphone
+
+    @ObservationIgnored private var resumeAfterInterruption = false
+    @ObservationIgnored private var silenceRestarts = 0
+    @ObservationIgnored private var lastSilenceRestart = Date.distantPast
+    private static let stuckSilence = Int(3 * rate)
+
+    /// A few seconds of exact digital silence means the input is stuck (a real
+    /// microphone always hears something): reopen it, at most every 8 s, and
+    /// say so if that keeps failing.
+    private func checkForStuckMicrophone() {
+        guard isRecording else { return }
+        guard recorder.silentSamples >= Self.stuckSilence else {
+            if silenceRestarts > 0, recorder.hasSignal {
+                Diagnostics.log("microphone recovered after \(silenceRestarts) reopen(s)")
+                silenceRestarts = 0
+                if errorMessage?.hasPrefix("The microphone") == true { errorMessage = nil }
+            }
+            return
+        }
+        guard Date.now.timeIntervalSince(lastSilenceRestart) >= 8 else { return }
+        lastSilenceRestart = .now
+        silenceRestarts += 1
+        Diagnostics.log("silent input, reopening (\(silenceRestarts)): " + recorder.describeInput())
+        if AVAudioApplication.shared.isInputMuted { try? AVAudioApplication.shared.setInputMuted(false) }
+        try? recorder.restartCapture(newEngine: silenceRestarts >= 2)
+        if silenceRestarts >= 3 {
+            errorMessage = "The microphone is giving only silence. If another app or a call is using it, close that; otherwise close VoicePad and open it again."
+        }
+    }
+
     // MARK: Permissions and onboarding
 
     /// The first-run walkthrough has been finished (it asks for each permission
@@ -413,23 +466,9 @@ final class RecordingController {
         beginNote(fileName: fileName, origin: 0, part: 1)
         isRecording = true
 
-        // If the microphone delivers nothing, or only digital silence, reopen it once.
-        let startedNote = recordingNoteID
         Diagnostics.log("start: " + recorder.describeInput())
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(2.5))
-            guard let self else { return }
-            Diagnostics.log("after 2.5 s: " + self.recorder.describeInput())
-            guard self.isRecording, self.recordingNoteID == startedNote, !self.recorder.hasSignal else { return }
-            if AVAudioApplication.shared.isInputMuted { try? AVAudioApplication.shared.setInputMuted(false) }
-            try? self.recorder.restartCapture()
-            try? await Task.sleep(for: .seconds(3))
-            Diagnostics.log("after reset: " + self.recorder.describeInput())
-            try? await Task.sleep(for: .seconds(3))
-            if self.isRecording, self.recordingNoteID == startedNote, !self.recorder.hasSignal {
-                self.errorMessage = "iOS is giving VoicePad only silence from the microphone. Another app or a call is probably using it: open Control Center to see which, close it, then tap ■ and ● again."
-            }
-        }
+        silenceRestarts = 0
+        lastSilenceRestart = .distantPast
 
         meterTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -452,6 +491,7 @@ final class RecordingController {
                     current.stepping = false
                 }
                 self.maybeAutoSplit(current)
+                self.checkForStuckMicrophone()
             }
         }
     }
