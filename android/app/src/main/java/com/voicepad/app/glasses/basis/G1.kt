@@ -152,10 +152,8 @@ class G1 {
 
             val scanner = BluetoothLeScannerCompat.getScanner()
             val settings = ScanSettings.Builder()
-                .setLegacy(false)
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
                 .setReportDelay(5000)
-                .setUseHardwareFilteringIfSupported(true)
                 .build()
             // Arms already paired into one G1, so a pair found once isn't announced again.
             val pairedChannels = mutableSetOf<String>()
