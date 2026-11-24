@@ -1,5 +1,8 @@
 # VoicePad
 
+The Android app lives in [`android/`](android/README.md); this README covers
+the iOS app.
+
 An iOS app that **starts recording the moment you open it** and transcribes
 your speech on-device into a chat-style bubble. Each bubble can be copied,
 edited, and keeps a full revision history.
@@ -10,16 +13,39 @@ edited, and keeps a full revision history.
   brought back to the foreground). Toggle this off in Settings if you prefer.
   Recording continues in the background.
 - **On-device transcription**, selectable in Settings:
-  - **Parakeet TDT v3** (default, 25 European languages) and **v2** (English),
-    and **SenseVoice** (Mandarin, Cantonese, English, Japanese, Korean) via
-    [FluidAudio](https://github.com/FluidInference/FluidAudio)
-  - **Whisper** tiny / base / small (English), small (multilingual) and
-    large-v3-turbo via [WhisperKit](https://github.com/argmaxinc/WhisperKit)
+  - **Auto: Western** (default) – Parakeet TDT v3: English, French, Spanish,
+    German and 21 more European languages, switching per sentence.
+  - **Auto: Asian + English** – per sentence, SenseVoice decides: Mandarin,
+    Cantonese, Japanese and Korean keep SenseVoice's text; English goes to
+    Parakeet.
+  - Single models: Parakeet v2 (English) and SenseVoice via
+    [FluidAudio](https://github.com/FluidInference/FluidAudio); Whisper
+    tiny / base / small (English), small (multilingual) and large-v3-turbo via
+    [WhisperKit](https://github.com/argmaxinc/WhisperKit).
 
   Models download once on first use. Audio is captured right away regardless;
   the text catches up when the model is ready.
-- **Live bubble** – text streams in while you speak. Audio is processed in
-  ~25 s chunks cut at the quietest moment, so long recordings stay fast.
+- **Silence trimming and pause-based splitting**: the Silero voice-activity
+  model (via FluidAudio, a ~2 MB download on first launch) finds speech.
+  Silence never reaches the model (no Whisper hallucinations on quiet
+  stretches, less battery); Parakeet and SenseVoice get one call per
+  utterance, and Whisper gets utterances packed into ≤25 s chunks split at the
+  **longest pauses**. Committed audio is dropped from memory and saved
+  recordings are streamed from disk, so length is limited only by storage.
+- **Live bubble** – each utterance is committed as soon as its pause is
+  detected, and the sentence in progress updates as you speak.
+- **Live translation** – each finished utterance is translated right away and
+  the sentence in progress is re-translated as its text changes, so the live
+  bubble shows original, pinyin and English. Mixed Mandarin/English reads as
+  one English text, and the finished note keeps it.
+- **Split** (scissors next to the record button) – like a stopwatch lap: ends
+  the current note and starts a new one at that instant without stopping the
+  microphone. The finished part transcribes in the background while you keep
+  talking. Stop never blocks starting a new recording.
+- **Clear recording state** – while recording the navigation bar turns red
+  with a pulsing REC, the elapsed time and the part number, the notes get a
+  red frame, and the bar under the button says "Recording — tap ■ to stop".
+  When idle it says "Not recording" and the button is a red dot in a ring.
 - **Copy / edit / history** – tap a bubble (or use its buttons / long-press
   menu) to edit. Every save adds a revision; the history sheet shows every
   version with its source (transcribed, edited, restored, re-transcribed) and
@@ -68,7 +94,7 @@ audio input isn't reachable from it, and Apple's Translation framework
 doesn't translate there.
 
 Unit tests (crash recovery, WAV, search, pinning, pinyin, language
-detection, translation state):
+detection, translation state, chunk planning, joining live translations):
 
 ```sh
 xcodebuild test -project VoicePad.xcodeproj -scheme VoicePad \

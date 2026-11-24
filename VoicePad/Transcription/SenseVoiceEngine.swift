@@ -5,6 +5,7 @@ import FluidAudio
 /// English, Japanese and Korean, and reports which one it heard.
 final class SenseVoiceEngine: TranscriptionEngine {
     private var manager: SenseVoiceManager?
+    let grouping = ChunkPlanner.Grouping.utterances
 
     func load(progress: @escaping @Sendable (Double) -> Void) async throws {
         manager = try await SenseVoiceManager.load(precision: .fp16) { p in
@@ -20,7 +21,8 @@ final class SenseVoiceEngine: TranscriptionEngine {
         let result = try await manager.transcribeDetailed(audio: samples)
         return Transcript(
             text: result.text.trimmingCharacters(in: .whitespacesAndNewlines),
-            language: LanguageTags.fromModel(result.language)
+            language: LanguageTags.fromModel(result.language),
+            engine: "SenseVoice"
         )
     }
 }

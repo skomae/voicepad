@@ -35,7 +35,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Transcription model")
                 } footer: {
-                    Text("For Mandarin choose SenseVoice or a multilingual Whisper; Parakeet v3 covers French, Spanish and other European languages but not Chinese. Models run entirely on device. Each is downloaded once on first use. Recording starts immediately; text catches up once the model is ready.")
+                    Text("Use Auto: Western for English and European languages, Auto: Asian + English when you speak Mandarin, Cantonese, Japanese or Korean (and English). Both pick the model per sentence. Silence is skipped and audio is split at pauses. Models run entirely on device. Each is downloaded once on first use. Recording starts immediately; text catches up once the model is ready.")
                 }
 
                 Section("Status") {

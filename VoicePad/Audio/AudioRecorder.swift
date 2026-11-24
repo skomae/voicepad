@@ -32,15 +32,19 @@ final class AudioRecorder: @unchecked Sendable {
 
     private let lock = NSLock()
     private var samples: [Float] = []
+    /// Position (in the whole recording) of `samples[0]`. Audio already
+    /// transcribed is dropped from memory with `discardBefore`; it's on disk.
+    private var offset = 0
     private var currentLevel: Float = 0
     private var currentWriteError: String?
 
     private(set) var isRunning = false
 
-    /// Total samples captured so far.
+    /// Samples recorded so far (including ones discarded from memory). Positions
+    /// run on across `switchFile`, so they count from when the mic started.
     var sampleCount: Int {
         lock.lock(); defer { lock.unlock() }
-        return samples.count
+        return offset + samples.count
     }
 
     /// Normalised 0...1 input level of the most recent buffer.
@@ -55,12 +59,43 @@ final class AudioRecorder: @unchecked Sendable {
         return currentWriteError
     }
 
-    /// Copy of the captured samples in `range` (clamped to what exists).
+    /// Copy of the captured samples in `range` (recording positions), clamped
+    /// to what is still in memory.
     func samples(in range: Range<Int>) -> [Float] {
         lock.lock(); defer { lock.unlock() }
-        let lower = max(0, min(range.lowerBound, samples.count))
-        let upper = max(lower, min(range.upperBound, samples.count))
+        let lower = max(0, min(range.lowerBound - offset, samples.count))
+        let upper = max(lower, min(range.upperBound - offset, samples.count))
         return Array(samples[lower..<upper])
+    }
+
+    /// Frees memory for audio before `position` (it's already transcribed and
+    /// saved in the WAV), so hour-long recordings don't fill RAM.
+    func discardBefore(_ position: Int) {
+        lock.lock(); defer { lock.unlock() }
+        let drop = max(0, min(position - offset, samples.count))
+        guard drop >= Int(Self.sampleRate) * 30 else { return } // not worth copying yet
+        samples.removeFirst(drop)
+        offset += drop
+    }
+
+    /// Splits the recording without stopping the microphone: finishes the
+    /// current WAV and continues into `url`. Returns the recording position of
+    /// the split; audio before it is in the old file, audio after it in the new.
+    /// Runs under the same lock as the audio callback, so it lands exactly
+    /// between two buffers.
+    /// `writeError` is the finished file's problem, if it had one.
+    func switchFile(to url: URL) throws -> (position: Int, writeError: String?) {
+        let next = try WavWriter(url: url)
+        lock.lock(); defer { lock.unlock() }
+        var finishedError = currentWriteError
+        do {
+            try writer?.close()
+        } catch {
+            finishedError = finishedError ?? error.localizedDescription
+        }
+        writer = next
+        currentWriteError = nil
+        return (offset + samples.count, finishedError)
     }
 
     func start(writingTo url: URL) throws {
@@ -81,6 +116,7 @@ final class AudioRecorder: @unchecked Sendable {
 
         lock.lock()
         samples.removeAll(keepingCapacity: true)
+        offset = 0
         currentLevel = 0
         currentWriteError = nil
         self.writer = writer

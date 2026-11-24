@@ -1,4 +1,5 @@
 import AVFoundation
+import FluidAudio
 import Foundation
 import Observation
 import SwiftUI
@@ -11,11 +12,14 @@ import SwiftUI
 /// becomes ready (up to `maxAutoAttempts` times, so a model that crashes the
 /// app can't trap it in a loop) or on demand from the UI.
 ///
-/// Live transcription works on chunks of up to `chunkSeconds`. While a chunk is
-/// open it is re-transcribed every `tickSeconds` so the bubble updates as you
-/// speak. Once it is long enough it is cut at the quietest nearby moment,
-/// its text is committed, and a new chunk starts. This keeps each model call
-/// short no matter how long the recording runs.
+/// Audio reaches the model in pieces chosen by a voice-activity detector
+/// (Silero): silence is skipped, and pieces end at pauses (see `ChunkPlanner`).
+/// While recording, each finished utterance is transcribed and committed as
+/// soon as the pause after it is detected, and the utterance still being
+/// spoken is re-transcribed every `tickSeconds` for the live preview.
+/// Committed audio is dropped from memory (it is in the WAV), and saved
+/// recordings are read from disk piece by piece, so length is limited only by
+/// storage.
 @MainActor
 @Observable
 final class RecordingController {
@@ -26,16 +30,24 @@ final class RecordingController {
         case failed(String)
     }
 
+    typealias Span = ChunkPlanner.Span
+
     static let maxAutoAttempts = 3
 
     // MARK: Observable state
 
     private(set) var isRecording = false
     private(set) var level: Float = 0
+    /// When the current part started (resets on Split).
     private(set) var startedAt: Date?
     private(set) var liveText = ""
+    /// Translation of the note being recorded, updated as it is spoken.
+    private(set) var liveTranslation: NoteTranslation?
+    /// Which part of a split recording is being recorded (1 = not split).
+    private(set) var partNumber = 1
     private(set) var engineStatus: EngineStatus = .idle
     var errorMessage: String?
+    /// The note being recorded right now, if any.
     private(set) var recordingNoteID: Note.ID?
 
     var engineChoice: EngineChoice {
@@ -75,30 +87,39 @@ final class RecordingController {
     private static let autoRecordKey = "autoRecordOnOpen"
     private static let inputKey = "inputDevice"
     private static let autoTranslateKey = "autoTranslate"
-    private let chunkSeconds: Double = 25
-    private let minCutSeconds: Double = 18
+    private static let rate = AudioRecorder.sampleRate
+    /// Longest audio one model call gets (Whisper's window is 30 s).
+    private static let maxChunk = Int(25 * rate)
+    /// With Whisper, utterances are batched until about this long before committing.
+    private static let whisperBatch = Int(15 * rate)
+    /// Context kept either side of detected speech.
+    private static let pad = Int(0.25 * rate)
     private let tickSeconds: Double = 1.2
 
-    private let store: NoteStore
+    let store: NoteStore
     @ObservationIgnored private let recorder = AudioRecorder()
     @ObservationIgnored private var engine: TranscriptionEngine?
+    @ObservationIgnored private var vad: VadManager?
+    @ObservationIgnored private var vadLoading = false
     @ObservationIgnored private var engineLoadID = UUID()
     @ObservationIgnored private var loadTask: Task<Void, Never>?
     @ObservationIgnored private var liveTask: Task<Void, Never>?
     @ObservationIgnored private var meterTask: Task<Void, Never>?
     @ObservationIgnored private var queueTask: Task<Void, Never>?
     @ObservationIgnored private var serialTail: Task<Void, Never>?
+    @ObservationIgnored private var queueRunning = false
 
-    @ObservationIgnored private var committedText = ""
-    @ObservationIgnored private var chunkStart = 0
-    /// Languages the model reported for this recording's committed chunks.
-    @ObservationIgnored private var chunkLanguages: [String] = []
-    @ObservationIgnored private var tailLanguage: String?
-    @ObservationIgnored private var translating = false
+    /// The note being recorded.
+    @ObservationIgnored private var session: LiveSession?
+    /// Notes finishing their transcription after Stop or Split.
+    @ObservationIgnored private var finishing: [LiveSession] = []
+    @ObservationIgnored private var tailTranslateTask: Task<Void, Never>?
+
+    @ObservationIgnored fileprivate var translating = false
     /// Notes the user asked to translate; handled before automatic ones.
-    @ObservationIgnored private var manualTranslations = Set<Note.ID>()
+    @ObservationIgnored fileprivate var manualTranslations = Set<Note.ID>()
     /// Note+revision pairs already attempted since the app was last opened; failures wait for the next open.
-    @ObservationIgnored private var translationTried = Set<String>()
+    @ObservationIgnored fileprivate var translationTried = Set<String>()
 
     init(store: NoteStore) {
         self.store = store
@@ -126,7 +147,7 @@ final class RecordingController {
         ) { [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
-            Task { @MainActor in await self?.stop() }
+            Task { @MainActor in self?.stop() }
         }
     }
 
@@ -135,6 +156,7 @@ final class RecordingController {
     var isEngineReady: Bool { engineStatus == .ready && engine != nil }
 
     func loadEngine() {
+        loadVoiceActivity()
         let choice = engineChoice
         let loadID = UUID()
         engineLoadID = loadID
@@ -160,6 +182,21 @@ final class RecordingController {
         }
     }
 
+    /// Loads the voice-activity model once (a small download the first time).
+    /// Until it's ready, audio is handled in whole stretches.
+    private func loadVoiceActivity() {
+        guard vad == nil, !vadLoading else { return }
+        vadLoading = true
+        Task {
+            defer { vadLoading = false }
+            vad = try? await VoiceActivity.load()
+        }
+    }
+
+    private func newDetector() -> SpeechDetector? { vad.map(SpeechDetector.init(vad:)) }
+
+    private var grouping: ChunkPlanner.Grouping { engine?.grouping ?? .utterances }
+
     /// Runs model calls one at a time; engines are not re-entrant.
     private func transcribeSerially(_ samples: [Float]) async throws -> Transcript {
         guard let engine else { throw TranscriptionError.modelNotLoaded }
@@ -179,23 +216,23 @@ final class RecordingController {
         translationTried.removeAll()
         processTranslations()
         if engine == nil, case .idle = engineStatus { loadEngine() } else { processQueue() }
-        guard autoRecordOnOpen, !isRecording, recordingNoteID == nil else { return }
+        guard autoRecordOnOpen, !isRecording else { return }
         await start()
     }
 
     func start() async {
-        guard !isRecording, recordingNoteID == nil else { return }
+        guard !isRecording else { return }
         errorMessage = nil
 
         guard await AVAudioApplication.requestRecordPermission() else {
             errorMessage = "Microphone access is off. Enable it in Settings → VoicePad."
             return
         }
+        guard !isRecording else { return }
 
         let fileName = "\(UUID().uuidString).wav"
-        let url = store.recordingsURL.appendingPathComponent(fileName)
         do {
-            try recorder.start(writingTo: url)
+            try recorder.start(writingTo: store.recordingsURL.appendingPathComponent(fileName))
         } catch {
             errorMessage = error.localizedDescription
             return
@@ -203,17 +240,7 @@ final class RecordingController {
         // Activating the session can reset the route; re-apply the chosen mic.
         inputs.apply(selectedInputID)
 
-        // Saved before any audio arrives, so a crash can always find it.
-        let note = Note(audioFileName: fileName, status: .recording)
-        store.add(note)
-        recordingNoteID = note.id
-
-        committedText = ""
-        liveText = ""
-        chunkStart = 0
-        chunkLanguages = []
-        tailLanguage = nil
-        startedAt = .now
+        beginNote(fileName: fileName, origin: 0, part: 1)
         isRecording = true
 
         meterTask = Task { [weak self] in
@@ -223,103 +250,197 @@ final class RecordingController {
                 try? await Task.sleep(for: .milliseconds(50))
             }
         }
-        let noteID = note.id
         liveTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(self?.tickSeconds ?? 1.2))
                 guard let self, !Task.isCancelled else { return }
-                if self.isEngineReady { _ = await self.processChunks(noteID: noteID, final: false) }
+                if let current = self.session, self.isEngineReady {
+                    _ = await self.step(current, final: false)
+                }
             }
         }
     }
 
-    func stop() async {
-        guard isRecording, let noteID = recordingNoteID else { return }
+    /// Creates the note (saved before any audio arrives, so a crash can always
+    /// find it) and its live session.
+    private func beginNote(fileName: String, origin: Int, part: Int) {
+        let note = Note(audioFileName: fileName, status: .recording)
+        store.add(note)
+        session = LiveSession(noteID: note.id, origin: origin, detector: newDetector())
+        tailTranslateTask?.cancel()
+        recordingNoteID = note.id
+        startedAt = .now
+        liveText = ""
+        liveTranslation = nil
+        partNumber = part
+    }
+
+    /// Like a stopwatch lap: ends the current note and starts a new one at this
+    /// exact moment. The microphone keeps running, so nothing is lost between
+    /// the two; the finished note transcribes in the background.
+    func split() {
+        guard isRecording, let old = session else { return }
+        let fileName = "\(UUID().uuidString).wav"
+        let switched: (position: Int, writeError: String?)
+        do {
+            switched = try recorder.switchFile(to: store.recordingsURL.appendingPathComponent(fileName))
+        } catch {
+            errorMessage = "Couldn't split: \(error.localizedDescription)"
+            return
+        }
+        if let writeError = switched.writeError {
+            errorMessage = "Part of the last recording couldn't be saved: \(writeError)"
+        }
+        old.end = switched.position
+        finishing.append(old)
+        beginNote(fileName: fileName, origin: switched.position, part: partNumber + 1)
+        Task { await finish(old) }
+    }
+
+    /// Stops the microphone at once; the note finishes transcribing in the
+    /// background, and a new recording can start right away.
+    func stop() {
+        guard isRecording, let current = session else { return }
         recorder.stop()
+        current.end = recorder.sampleCount
+        finishing.append(current)
+        session = nil
         isRecording = false
         level = 0
         startedAt = nil
+        recordingNoteID = nil
+        liveText = ""
+        liveTranslation = nil
+        partNumber = 1
+        tailTranslateTask?.cancel()
         meterTask?.cancel()
-        liveTask?.cancel()
-        await liveTask?.value
+        // Taken now, so a quick restart's new live task isn't the one cancelled.
+        let live = liveTask
         liveTask = nil
+        live?.cancel()
         inputs.refresh()
         if let writeError = recorder.writeError {
             errorMessage = "Part of this recording couldn't be saved: \(writeError)"
         }
+        Task {
+            await live?.value
+            await finish(current)
+        }
+    }
 
-        let duration = Double(recorder.sampleCount) / AudioRecorder.sampleRate
-        // Opening the app always starts a recording; drop ones that were
-        // stopped before anything could have been said.
+    func toggle() async {
+        if isRecording { stop() } else { await start() }
+    }
+
+    /// Final transcription of a stopped or split-off note, then its saved
+    /// revision (and the live translation, when it finished).
+    private func finish(_ s: LiveSession) async {
+        let noteID = s.noteID
+        defer {
+            finishing.removeAll { $0 === s }
+            freeCommittedAudio()
+            processQueue()
+        }
+        // Wait for a live step still running on this note.
+        while s.stepping { try? await Task.sleep(for: .milliseconds(50)) }
+
+        let duration = Double((s.end ?? recorder.sampleCount) - s.origin) / Self.rate
+        // Opening the app always starts a recording; drop ones stopped before
+        // anything could have been said.
         if duration < NoteStore.minSeconds {
             store.delete(noteID)
-            recordingNoteID = nil
-            liveText = ""
             return
         }
-
-        if !isEngineReady {
+        guard isEngineReady else {
             // Audio is safe on disk; it is transcribed once the model is ready.
-            let partial = liveText
+            let partial = s.committedText
             store.update(noteID) {
                 $0.status = .pending
                 $0.duration = duration
                 $0.partialText = partial.isEmpty ? nil : partial
             }
-        } else {
-            store.update(noteID) {
-                $0.status = .inProgress
-                $0.duration = duration
-                $0.attempts += 1
-            }
-            let error = await processChunks(noteID: noteID, final: true)
-            let text = liveText
-            let engineName = engineChoice.shortName
-            let language = Self.mostCommon(chunkLanguages + [tailLanguage].compactMap { $0 })
-            store.update(noteID) {
-                if let error {
-                    $0.status = .failed
-                    $0.lastError = error
-                    $0.partialText = text.isEmpty ? nil : text
-                } else {
-                    $0 = $0.withRevision(text, source: .transcription, engine: engineName, language: language)
-                    $0.status = .done
-                    $0.lastError = nil
-                    $0.partialText = nil
+            return
+        }
+        store.update(noteID) {
+            $0.status = .inProgress
+            $0.duration = duration
+            $0.attempts += 1
+        }
+        let error = await step(s, final: true)
+        let text = s.committedText
+        let engineName = engineLabel(s.engines)
+        let language = Self.mostCommon(s.languages)
+        // Let live translations still in flight land (briefly: a language-pack
+        // prompt must not hold up saving), then reuse them if complete.
+        await s.translations.wait(upTo: .seconds(5))
+        let autoTranslate = self.autoTranslate
+        store.update(noteID) {
+            if let error {
+                $0.status = .failed
+                $0.lastError = error
+                $0.partialText = text.isEmpty ? nil : text
+            } else {
+                $0 = $0.withRevision(text, source: .transcription, engine: engineName, language: language)
+                $0.status = .done
+                $0.lastError = nil
+                $0.partialText = nil
+                if autoTranslate, let revision = $0.revisions.last {
+                    $0.translation = Self.finishedTranslation(s.segments, revisionID: revision.id)
                 }
             }
         }
-        recordingNoteID = nil
-        liveText = ""
-        processQueue()
     }
 
-    func toggle() async {
-        if isRecording { await stop() } else { await start() }
-    }
-
-    /// Commits every full chunk, then transcribes the open tail. Returns nil on
-    /// success or the error message. Failed chunks are not skipped: the chunk
-    /// start only advances after success, so the next pass retries them.
-    private func processChunks(noteID: Note.ID, final: Bool) async -> String? {
-        let chunkLength = Int(chunkSeconds * AudioRecorder.sampleRate)
+    /// One live step for `s`: finds newly finished utterances, commits them,
+    /// and (while it's the note being recorded) refreshes the preview of speech
+    /// in progress. Returns nil on success or the error message. Nothing is
+    /// skipped on failure: utterances leave `pending` only once their text is
+    /// committed, so the next pass retries them.
+    private func step(_ s: LiveSession, final: Bool) async -> String? {
+        s.stepping = true
+        defer { s.stepping = false }
         do {
-            while recorder.sampleCount - chunkStart >= chunkLength {
-                if !final, Task.isCancelled { return nil }
-                let cut = quietestCut(from: chunkStart)
-                let result = try await transcribeSerially(recorder.samples(in: chunkStart..<cut))
-                committedText = join(committedText, result.text)
-                if let language = result.language { chunkLanguages.append(language) }
-                chunkStart = cut
-                liveText = committedText
-                // Keep committed text on disk in case the app dies.
-                let committed = committedText
-                store.update(noteID) { $0.partialText = committed.isEmpty ? nil : committed }
+            let now = s.end ?? recorder.sampleCount
+            if let vad = s.detector {
+                if now > s.detectedUpTo {
+                    // The detector counts from the first sample it was given: this note's origin.
+                    let found = try await vad.feed(recorder.samples(in: s.detectedUpTo..<now))
+                    s.pending += found.map { Span(start: $0.start + s.origin, end: $0.end + s.origin) }
+                    s.detectedUpTo = now
+                    if !vad.inSpeech { s.quietAt = now }
+                }
+                if final {
+                    let found = try await vad.flush()
+                    s.pending += found.map { Span(start: $0.start + s.origin, end: min($0.end + s.origin, now)) }
+                }
+            } else if final || now - s.committedUpTo >= Self.maxChunk {
+                // No detector: treat everything as speech; the planner cuts at quiet points.
+                s.pending = [Span(start: s.committedUpTo, end: now)]
             }
-            if !final, Task.isCancelled { return nil }
-            let tail = try await transcribeSerially(recorder.samples(in: chunkStart..<recorder.sampleCount))
-            tailLanguage = tail.language
-            liveText = join(committedText, tail.text)
+
+            let batchReady = final || grouping == .utterances ||
+                (s.pending.first.map { now - $0.start >= Self.whisperBatch } ?? false)
+            if batchReady, !s.pending.isEmpty { try await commit(s, audioEnd: now) }
+
+            if !final, s === session {
+                // Preview: whatever is still uncommitted, but only while there's speech.
+                let speaking = s.detector?.inSpeech ?? true
+                var tail = Transcript.empty
+                if speaking || !s.pending.isEmpty {
+                    // The detector confirms speech a moment after it starts; back up a second.
+                    let openStart = s.detector == nil ? s.committedUpTo : s.quietAt - Int(Self.rate)
+                    let from = min(s.pending.first.map { $0.start - Self.pad } ?? openStart, openStart)
+                    let lower = max(from, s.committedUpTo, s.origin, now - Self.maxChunk)
+                    tail = try await transcribeSerially(recorder.samples(in: lower..<max(lower, now)))
+                }
+                guard s === session else { return nil }
+                if tail.text != s.tail.text {
+                    s.tail = LiveSegment(text: tail.text, language: tail.language)
+                    translateTail(s)
+                }
+                liveText = Self.join(s.committedText, tail.text)
+                publishLiveTranslation(s)
+            }
             return nil
         } catch {
             if final { errorMessage = "Transcription failed — the recording is saved and can be retried." }
@@ -327,16 +448,115 @@ final class RecordingController {
         }
     }
 
-    /// Finds the quietest 100 ms window between `minCutSeconds` and
-    /// `chunkSeconds` after `start`, so chunks are split between words.
-    private func quietestCut(from start: Int) -> Int {
-        let rate = AudioRecorder.sampleRate
-        let lower = start + Int(minCutSeconds * rate)
-        let upper = start + Int(chunkSeconds * rate)
-        let window = recorder.samples(in: lower..<upper)
-        let frame = Int(rate * 0.1)
-        guard window.count >= frame else { return upper }
-        var best = upper
+    /// Transcribes and commits every pending utterance of `s`, chunk by chunk.
+    private func commit(_ s: LiveSession, audioEnd: Int) async throws {
+        let recorder = self.recorder
+        let chunks = ChunkPlanner.plan(s.pending, audioEnd: audioEnd, maxLength: Self.maxChunk, pad: Self.pad, grouping: grouping) { from, to in
+            Self.quietestPoint(recorder.samples(in: from..<to), start: from)
+        }
+        for chunk in chunks {
+            // Padding never reaches into the previous note's audio.
+            let audio = chunk.flatMap { recorder.samples(in: max($0.start, s.origin)..<$0.end) }
+            let result = try await transcribeSerially(audio)
+            s.committedText = Self.join(s.committedText, result.text)
+            if let language = result.language { s.languages.append(language) }
+            if let engine = result.engine { s.engines.append(engine) }
+            if !result.text.isEmpty {
+                let segment = LiveSegment(text: result.text, language: result.language)
+                s.segments.append(segment)
+                translateSegment(s, segment)
+            }
+            let end = chunk.last!.end
+            s.pending.removeAll { $0.end <= end }
+            // A hard cut inside one long utterance: keep its unsent remainder.
+            s.pending = s.pending.map { $0.start < end ? Span(start: end, end: $0.end) : $0 }
+            s.committedUpTo = max(s.committedUpTo, end)
+            if s === session {
+                liveText = s.committedText
+                publishLiveTranslation(s)
+            }
+            // Keep committed text on disk in case the app dies.
+            let committed = s.committedText
+            store.update(s.noteID) { $0.partialText = committed.isEmpty ? nil : committed }
+            freeCommittedAudio()
+        }
+    }
+
+    /// Drops audio from memory that no live or finishing note still needs.
+    private func freeCommittedAudio() {
+        guard let needed = (finishing + [session].compactMap { $0 }).map(\.committedUpTo).min() else { return }
+        recorder.discardBefore(needed - Self.pad)
+    }
+
+    // MARK: Live translation
+    //
+    // Each committed utterance is translated once, as soon as its pause is
+    // detected; the utterance still being spoken is re-translated whenever its
+    // preview text changes. All requests share the translator's single queue.
+
+    private func translateSegment(_ s: LiveSession, _ segment: LiveSegment) {
+        guard autoTranslate else { return }
+        s.translations.add(Task {
+            await translate(segment)
+            if s === session { publishLiveTranslation(s) }
+        })
+    }
+
+    private func translateTail(_ s: LiveSession) {
+        tailTranslateTask?.cancel()
+        let tail = s.tail
+        guard autoTranslate, !tail.text.isEmpty else { return }
+        tailTranslateTask = Task {
+            try? await Task.sleep(for: .milliseconds(300)) // let a burst of preview updates settle
+            guard !Task.isCancelled else { return }
+            await translate(tail)
+            if s === session, s.tail === tail { publishLiveTranslation(s) }
+        }
+    }
+
+    private func translate(_ segment: LiveSegment) async {
+        guard !segment.translated else { return }
+        do {
+            let result = try await translator.translate(segment.text, modelLanguage: segment.language)
+            segment.english = result.english ?? (LanguageTags.isEnglish(result.language) ? segment.text : nil)
+            segment.romanization = result.romanization
+            if let language = result.language { segment.detectedLanguage = language }
+        } catch is CancellationError {
+            return // superseded by a newer preview
+        } catch {
+            // Live translation is best effort; the saved note is translated (and retried) afterwards.
+            if let failure = error as? TranslationFailure {
+                segment.romanization = failure.romanization
+                segment.detectedLanguage = failure.language
+            }
+        }
+        segment.translated = true
+    }
+
+    /// Pushes the combined live translation of `s` to the UI.
+    private func publishLiveTranslation(_ s: LiveSession) {
+        guard autoTranslate else { liveTranslation = nil; return }
+        let parts = s.segments + (s.tail.text.isEmpty ? [] : [s.tail])
+        liveTranslation = TranslationJoin.combine(parts.map(\.part), revisionID: LiveSession.liveRevisionID)
+    }
+
+    /// The finished live translation for a saved revision, or nil to translate
+    /// it afresh (so a failed or missing part gets the normal retries).
+    private static func finishedTranslation(_ segments: [LiveSegment], revisionID: UUID) -> NoteTranslation? {
+        guard !segments.isEmpty, segments.allSatisfy(\.translated) else { return nil }
+        let complete = segments.allSatisfy { $0.english != nil || LanguageTags.isEnglish($0.detectedLanguage ?? $0.language) }
+        guard complete, let joined = TranslationJoin.combine(segments.map(\.part), revisionID: revisionID),
+              joined.status != .pending else { return nil }
+        return joined
+    }
+
+    // MARK: Helpers
+
+    /// Position (in the recording) of the quietest 100 ms in `window`, which starts at `start`.
+    nonisolated private static func quietestPoint(_ window: [Float], start: Int) -> Int {
+        let frame = Int(rate / 10)
+        guard window.count >= frame else { return start + window.count }
+        var best = start + window.count
         var bestEnergy = Float.greatestFiniteMagnitude
         var offset = 0
         while offset + frame <= window.count {
@@ -344,19 +564,27 @@ final class RecordingController {
             for i in offset..<(offset + frame) { energy += window[i] * window[i] }
             if energy < bestEnergy {
                 bestEnergy = energy
-                best = lower + offset + frame / 2
+                best = start + offset + frame / 2
             }
             offset += frame
         }
         return best
     }
 
-    private func join(_ a: String, _ b: String) -> String {
+    /// "Parakeet v3", or "SenseVoice + Parakeet v3" when Auto used both.
+    private func engineLabel(_ engines: [String]) -> String {
+        var seen = Set<String>()
+        let names = engines.filter { seen.insert($0).inserted }
+        return names.isEmpty ? engineChoice.shortName : names.joined(separator: " + ")
+    }
+
+    private static func join(_ a: String, _ b: String) -> String {
         [a, b].filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     private static func mostCommon(_ languages: [String]) -> String? {
-        Dictionary(languages.map { ($0, 1) }, uniquingKeysWith: +).max { $0.value < $1.value }?.key
+        let counts = Dictionary(languages.map { ($0, 1) }, uniquingKeysWith: +)
+        return languages.first { counts[$0] == counts.values.max() }
     }
 
     // MARK: Saved-audio transcription and retries
@@ -397,8 +625,6 @@ final class RecordingController {
         }
     }
 
-    @ObservationIgnored private var queueRunning = false
-
     private func transcribeSaved(_ noteID: Note.ID) async {
         guard let note = store.note(id: noteID), note.status != .inProgress, note.status != .recording else { return }
         guard let url = store.audioURL(for: note), FileManager.default.fileExists(atPath: url.path) else {
@@ -415,32 +641,52 @@ final class RecordingController {
         }
         let hadText = note.status == .done && !note.revisions.isEmpty
         let source: Revision.Source = note.revisions.isEmpty ? .transcription : .retranscription
-        let engineName = engineChoice.shortName
 
         store.update(noteID) {
             $0.status = .inProgress
             $0.attempts += 1
         }
         do {
-            let samples = try await Task.detached { try WavFile.read(url) }.value
-            let chunkLength = Int(chunkSeconds * AudioRecorder.sampleRate)
+            let total = WavFile.sampleCount(url)
+            // Find the speech by streaming the file through the detector in
+            // 10 s blocks, so memory stays small however long it is.
+            var speech: [Span]
+            if let detector = newDetector() {
+                speech = []
+                let block = Int(Self.rate) * 10
+                var at = 0
+                while at < total {
+                    let samples = try await Task.detached { try WavFile.readRange(url, from: at, to: at + block) }.value
+                    speech += try await detector.feed(samples)
+                    at += block
+                }
+                speech += try await detector.flush()
+            } else {
+                speech = [Span(start: 0, end: total)]
+            }
+            let chunks = ChunkPlanner.plan(speech, audioEnd: total, maxLength: Self.maxChunk, pad: Self.pad, grouping: grouping) { from, to in
+                Self.quietestPoint((try? WavFile.readRange(url, from: from, to: to)) ?? [], start: from)
+            }
             var text = ""
             var languages: [String] = []
-            var start = 0
-            while start < samples.count {
-                let end = min(start + chunkLength, samples.count)
-                let result = try await transcribeSerially(Array(samples[start..<end]))
-                text = join(text, result.text)
+            var engines: [String] = []
+            for chunk in chunks {
+                let audio = try await Task.detached {
+                    try chunk.flatMap { try WavFile.readRange(url, from: $0.start, to: $0.end) }
+                }.value
+                let result = try await transcribeSerially(audio)
+                text = Self.join(text, result.text)
                 if let language = result.language { languages.append(language) }
-                start = end
+                if let engine = result.engine { engines.append(engine) }
             }
             let language = Self.mostCommon(languages)
+            let engineName = engineLabel(engines)
             store.update(noteID) {
                 $0 = $0.withRevision(text, source: source, engine: engineName, language: language)
                 $0.status = .done
                 $0.lastError = nil
                 $0.partialText = nil
-                if $0.duration <= 0 { $0.duration = Double(samples.count) / AudioRecorder.sampleRate }
+                if $0.duration <= 0 { $0.duration = Double(total) / Self.rate }
             }
         } catch {
             let message = error is CancellationError ? "Transcription was interrupted." : error.localizedDescription
@@ -450,6 +696,82 @@ final class RecordingController {
                 $0.lastError = message
             }
             if hadText { errorMessage = "Re-transcription failed: \(message)" }
+        }
+    }
+}
+
+/// One finished utterance (or chunk) of a live recording, with its translation.
+@MainActor
+private final class LiveSegment {
+    let text: String
+    let language: String?
+    /// Language the translator settled on (the model's tag may be missing).
+    var detectedLanguage: String?
+    var english: String?
+    var romanization: String?
+    var translated = false
+
+    init(text: String, language: String?) {
+        self.text = text
+        self.language = language
+    }
+
+    var part: TranslationJoin.Part {
+        TranslationJoin.Part(text: text, language: detectedLanguage ?? language, english: english,
+                             romanization: romanization, translated: translated)
+    }
+}
+
+/// Live state of one note: the one being recorded, or one still finishing its
+/// transcription after Stop or Split. Positions are in the recording (the
+/// microphone stream), which runs on across splits.
+@MainActor
+private final class LiveSession {
+    static let liveRevisionID = UUID()
+
+    let noteID: Note.ID
+    let origin: Int
+    let detector: SpeechDetector?
+    var committedText = ""
+    var committedUpTo: Int
+    /// Recording position fed to the speech detector so far.
+    var detectedUpTo: Int
+    /// Last position at which the detector heard no speech; the current utterance began after it.
+    var quietAt: Int
+    /// Finished utterances not yet committed.
+    var pending: [ChunkPlanner.Span] = []
+    var languages: [String] = []
+    var engines: [String] = []
+    var segments: [LiveSegment] = []
+    var tail = LiveSegment(text: "", language: nil)
+    /// Where this note's audio ends; nil while it is still being recorded.
+    var end: Int?
+    /// A step is running (live and final steps must not overlap).
+    var stepping = false
+    let translations = TaskGroupTracker()
+
+    init(noteID: Note.ID, origin: Int, detector: SpeechDetector?) {
+        self.noteID = noteID
+        self.origin = origin
+        self.detector = detector
+        committedUpTo = origin
+        detectedUpTo = origin
+        quietAt = origin
+    }
+}
+
+/// Keeps the tasks started for a session so its end can wait for them.
+@MainActor
+private final class TaskGroupTracker {
+    private var tasks: [Task<Void, Never>] = []
+    func add(_ task: Task<Void, Never>) { tasks.append(task) }
+    func wait(upTo limit: Duration) async {
+        let all = tasks
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { for task in all { await task.value } }
+            group.addTask { try? await Task.sleep(for: limit) }
+            await group.next()
+            group.cancelAll()
         }
     }
 }
@@ -468,7 +790,7 @@ extension RecordingController {
 
     /// Works through notes whose current text has no translation yet, one at a
     /// time: ones the user asked for first, then (if enabled) the rest.
-    fileprivate func processTranslations() {
+    func processTranslations() {
         guard autoTranslate || !manualTranslations.isEmpty, !translating else { return }
         translating = true
         Task {

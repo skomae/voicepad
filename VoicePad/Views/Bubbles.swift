@@ -209,18 +209,31 @@ struct LiveBubble: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 6) {
-            Text(displayText)
-                .italic(controller.liveText.isEmpty)
-                .foregroundStyle(controller.liveText.isEmpty ? Color.primary.opacity(0.55) : .primary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Color(.secondarySystemBackground), in: BubbleShape())
-                .overlay(BubbleShape().stroke(Color.accentColor.opacity(0.5), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])))
-                .animation(.default, value: controller.liveText)
+            Group {
+                if controller.liveText.isEmpty {
+                    Text(displayText).italic().foregroundStyle(Color.primary.opacity(0.55))
+                } else {
+                    // Original, pinyin and English update together as you speak.
+                    TextWithTranslation(
+                        text: controller.liveText,
+                        translation: controller.liveTranslation,
+                        color: .primary,
+                        highlight: { AttributedString($0) },
+                        onRetry: {}
+                    )
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color(.secondarySystemBackground), in: BubbleShape())
+            .overlay(BubbleShape().stroke(Color.recordingRed.opacity(0.6), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4])))
+            .animation(.default, value: controller.liveText)
             HStack(spacing: 6) {
                 if controller.isRecording {
-                    Circle().fill(.red).frame(width: 7, height: 7)
-                    Text("Live").font(.caption2).foregroundStyle(.secondary)
+                    PulsingDot(size: 8)
+                    Text("Live" + (controller.partNumber > 1 ? " · part \(controller.partNumber)" : ""))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.recordingRed)
                 } else {
                     ProgressView().scaleEffect(0.6)
                     Text("Finishing transcript…").font(.caption2).foregroundStyle(.secondary)
@@ -253,7 +266,7 @@ struct BubbleShape: Shape {
 /// The transcript and, for speech that wasn't English, its romanisation
 /// (pinyin for Mandarin) and English translation. Side by side when there's
 /// room (landscape, iPad), stacked on a phone held upright.
-private struct TextWithTranslation: View {
+struct TextWithTranslation: View {
     let text: String
     let translation: NoteTranslation?
     let color: Color
@@ -301,7 +314,11 @@ private struct TextWithTranslation: View {
             LanguageLabel(name: "English", color: color)
             switch translation.status {
             case .done:
-                Text(highlight(translation.english ?? "")).foregroundStyle(color)
+                if let english = translation.english {
+                    Text(highlight(english)).foregroundStyle(color)
+                } else {
+                    Text("Not available").italic().font(.callout).foregroundStyle(color.opacity(0.7))
+                }
             case .pending:
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.mini).tint(color)

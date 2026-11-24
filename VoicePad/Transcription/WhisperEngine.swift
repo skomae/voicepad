@@ -6,10 +6,13 @@ final class WhisperEngine: TranscriptionEngine {
     private let model: String
     private let multilingual: Bool
     private var whisperKit: WhisperKit?
+    let grouping = ChunkPlanner.Grouping.longestPauses
+    private let name: String
 
     init(model: String, multilingual: Bool) {
         self.model = model
         self.multilingual = multilingual
+        name = EngineChoice(rawValue: model)?.shortName ?? "Whisper"
     }
 
     func load(progress: @escaping @Sendable (Double) -> Void) async throws {
@@ -47,6 +50,6 @@ final class WhisperEngine: TranscriptionEngine {
             .map(\.text)
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return Transcript(text: text, language: multilingual ? LanguageTags.fromModel(results.first?.language) : "en")
+        return Transcript(text: text, language: multilingual ? LanguageTags.fromModel(results.first?.language) : "en", engine: name)
     }
 }

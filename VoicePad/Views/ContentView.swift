@@ -21,13 +21,29 @@ struct ContentView: View {
                 bubbleActions: bubbleActions
             )
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search all notes and revisions")
+            // Unmistakable: a red frame around the notes while the mic is on.
+            .overlay {
+                if controller.isRecording {
+                    Rectangle().strokeBorder(Color.recordingRed.opacity(0.6), lineWidth: 3).allowsHitTesting(false)
+                }
+            }
             .safeAreaInset(edge: .bottom) { RecordBar() }
             .navigationTitle("VoicePad")
             .navigationBarTitleDisplayMode(.inline)
+            // The whole bar turns red while recording.
+            .toolbarBackground(Color.recordingRed, for: .navigationBar)
+            .toolbarBackground(controller.isRecording ? .visible : .automatic, for: .navigationBar)
+            .toolbarColorScheme(controller.isRecording ? .dark : nil, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { EngineStatusBadge() }
+                ToolbarItem(placement: .topBarLeading) {
+                    EngineStatusBadge(color: controller.isRecording ? .white : .secondary)
+                }
+                ToolbarItem(placement: .principal) {
+                    if controller.isRecording { RecordingTitle() } else { IdleTitle() }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showSettings = true } label: { Image(systemName: "gearshape") }
+                        .tint(controller.isRecording ? .white : nil)
                         .accessibilityLabel("Settings")
                 }
             }
@@ -120,7 +136,7 @@ private struct NotesList: View {
 
     private var searching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
     private var visibleNotes: [Note] { store.notes.filter { $0.id != controller.recordingNoteID } }
-    private var showLive: Bool { controller.isRecording || controller.recordingNoteID != nil }
+    private var showLive: Bool { controller.isRecording }
 
     var body: some View {
         let visible = visibleNotes
@@ -202,6 +218,43 @@ private struct NotesList: View {
             onTranslate: { a.translate(note) },
             onCopyText: a.copyText
         )
+    }
+}
+
+/// Top bar title while recording: pulsing dot, REC, elapsed time, part number.
+private struct RecordingTitle: View {
+    @Environment(RecordingController.self) private var controller
+
+    var body: some View {
+        HStack(spacing: 8) {
+            PulsingDot(color: .white, size: 11)
+            HStack(spacing: 6) {
+                Text("REC")
+                ElapsedTime(start: controller.startedAt).monospacedDigit()
+            }
+            .font(.headline.weight(.bold))
+            if controller.partNumber > 1 {
+                Text("· part \(controller.partNumber)").font(.subheadline)
+            }
+        }
+        .foregroundStyle(.white)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Recording" + (controller.partNumber > 1 ? ", part \(controller.partNumber)" : ""))
+    }
+}
+
+/// Top bar title when the mic is off.
+private struct IdleTitle: View {
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("VoicePad").font(.headline)
+            HStack(spacing: 3) {
+                Image(systemName: "mic.slash")
+                Text("Not recording")
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
     }
 }
 

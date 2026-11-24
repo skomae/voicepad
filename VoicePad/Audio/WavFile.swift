@@ -54,6 +54,37 @@ enum WavFile {
         return size <= headerBytes ? 0 : Double((size - headerBytes) / 2) / Double(sampleRate)
     }
 
+    /// Number of samples in the file (from its size, so a torn header doesn't matter).
+    static func sampleCount(_ url: URL) -> Int {
+        let size = fileSize(url)
+        return size <= headerBytes ? 0 : (size - headerBytes) / 2
+    }
+
+    /// Reads samples [from, to) without loading the whole file, so hour-long
+    /// recordings can be processed in small pieces.
+    static func readRange(_ url: URL, from: Int, to: Int) throws -> [Float] {
+        let total = sampleCount(url)
+        let lower = max(0, min(from, total))
+        let upper = max(lower, min(to, total))
+        guard upper > lower else { return [] }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        try handle.seek(toOffset: UInt64(headerBytes + lower * 2))
+        let bytes = try handle.read(upToCount: (upper - lower) * 2) ?? Data()
+        return floats(bytes)
+    }
+
+    private static func floats(_ bytes: Data) -> [Float] {
+        let n = bytes.count / 2
+        return bytes.withUnsafeBytes { raw -> [Float] in
+            (0..<n).map { i in
+                let lo = UInt16(raw[2 * i])
+                let hi = UInt16(raw[2 * i + 1])
+                return Float(Int16(bitPattern: lo | hi << 8)) / 32768
+            }
+        }
+    }
+
     /// Reads samples as floats in -1...1, ignoring the header's size fields.
     static func read(_ url: URL) throws -> [Float] {
         let bytes = try Data(contentsOf: url)

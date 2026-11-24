@@ -53,6 +53,10 @@ final class EnglishTranslator {
     var configuration: Any?
     @ObservationIgnored var hostAttached = false
     @ObservationIgnored private var job: (text: String, continuation: CheckedContinuation<String, Error>)?
+    /// One request at a time: there is a single hidden session host, and live
+    /// translation and saved notes both use it.
+    @ObservationIgnored private var busy = false
+    @ObservationIgnored private var waiting: [CheckedContinuation<Void, Never>] = []
 
     /// Translates `text` to English. `modelLanguage` is what the speech model
     /// reported, if anything. Returns no English when no translation is
@@ -91,6 +95,9 @@ final class EnglishTranslator {
             if await availability.supportedLanguages.isEmpty { throw TranslationError.unavailableOnDevice }
             throw TranslationError.unsupported(languageName)
         }
+        await acquire()
+        defer { release() }
+        try Task.checkCancellation()
         guard hostAttached, job == nil else { throw TranslationError.notReady }
         return try await withCheckedThrowingContinuation { continuation in
             job = (text, continuation)
@@ -122,6 +129,22 @@ final class EnglishTranslator {
         }
     }
     #endif
+
+    private func acquire() async {
+        if !busy {
+            busy = true
+            return
+        }
+        await withCheckedContinuation { waiting.append($0) }
+    }
+
+    private func release() {
+        if waiting.isEmpty {
+            busy = false
+        } else {
+            waiting.removeFirst().resume() // hand over; stays busy
+        }
+    }
 
     /// The host went away (e.g. scene closed) with a request outstanding.
     func detach() {

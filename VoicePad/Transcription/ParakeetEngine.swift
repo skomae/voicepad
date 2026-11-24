@@ -5,6 +5,8 @@ import FluidAudio
 final class ParakeetEngine: TranscriptionEngine {
     private let version: AsrModelVersion
     private var manager: AsrManager?
+    let grouping = ChunkPlanner.Grouping.utterances
+    private var name: String { version == .v2 ? "Parakeet v2" : "Parakeet v3" }
 
     init(version: AsrModelVersion) {
         self.version = version
@@ -22,11 +24,16 @@ final class ParakeetEngine: TranscriptionEngine {
 
     func transcribe(_ samples: [Float]) async throws -> Transcript {
         guard let manager else { return .empty }
-        // Parakeet needs at least ~1 s of audio.
-        guard samples.count >= Int(AudioRecorder.sampleRate) else { return .empty }
+        // Very short clips just produce noise.
+        guard samples.count >= Int(AudioRecorder.sampleRate / 2) else { return .empty }
+        // Parakeet needs at least ~1 s of audio; pad short words ("yes",
+        // "okay") with silence rather than dropping them.
+        var audio = samples
+        let minimum = Int(AudioRecorder.sampleRate) + Int(AudioRecorder.sampleRate / 10)
+        if audio.count < minimum { audio += [Float](repeating: 0, count: minimum - audio.count) }
         var state = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
-        let result = try await manager.transcribe(samples, decoderState: &state)
+        let result = try await manager.transcribe(audio, decoderState: &state)
         // Parakeet doesn't report a language; the text is identified later.
-        return Transcript(text: result.text.trimmingCharacters(in: .whitespacesAndNewlines), language: nil)
+        return Transcript(text: result.text.trimmingCharacters(in: .whitespacesAndNewlines), language: nil, engine: name)
     }
 }
