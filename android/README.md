@@ -65,9 +65,11 @@ copied, edited, re-transcribed and rolled back through its revision history.
   languages (writing system first, then the speech model's tag, then text
   language ID limited to just those two), and translated into the other.
   Speech in progress shows live, in italics, translation included.
-  - **Layouts**: *Face to face* (default) splits the screen, the far half
+  - **Layouts**: *Across, top / bottom* (default) splits the screen, the far half
     upside down, each half the whole conversation in one language — lay the
-    phone between you; *Side by side* (one column per language, for an
+    phone between you; *Across, left / right* (the same split sideways, for a
+    wide or unfolded screen with one person at each end); *Side by side*
+    (one column per language, both reading the same way, for an
     unfolded or landscape screen); *Transcript* (original, pinyin and
     translation together). Newest turn largest; text size adjustable
     (18–96 sp); the screen stays on.

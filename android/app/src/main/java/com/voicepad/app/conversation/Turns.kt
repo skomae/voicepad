@@ -5,7 +5,12 @@ import com.voicepad.app.transcription.LanguageTags
 /** How the conversation screen is laid out. */
 enum class ConversationLayout(val label: String) {
     /** Two halves, the far one upside down: for a phone lying between two people. */
-    FACE_TO_FACE("Face to face"),
+    FACE_TO_FACE("Across, top / bottom"),
+    /**
+     * The same, split left and right: for a landscape or unfolded screen
+     * between two people sitting at its short ends.
+     */
+    FACE_TO_FACE_SIDEWAYS("Across, left / right"),
     /** One column per language: for an unfolded or landscape screen both people look at. */
     SIDE_BY_SIDE("Side by side"),
     /** One list with original and translation: for following along yourself. */

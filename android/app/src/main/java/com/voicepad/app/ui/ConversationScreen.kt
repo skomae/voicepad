@@ -6,6 +6,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -142,6 +144,17 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
                     )
                     controls()
                     LanguagePane(settings.myLanguage, state, settings.textSize, Modifier.weight(1f).fillMaxWidth())
+                }
+                ConversationLayout.FACE_TO_FACE_SIDEWAYS -> {
+                    Row(Modifier.weight(1f).fillMaxWidth()) {
+                        LanguagePane(settings.myLanguage, state, settings.textSize, Modifier.weight(1f).fillMaxHeight())
+                        VerticalDivider()
+                        LanguagePane(
+                            settings.theirLanguage, state, settings.textSize,
+                            Modifier.weight(1f).fillMaxHeight().graphicsLayer { rotationZ = 180f },
+                        )
+                    }
+                    controls()
                 }
                 ConversationLayout.SIDE_BY_SIDE -> {
                     Row(Modifier.weight(1f).fillMaxWidth()) {
@@ -524,7 +537,7 @@ private fun LanguagePickerDialog(title: String, selected: String, onPick: (Strin
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun ConversationSettingsSheet(
     conversation: ConversationController,
@@ -548,7 +561,7 @@ private fun ConversationSettingsSheet(
             }
 
             SectionTitle("Layout")
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ConversationLayout.entries.forEach { layout ->
                     FilterChip(selected = settings.layout == layout, onClick = { conversation.setLayout(layout) }, label = { Text(layout.label) })
                 }
@@ -556,6 +569,8 @@ private fun ConversationSettingsSheet(
             Text(
                 when (settings.layout) {
                     ConversationLayout.FACE_TO_FACE -> "Lay the phone between you: the far half is upside down, in their language."
+                    ConversationLayout.FACE_TO_FACE_SIDEWAYS ->
+                        "Lay a wide or unfolded screen between you, one at each end: their half is turned round to face them."
                     ConversationLayout.SIDE_BY_SIDE -> "One column per language, for a wide or unfolded screen you both look at."
                     ConversationLayout.TRANSCRIPT -> "Original, pronunciation and translation together, for following along yourself."
                 },
