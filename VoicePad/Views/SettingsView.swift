@@ -67,11 +67,7 @@ struct SettingsView: View {
                     switch controller.engineStatus {
                     case .idle: Text("Not loaded")
                     case .loading(let p):
-                        if p > 0 {
-                            ProgressView(value: p) { Text("Downloading model…") }
-                        } else {
-                            ProgressView { Text("Loading model…") }
-                        }
+                        ModelProgressView(progress: p)
                     case .ready: Label("Ready", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                     case .failed(let message):
                         VStack(alignment: .leading, spacing: 8) {

@@ -46,13 +46,15 @@ struct ContentView: View {
                     if controller.isRecording { RecordingTitle() } else { IdleTitle() }
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { controller.setBackgroundVoices(!controller.backgroundVoices) } label: {
-                        Image(systemName: controller.backgroundVoices ? "ear.fill" : "ear")
+                    Button { conversation.open() } label: {
+                        Image(systemName: "bubble.left.and.text.bubble.right")
                     }
-                    .tint(controller.isRecording ? .white : controller.backgroundVoices ? .accentColor : .primary)
-                    .accessibilityLabel(controller.backgroundVoices ? "Background voices on" : "Background voices off")
+                    .tint(controller.isRecording ? .white : nil)
+                    .accessibilityLabel("Conversation mode")
                     Menu {
-                        Button("Conversation mode", systemImage: "bubble.left.and.text.bubble.right") { conversation.open() }
+                        Toggle(isOn: Binding(get: { controller.backgroundVoices }, set: { controller.setBackgroundVoices($0) })) {
+                            Label("Background voices", systemImage: "ear")
+                        }
                         Button("Settings", systemImage: "gearshape") { showSettings = true }
                         Button("Archived notes (\(store.notes.filter(\.archived).count))", systemImage: "archivebox") { showArchive = true }
                         Button("Clean up…", systemImage: "sparkles") { showCleanup = true }
@@ -188,6 +190,7 @@ private struct NotesList: View {
                         if visible.isEmpty && !showLive {
                             EmptyStateView().padding(.top, 80)
                         }
+                        ModelLoadingBanner()
                         if needingText > 0 {
                             RetryBanner(count: needingText, ready: controller.isEngineReady, onRetryAll: controller.retryAll)
                         }

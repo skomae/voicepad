@@ -15,10 +15,13 @@ final class WhisperEngine: TranscriptionEngine {
         name = EngineChoice(rawValue: model)?.shortName ?? "Whisper"
     }
 
-    func load(progress: @escaping @Sendable (Double) -> Void) async throws {
+    func load(progress: @escaping @Sendable (LoadProgress) -> Void) async throws {
+        let name = self.name
         let folder = try await WhisperKit.download(variant: model) { p in
-            progress(p.fractionCompleted)
+            progress(LoadProgress(fraction: p.fractionCompleted, stage: "Downloading \(name)", determinate: true))
         }
+        progress(LoadProgress(fraction: 1, stage: "Preparing \(name) for this iPhone (the first time can take a few minutes)…",
+                              determinate: false))
         let config = WhisperKitConfig(
             model: model,
             modelFolder: folder.path,
@@ -28,7 +31,6 @@ final class WhisperEngine: TranscriptionEngine {
             download: false
         )
         whisperKit = try await WhisperKit(config)
-        progress(1)
     }
 
     func transcribe(_ samples: [Float]) async throws -> Transcript {

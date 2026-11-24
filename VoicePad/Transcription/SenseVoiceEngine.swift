@@ -7,11 +7,10 @@ final class SenseVoiceEngine: TranscriptionEngine {
     private var manager: SenseVoiceManager?
     let grouping = ChunkPlanner.Grouping.utterances
 
-    func load(progress: @escaping @Sendable (Double) -> Void) async throws {
+    func load(progress: @escaping @Sendable (LoadProgress) -> Void) async throws {
         manager = try await SenseVoiceManager.load(precision: .fp16) { p in
-            progress(p.fractionCompleted)
+            progress(.from(p, model: "SenseVoice"))
         }
-        progress(1)
     }
 
     func transcribe(_ samples: [Float]) async throws -> Transcript {

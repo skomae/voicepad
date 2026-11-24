@@ -200,7 +200,7 @@ private struct StatusLine: View {
 
     private var waitReason: String {
         switch engineStatus {
-        case .loading(let p): return p > 0 ? "model downloading \(Int(p * 100))%" : "model loading"
+        case .loading(let p): return p.determinate ? "model downloading \(Int(p.fraction * 100))%" : "model getting ready"
         case .failed: return "model failed to load"
         default: return "queued"
         }
@@ -252,7 +252,7 @@ struct LiveBubble: View {
         if !controller.liveText.isEmpty { return controller.liveText }
         switch controller.engineStatus {
         case .ready: return "Listening…"
-        case .loading(let p): return p > 0 ? "Recording… downloading model \(Int(p * 100))%" : "Recording… loading model"
+        case .loading(let p): return p.determinate ? "Recording… downloading model \(Int(p.fraction * 100))%" : "Recording… getting the model ready"
         case .failed: return "Recording… (model unavailable)"
         case .idle: return "Recording…"
         }

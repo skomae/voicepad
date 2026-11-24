@@ -26,7 +26,7 @@ import UIKit
 final class RecordingController {
     enum EngineStatus: Equatable {
         case idle
-        case loading(Double)
+        case loading(LoadProgress)
         case ready
         case failed(String)
     }
@@ -267,14 +267,14 @@ final class RecordingController {
         let loadID = UUID()
         engineLoadID = loadID
         engine = nil
-        engineStatus = .loading(0)
+        engineStatus = .loading(.starting)
         let newEngine = choice.makeEngine()
         loadTask = Task {
             do {
-                try await newEngine.load { fraction in
+                try await newEngine.load { progress in
                     Task { @MainActor in
-                        guard self.engineLoadID == loadID, fraction < 1 else { return }
-                        self.engineStatus = .loading(fraction)
+                        guard self.engineLoadID == loadID, case .loading = self.engineStatus else { return }
+                        self.engineStatus = .loading(progress)
                     }
                 }
                 guard engineLoadID == loadID else { return }

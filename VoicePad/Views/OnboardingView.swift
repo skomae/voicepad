@@ -239,7 +239,7 @@ struct OnboardingView: View {
     @ViewBuilder
     private var engineStatus: some View {
         switch controller.engineStatus {
-        case .loading(let p): ProgressView(value: p) { Text(p > 0 ? "Downloading… \(Int(p * 100))%" : "Preparing…") }
+        case .loading(let p): ModelProgressView(progress: p)
         case .ready: status("checkmark.circle.fill", .green, "\(controller.activeEngine.shortName) is ready.")
         case .failed(let message): status("exclamationmark.triangle.fill", .orange, message)
         case .idle: EmptyView()

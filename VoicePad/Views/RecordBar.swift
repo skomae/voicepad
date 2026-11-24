@@ -130,12 +130,13 @@ struct EngineStatusBadge: View {
                 Image(systemName: "circle.dashed")
             case .loading(let p):
                 ProgressView().scaleEffect(0.6).tint(color)
-                Text(p > 0 ? "\(Int(p * 100))%" : "Loading")
+                Text(p.determinate ? "\(Int(p.fraction * 100))%" : "Preparing")
             case .ready:
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
             case .failed:
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
             }
+            if controller.backgroundVoices { Image(systemName: "ear.fill") }
             Text(controller.activeEngine.shortName)
         }
         .font(.caption)
@@ -188,5 +189,67 @@ struct SplitButton: View {
         .sensoryFeedback(.impact, trigger: controller.partNumber) { old, new in new > old }
         .accessibilityLabel("Split")
         .accessibilityHint("Starts a new note now. Touch and hold to set auto-split, currently \(controller.autoSplit.label).")
+    }
+}
+
+/// Progress of the speech model: what's happening and how far along, with a
+/// determinate bar while downloading and a moving one while preparing.
+struct ModelProgressView: View {
+    let progress: LoadProgress
+    var compact = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if progress.determinate {
+                ProgressView(value: min(1, max(0, progress.fraction))) {
+                    Text(progress.stage).font(compact ? .caption : .subheadline)
+                } currentValueLabel: {
+                    Text("\(Int(progress.fraction * 100))%").monospacedDigit()
+                }
+            } else {
+                Text(progress.stage).font(compact ? .caption : .subheadline)
+                IndeterminateBar()
+            }
+        }
+    }
+}
+
+/// A thin bar with a segment sweeping across: "working, can't say how long".
+struct IndeterminateBar: View {
+    var body: some View {
+        TimelineView(.animation) { context in
+            GeometryReader { geo in
+                let t = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.6) / 1.6
+                let width = geo.size.width * 0.3
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.secondary.opacity(0.2))
+                    Capsule().fill(Color.accentColor).frame(width: width).offset(x: (geo.size.width + width) * t - width)
+                }
+                .clipShape(Capsule())
+            }
+        }
+        .frame(height: 4)
+        .accessibilityLabel("Working")
+    }
+}
+
+/// Shown at the top of the notes while the speech model is downloading or
+/// getting ready, so a long first load never looks stuck.
+struct ModelLoadingBanner: View {
+    @Environment(RecordingController.self) private var controller
+
+    var body: some View {
+        if case .loading(let progress) = controller.engineStatus {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Getting \(controller.activeEngine.shortName) ready", systemImage: "arrow.down.circle")
+                    .font(.subheadline.weight(.semibold))
+                ModelProgressView(progress: progress)
+                Text("Recording works meanwhile; the text appears once the model is ready.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(14)
+            .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
+        }
     }
 }

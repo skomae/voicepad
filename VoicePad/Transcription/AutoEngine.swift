@@ -24,10 +24,9 @@ final class AutoEngine: TranscriptionEngine {
     }
 
     /// Downloads and loads both models; progress covers the two together.
-    func load(progress: @escaping @Sendable (Double) -> Void) async throws {
-        try await senseVoice.load { p in progress(p / 2) }
-        try await parakeet.load { p in progress(0.5 + p / 2) }
-        progress(1)
+    func load(progress: @escaping @Sendable (LoadProgress) -> Void) async throws {
+        try await senseVoice.load { p in progress(p.step(0, of: 2)) }
+        try await parakeet.load { p in progress(p.step(1, of: 2)) }
     }
 
     func transcribe(_ samples: [Float]) async throws -> Transcript {

@@ -189,7 +189,7 @@ private struct StatusLines: View {
         }
         switch notes.engineStatus {
         case .loading(let p):
-            out.append(line(p > 0 ? "Downloading speech model… \(Int(p * 100))%" : "Loading speech model…"))
+            out.append(AnyView(ModelProgressView(progress: p, compact: true)))
         case .failed(let message):
             out.append(line("Speech model failed: \(message)", error: true, action: "Retry") { notes.loadEngine() })
         default: break

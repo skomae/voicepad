@@ -12,14 +12,15 @@ final class ParakeetEngine: TranscriptionEngine {
         self.version = version
     }
 
-    func load(progress: @escaping @Sendable (Double) -> Void) async throws {
+    func load(progress: @escaping @Sendable (LoadProgress) -> Void) async throws {
+        let name = self.name
         let models = try await AsrModels.downloadAndLoad(version: version) { p in
-            progress(p.fractionCompleted)
+            progress(.from(p, model: name))
         }
+        progress(LoadProgress(fraction: 1, stage: "Loading \(name)…", determinate: false))
         let manager = AsrManager(config: .default)
         try await manager.loadModels(models)
         self.manager = manager
-        progress(1)
     }
 
     func transcribe(_ samples: [Float]) async throws -> Transcript {
