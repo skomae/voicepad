@@ -184,3 +184,63 @@ struct ModelSwitcher: View {
         .accessibilityLabel("Model: \(controller.activeEngine.shortName). Tap to switch.")
     }
 }
+
+/// Export every note as a ZIP of open formats (JSON, Markdown, and the
+/// recordings if wanted), then save it to Files, AirDrop it, etc.
+struct ExportView: View {
+    @Environment(RecordingController.self) private var controller
+    @Environment(\.dismiss) private var dismiss
+    @State private var includeAudio = false
+    @State private var includeArchived = true
+    @State private var working = false
+    @State private var error: String?
+    @State private var shareItem: ShareItem?
+
+    var body: some View {
+        let count = controller.exportCandidates(includeArchived: includeArchived).count
+        let bytes = controller.exportAudioBytes(includeArchived: includeArchived)
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle(isOn: $includeAudio) {
+                        Text("Include recordings")
+                        Text("WAV / M4A · \(ByteCountFormatter().string(fromByteCount: Int64(bytes)))")
+                    }
+                    Toggle("Include archived notes", isOn: $includeArchived)
+                } footer: {
+                    Text("Makes a ZIP with notes.json (every note with its transcript history, translations and dates) and notes.md (readable text). Both are open formats any app can read.")
+                }
+                Section {
+                    Button {
+                        Task { await export() }
+                    } label: {
+                        HStack {
+                            Text(count == 1 ? "Export 1 note…" : "Export \(count) notes…")
+                            if working { Spacer(); ProgressView() }
+                        }
+                    }
+                    .disabled(count == 0 || working)
+                    if let error { Text(error).foregroundStyle(.red).font(.footnote) }
+                }
+            }
+            .navigationTitle("Export all notes")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+            }
+            .sheet(item: $shareItem) { item in ShareSheet(items: item.items).presentationDetents([.medium, .large]) }
+        }
+    }
+
+    private func export() async {
+        working = true
+        defer { working = false }
+        do {
+            let result = try await controller.exportNotes(includeAudio: includeAudio, includeArchived: includeArchived)
+            error = nil
+            shareItem = ShareItem(items: [result.url])
+        } catch {
+            self.error = "Export failed: \(error.localizedDescription)"
+        }
+    }
+}

@@ -1023,6 +1023,33 @@ extension RecordingController {
         return (now, after)
     }
 
+    // MARK: Export
+
+    /// Notes an export would include (never the one being recorded).
+    func exportCandidates(includeArchived: Bool) -> [Note] {
+        store.notes.filter { $0.id != recordingNoteID && (includeArchived || !$0.archived) }
+    }
+
+    /// Bytes of audio an export with recordings would hold.
+    func exportAudioBytes(includeArchived: Bool) -> Int {
+        exportCandidates(includeArchived: includeArchived).reduce(0) { $0 + (store.audioURL(for: $1).map(WavFile.fileSize) ?? 0) }
+    }
+
+    /// Writes every note (see `NoteExport`) as a ZIP in a temporary folder,
+    /// ready to share or save to Files.
+    func exportNotes(includeAudio: Bool, includeArchived: Bool) async throws -> (url: URL, count: Int) {
+        let notes = exportCandidates(includeArchived: includeArchived)
+        let paths = Dictionary(uniqueKeysWithValues: notes.map { ($0.id, store.audioURL(for: $0)) })
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("Export", isDirectory: true)
+        try? FileManager.default.removeItem(at: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let url = folder.appendingPathComponent(NoteExport.fileName())
+        let count = try await Task.detached {
+            try NoteExport.writeZip(to: url, notes: notes, includeAudio: includeAudio) { paths[$0.id] ?? nil }
+        }.value
+        return (url, count)
+    }
+
     /// Back to the main list (the audio stays compressed).
     func unarchive(_ id: Note.ID) {
         store.update(id) {

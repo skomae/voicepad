@@ -11,6 +11,7 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var showArchive = false
     @State private var showCleanup = false
+    @State private var showExport = false
     @State private var toast: String?
     @State private var query = ""
     @State private var player = AudioPlayer()
@@ -53,6 +54,7 @@ struct ContentView: View {
                         Button("Settings", systemImage: "gearshape") { showSettings = true }
                         Button("Archived notes (\(store.notes.filter(\.archived).count))", systemImage: "archivebox") { showArchive = true }
                         Button("Clean up…", systemImage: "sparkles") { showCleanup = true }
+                        Button("Export all notes…", systemImage: "square.and.arrow.up.on.square") { showExport = true }
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
@@ -65,6 +67,7 @@ struct ContentView: View {
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showArchive) { ArchivedNotesView(actions: bubbleActions, player: player) }
             .sheet(isPresented: $showCleanup) { CleanupView().presentationDetents([.medium, .large]) }
+            .sheet(isPresented: $showExport) { ExportView().presentationDetents([.medium, .large]) }
             .sheet(item: $shareItem) { item in ShareSheet(items: item.items).presentationDetents([.medium, .large]) }
             .confirmationDialog(
                 "Delete recording?",
