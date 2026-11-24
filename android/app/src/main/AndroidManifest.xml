@@ -10,6 +10,10 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Android 16 Live Updates: the recording notification as a status-bar chip. -->
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <!-- Bluetooth HID keyboard emulation (type-as-keyboard). -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <application
         android:name=".VoicePadApplication"

@@ -37,6 +37,8 @@ import com.voicepad.app.transcription.SherpaEngine
 import com.voicepad.app.transcription.SpeechDetector
 import com.voicepad.app.transcription.SpeechEngine
 import com.voicepad.app.transcription.Transcript
+import com.voicepad.app.transmit.SinkStatus
+import com.voicepad.app.transmit.createKeyboardSink
 import com.voicepad.app.ui.ThemeMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -117,6 +119,9 @@ class RecordingController(
         val partNumber: Int = 1,
         /** Stopped or split-off notes still being transcribed (the notification stays until 0). */
         val finishingCount: Int = 0,
+        /** Whether the phone is paired as a Bluetooth keyboard (type-as-keyboard). */
+        val transmitStatus: SinkStatus = SinkStatus.UNAVAILABLE,
+        val transmitError: String? = null,
     ) {
         /** The model actually in use: Whisper turbo while background voices is on. */
         val activeEngine: EngineChoice get() = if (backgroundVoices) BACKGROUND_ENGINE else engineChoice
@@ -146,6 +151,7 @@ class RecordingController(
     private val models = ModelManager(context)
     private val engineMutex = Mutex()
     private val inputs = AudioInputs(context)
+    private val keyboard = createKeyboardSink(context)
 
     private val _state = MutableStateFlow(
         UiState(
@@ -238,6 +244,9 @@ class RecordingController(
         recorder.onRoutingChanged = {
             _state.update { it.copy(activeInputName = recorder.routedDeviceName) }
         }
+
+        // Reflect the Bluetooth keyboard sink's state into the UI.
+        scope.launch { keyboard.state.collect { s -> _state.update { it.copy(transmitStatus = s.status, transmitError = s.error) } } }
 
         // Translate whenever a note gets new text (transcription, edit, restore).
         scope.launch { store.notes.collect { processTranslations() } }
@@ -1094,6 +1103,29 @@ class RecordingController(
         }
         // Only store it if the text didn't change while translating.
         store.update(noteId) { if (it.revisions.lastOrNull()?.id == revision.id) it.copy(translation = outcome) else it }
+    }
+
+    // endregion
+
+    // region Transmit (type as keyboard)
+
+    /** Starts or stops advertising as a Bluetooth keyboard. */
+    fun toggleKeyboard() {
+        when (keyboard.state.value.status) {
+            SinkStatus.REGISTERING, SinkStatus.ADVERTISING, SinkStatus.CONNECTED -> keyboard.stop()
+            else -> keyboard.start()
+        }
+    }
+
+    /** Types [text] as keystrokes on the paired host. */
+    fun typeText(text: String) {
+        if (text.isBlank()) return
+        scope.launch { keyboard.type(text) }
+    }
+
+    /** Types a note's current text. */
+    fun typeNote(noteId: String) {
+        typeText(store.note(noteId)?.currentText.orEmpty())
     }
 
     // endregion
