@@ -1,23 +1,31 @@
 package com.voicepad.app
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.widget.Toast
 import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
+import com.voicepad.app.audio.AudioArchive
 import com.voicepad.app.audio.AudioInputs
 import com.voicepad.app.audio.AudioRecorder
 import com.voicepad.app.audio.InputDevice
 import com.voicepad.app.audio.RecordingService
 import com.voicepad.app.audio.WavFile
+import com.voicepad.app.data.AutoSplit
 import com.voicepad.app.data.Note
+import com.voicepad.app.data.NoteCleanup
 import com.voicepad.app.data.NoteStore
 import com.voicepad.app.data.NoteTranslation
 import com.voicepad.app.data.RevisionSource
 import com.voicepad.app.data.TranscriptionStatus
+import com.voicepad.app.data.TextSimilarity
 import com.voicepad.app.data.TranslationJoin
 import com.voicepad.app.data.TranslationStatus
-import com.voicepad.app.data.withRevision
+import com.voicepad.app.data.withTranscription
+import com.voicepad.app.transcription.AudioLevel
 import com.voicepad.app.transcription.AutoEngine
 import com.voicepad.app.transcription.ChunkPlanner
 import com.voicepad.app.transcription.ChunkPlanner.Span
@@ -29,6 +37,7 @@ import com.voicepad.app.transcription.SherpaEngine
 import com.voicepad.app.transcription.SpeechDetector
 import com.voicepad.app.transcription.SpeechEngine
 import com.voicepad.app.transcription.Transcript
+import com.voicepad.app.ui.ThemeMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -83,6 +92,16 @@ class RecordingController(
         val recordingNoteId: String? = null,
         val engineStatus: EngineStatus = EngineStatus.Idle,
         val engineChoice: EngineChoice = EngineChoice.PARAKEET_V3,
+        /** Background voices (announcements, TV): room microphone, louder speech, Whisper turbo. */
+        val backgroundVoices: Boolean = false,
+        /** Light, dark, pure black (OLED), or follow the phone. */
+        val themeMode: ThemeMode = ThemeMode.SYSTEM,
+        /** When a recording (or split part) finishes transcribing, copy it to the clipboard (with a toast). */
+        val copyWhenDone: Boolean = true,
+        /** Start a new note automatically after a silence or every few minutes. */
+        val autoSplit: AutoSplit = AutoSplit.OFF,
+        /** Models already on the phone, for the quick switcher. */
+        val installedEngines: Set<EngineChoice> = emptySet(),
         val autoRecordOnOpen: Boolean = true,
         val autoTranslate: Boolean = true,
         val errorMessage: String? = null,
@@ -96,7 +115,12 @@ class RecordingController(
         val liveTranslation: NoteTranslation? = null,
         /** Which part of a split recording is being recorded (1 = not split). */
         val partNumber: Int = 1,
-    )
+        /** Stopped or split-off notes still being transcribed (the notification stays until 0). */
+        val finishingCount: Int = 0,
+    ) {
+        /** The model actually in use: Whisper turbo while background voices is on. */
+        val activeEngine: EngineChoice get() = if (backgroundVoices) BACKGROUND_ENGINE else engineChoice
+    }
 
     companion object {
         /** Longest audio one model call gets (Whisper's window is 30 s). */
@@ -109,6 +133,11 @@ class RecordingController(
         private val PAD = (PAD_SECONDS * AudioRecorder.SAMPLE_RATE).toInt()
         private const val TICK_MS = 1200L
         const val MAX_AUTO_ATTEMPTS = 3
+        /**
+         * Most robust to distant, noisy speech: in testing with echo and
+         * background noise it made 10% word errors where Parakeet made 41%.
+         */
+        val BACKGROUND_ENGINE = EngineChoice.WHISPER_TURBO
     }
 
     private val prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -125,6 +154,12 @@ class RecordingController(
                 ?: EngineChoice.PARAKEET_V3,
             autoRecordOnOpen = prefs.getBoolean("autoRecord", true),
             autoTranslate = prefs.getBoolean("autoTranslate", true),
+            backgroundVoices = prefs.getBoolean("backgroundVoices", false),
+            copyWhenDone = prefs.getBoolean("copyWhenDone", true),
+            themeMode = prefs.getString("theme", null)
+                ?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() } ?: ThemeMode.SYSTEM,
+            autoSplit = prefs.getString("autoSplit", null)
+                ?.let { runCatching { AutoSplit.valueOf(it) }.getOrNull() } ?: AutoSplit.OFF,
             inputDevices = inputs.devices.value,
             selectedInputKey = prefs.getString("inputDevice", null),
         )
@@ -173,6 +208,10 @@ class RecordingController(
         var tail = LiveSegment("", null)
         /** Where this note's audio ends; null while it is still being recorded. */
         var end: Int? = null
+        /** Last moment speech was heard in this note (null: nothing said yet). */
+        var lastVoiceAt: Int? = null
+        /** Ended with Stop (not a split). */
+        var stoppedByUser = false
     }
 
     private var session: LiveSession? = null
@@ -184,6 +223,7 @@ class RecordingController(
     init {
         // Before anything records: repair what a crash or kill left behind.
         store.recoverAfterRestart()
+        refreshInstalled()
 
         inputs.onDevicesChanged = {
             val before = _state.value.inputDevices.map { it.key }.toSet()
@@ -220,7 +260,8 @@ class RecordingController(
         if (choice == _state.value.engineChoice) return
         prefs.edit { putString("engine", choice.name) }
         _state.update { it.copy(engineChoice = choice) }
-        loadEngine()
+        // While background voices is on, Whisper turbo stays in use.
+        if (!_state.value.backgroundVoices) loadEngine()
     }
 
     fun setAutoRecord(enabled: Boolean) {
@@ -228,8 +269,40 @@ class RecordingController(
         _state.update { it.copy(autoRecordOnOpen = enabled) }
     }
 
+    /**
+     * Background voices on: switches the microphone to room capture right
+     * away (even mid-recording), normalises loudness, and loads Whisper turbo.
+     */
+    fun setBackgroundVoices(enabled: Boolean) {
+        if (enabled == _state.value.backgroundVoices) return
+        prefs.edit { putBoolean("backgroundVoices", enabled) }
+        _state.update { it.copy(backgroundVoices = enabled) }
+        if (_state.value.isRecording) {
+            recorder.switchSource(AudioRecorder.sourceFor(context, enabled))
+            session?.let { s -> if (enabled) store.update(s.noteId) { it.copy(backgroundVoices = true) } }
+        }
+        loadEngine()
+    }
+
+    /**
+     * Quick switcher: use [choice] from now on. Picking a regular model turns
+     * background voices off; picking the background model turns it on.
+     */
+    fun selectModel(choice: EngineChoice) {
+        if (choice == BACKGROUND_ENGINE) {
+            setBackgroundVoices(true)
+            return
+        }
+        prefs.edit { putString("engine", choice.name) }
+        _state.update { it.copy(engineChoice = choice) }
+        if (_state.value.backgroundVoices) setBackgroundVoices(false) else loadEngine()
+    }
+
+    private fun refreshInstalled() =
+        _state.update { s -> s.copy(installedEngines = EngineChoice.entries.filter(models::isInstalled).toSet()) }
+
     fun loadEngine() {
-        val choice = _state.value.engineChoice
+        val choice = _state.value.activeEngine
         loadJob?.cancel()
         loadJob = scope.launch {
             val old = engineMutex.withLock { engine.also { engine = null } }
@@ -238,12 +311,13 @@ class RecordingController(
             setStatus(EngineStatus.Loading(0.0, downloading))
             try {
                 models.install(choice) { p ->
-                    scope.launch { if (_state.value.engineChoice == choice) setStatus(EngineStatus.Loading(p, true)) }
+                    scope.launch { if (_state.value.activeEngine == choice) setStatus(EngineStatus.Loading(p, true)) }
                 }
                 setStatus(EngineStatus.Loading(1.0, false))
                 val loaded = withContext(Dispatchers.Default) { createEngine(choice) }
                 engineMutex.withLock { engine = loaded }
                 setStatus(EngineStatus.Ready)
+                refreshInstalled()
                 processQueue()
             } catch (e: CancellationException) {
                 throw e
@@ -276,9 +350,11 @@ class RecordingController(
     private val engineReady get() = _state.value.engineStatus == EngineStatus.Ready
 
     /** Runs one model call at a time on a background thread. */
-    private suspend fun transcribe(samples: FloatArray): Transcript = engineMutex.withLock {
+    private suspend fun transcribe(samples: FloatArray, normalize: Boolean = _state.value.backgroundVoices): Transcript = engineMutex.withLock {
         val current = engine ?: throw IllegalStateException("The model isn't loaded.")
-        withContext(Dispatchers.Default) { current.transcribe(samples) }
+        withContext(Dispatchers.Default) {
+            current.transcribe(if (normalize) AudioLevel.normalize(samples) else samples)
+        }
     }
 
     // endregion
@@ -291,7 +367,7 @@ class RecordingController(
         processTranslations()
         if (engine == null && loadJob?.isActive != true) loadEngine() else processQueue()
         val s = _state.value
-        if (s.autoRecordOnOpen && !s.isRecording) start()
+        if (s.autoRecordOnOpen && !s.isRecording && !conversationActive) start()
     }
 
     fun toggle() {
@@ -300,7 +376,7 @@ class RecordingController(
 
     fun start() {
         val s = _state.value
-        if (s.isRecording) return
+        if (s.isRecording || conversationActive) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             showError("Microphone access is needed to record.")
             return
@@ -309,7 +385,7 @@ class RecordingController(
         try {
             // A chosen mic that isn't connected falls back to the phone's default.
             val preferred = inputs.beginRecording(s.selectedInputKey)
-            recorder.start(File(store.recordingsDir, fileName), preferred)
+            recorder.start(File(store.recordingsDir, fileName), preferred, AudioRecorder.sourceFor(context, s.backgroundVoices))
         } catch (e: Throwable) {
             inputs.endRecording()
             showError(e.message ?: "Could not start recording.")
@@ -322,14 +398,19 @@ class RecordingController(
             while (isActive) {
                 delay(TICK_MS)
                 val current = session ?: continue
-                if (engineReady) processLive(current)
+                if (engineReady) processLive(current) else feedDetector(current, recorder.sampleCount, final = false)
+                maybeAutoSplit(current)
             }
         }
     }
 
     /** Creates the note (saved before any audio arrives, so a crash can always find it) and its live session. */
     private fun beginNote(fileName: String, origin: Int, part: Int) {
-        val note = Note(audioFileName = fileName, status = TranscriptionStatus.RECORDING)
+        val note = Note(
+            audioFileName = fileName,
+            status = TranscriptionStatus.RECORDING,
+            backgroundVoices = _state.value.backgroundVoices,
+        )
         store.add(note)
         session = LiveSession(note.id, origin)
         tailTranslateJob?.cancel()
@@ -360,7 +441,7 @@ class RecordingController(
             return
         }
         old.end = at
-        finishing += old
+        markFinishing(old)
         beginNote(fileName, origin = at, part = _state.value.partNumber + 1)
         scope.launch { finishSession(old) }
     }
@@ -370,9 +451,9 @@ class RecordingController(
         if (!_state.value.isRecording) return
         recorder.stop()
         inputs.endRecording()
-        RecordingService.stop(context)
         current.end = recorder.sampleCount
-        finishing += current
+        current.stoppedByUser = true
+        markFinishing(current)
         session = null
         tailTranslateJob?.cancel()
         _state.update {
@@ -414,17 +495,25 @@ class RecordingController(
             val text = s.committedText
             store.update(noteId) {
                 if (error == null) {
-                    val done = it.withRevision(text, RevisionSource.TRANSCRIPTION, engineLabel(s.engines), mostCommon(s.languages))
+                    val done = it.withTranscription(text, RevisionSource.TRANSCRIPTION, engineLabel(s.engines), mostCommon(s.languages))
                         .copy(status = TranscriptionStatus.DONE, lastError = null, partialText = null)
-                    // Reuse the live translation when every part of it finished.
-                    done.copy(translation = liveTranslationFor(s.segments, done.revisions.last().id))
+                    // Reuse the live translation when every part of it finished
+                    // (and the transcription is the current text, not behind an edit).
+                    val current = done.revisions.lastOrNull()
+                    if (current != null && current.source == RevisionSource.TRANSCRIPTION && current.text == text.trim()) {
+                        done.copy(translation = liveTranslationFor(s.segments, current.id))
+                    } else {
+                        done
+                    }
                 } else {
                     it.copy(status = TranscriptionStatus.FAILED, lastError = error, partialText = text.ifBlank { null })
                 }
             }
+            // Every finished part is copied: after Stop, a manual split or an auto-split.
+            if (error == null) copyWhenDone(noteId)
         } finally {
             s.detector?.release()
-            finishing -= s
+            unmarkFinishing(s)
             processQueue()
         }
     }
@@ -440,19 +529,7 @@ class RecordingController(
         return try {
             val now = s.end ?: recorder.sampleCount
             val vad = s.detector
-            if (vad != null) {
-                if (now > s.detectedUpTo) {
-                    // The detector counts from the first sample it was given: this note's origin.
-                    s.pending += vad.feed(recorder.samples(s.detectedUpTo, now)).map { Span(it.start + s.origin, it.end + s.origin) }
-                    s.detectedUpTo = now
-                    if (!vad.inSpeech) s.quietAt = now
-                }
-                if (final) s.pending += vad.flush().map { Span(it.start + s.origin, minOf(it.end + s.origin, now)) }
-            } else if (final || now - s.committedUpTo >= MAX_CHUNK) {
-                // No detector: treat everything as speech; the planner cuts at quiet points.
-                s.pending.clear()
-                s.pending += Span(s.committedUpTo, now)
-            }
+            feedDetector(s, now, final)
 
             val batchReady = when {
                 final -> true
@@ -491,6 +568,66 @@ class RecordingController(
         }
     }
 
+    /**
+     * Passes new audio of [s] to its speech detector, collecting finished
+     * utterances and noting when speech was last heard (for auto-split).
+     * Runs even while no model is loaded, so nothing is missed.
+     */
+    private fun feedDetector(s: LiveSession, now: Int, final: Boolean) {
+        val vad = s.detector
+        if (vad != null) {
+            if (now > s.detectedUpTo) {
+                // The detector counts from the first sample it was given: this note's origin.
+                val found = vad.feed(recorder.samples(s.detectedUpTo, now)).map { Span(it.start + s.origin, it.end + s.origin) }
+                s.pending += found
+                found.lastOrNull()?.let { s.lastVoiceAt = maxOf(s.lastVoiceAt ?: 0, it.end) }
+                s.detectedUpTo = now
+                if (vad.inSpeech) s.lastVoiceAt = now else s.quietAt = now
+            }
+            if (final) s.pending += vad.flush().map { Span(it.start + s.origin, minOf(it.end + s.origin, now)) }
+        } else {
+            s.lastVoiceAt = now // no detector: can't tell silence apart, so assume speech
+            if (final || now - s.committedUpTo >= MAX_CHUNK) {
+                // Treat everything as speech; the planner cuts at quiet points.
+                s.pending.clear()
+                s.pending += Span(s.committedUpTo, now)
+            }
+        }
+    }
+
+    fun setThemeMode(mode: ThemeMode) {
+        prefs.edit { putString("theme", mode.name) }
+        _state.update { it.copy(themeMode = mode) }
+    }
+
+    fun setCopyWhenDone(enabled: Boolean) {
+        prefs.edit { putBoolean("copyWhenDone", enabled) }
+        _state.update { it.copy(copyWhenDone = enabled) }
+    }
+
+    /** Puts a just-finished recording's transcript on the clipboard and says so with a toast. */
+    private fun copyWhenDone(noteId: String) {
+        if (!_state.value.copyWhenDone) return
+        val text = store.note(noteId)?.currentText?.takeIf { it.isNotBlank() } ?: return
+        val clipboard = context.getSystemService(ClipboardManager::class.java)
+        clipboard.setPrimaryClip(ClipData.newPlainText("VoicePad transcript", text))
+        Toast.makeText(context, "Transcript copied to clipboard", Toast.LENGTH_SHORT).show()
+    }
+
+    fun setAutoSplit(mode: AutoSplit) {
+        prefs.edit { putString("autoSplit", mode.name) }
+        _state.update { it.copy(autoSplit = mode) }
+    }
+
+    /** Splits the note being recorded when the auto-split rule says so. */
+    private fun maybeAutoSplit(s: LiveSession) {
+        if (s !== session || !_state.value.isRecording) return
+        val speaking = s.detector?.inSpeech ?: true
+        if (_state.value.autoSplit.shouldSplit(s.origin, recorder.sampleCount, speaking, s.lastVoiceAt, AudioRecorder.SAMPLE_RATE)) {
+            split()
+        }
+    }
+
     /** Transcribes and commits every pending utterance of [s], chunk by chunk. */
     private suspend fun commit(s: LiveSession, audioEnd: Int) {
         val chunks = ChunkPlanner.plan(s.pending, audioEnd, MAX_CHUNK, PAD, grouping) { from, to ->
@@ -521,6 +658,16 @@ class RecordingController(
             store.update(s.noteId) { it.copy(partialText = s.committedText.ifBlank { null }) }
             freeCommittedAudio()
         }
+    }
+
+    private fun markFinishing(s: LiveSession) {
+        finishing += s
+        _state.update { it.copy(finishingCount = finishing.size) }
+    }
+
+    private fun unmarkFinishing(s: LiveSession) {
+        finishing -= s
+        _state.update { it.copy(finishingCount = finishing.size) }
     }
 
     /** Drops audio from memory that no live or finishing note still needs. */
@@ -620,7 +767,7 @@ class RecordingController(
 
     /** "Parakeet v3", or "Parakeet v3 + SenseVoice" when Auto used both. */
     private fun engineLabel(engines: List<String>): String =
-        engines.distinct().joinToString(" + ").ifBlank { _state.value.engineChoice.shortName }
+        engines.distinct().joinToString(" + ").ifBlank { _state.value.activeEngine.shortName }
 
     private fun join(a: String, b: String) = listOf(a, b).filter { it.isNotEmpty() }.joinToString(" ")
 
@@ -629,17 +776,60 @@ class RecordingController(
 
     // endregion
 
+    // region Conversation mode
+
+    /** True while conversation mode has the microphone and the model; notes don't record meanwhile. */
+    private var conversationActive = false
+    private var resumeAfterConversation = false
+
+    /** Hands the microphone and the model to conversation mode, saving any note being recorded. */
+    fun enterConversation() {
+        if (conversationActive) return
+        resumeAfterConversation = _state.value.isRecording
+        if (_state.value.isRecording) stop()
+        conversationActive = true
+        if (engine == null && loadJob?.isActive != true) loadEngine()
+    }
+
+    /** Back to notes: recording resumes if it was on before conversation mode. */
+    fun leaveConversation() {
+        if (!conversationActive) return
+        conversationActive = false
+        if (resumeAfterConversation) start()
+        processQueue()
+    }
+
+    val isEngineReady: Boolean get() = engineReady
+
+    /** One model call for conversation mode (shares the loaded model with notes). */
+    suspend fun transcribeForConversation(samples: FloatArray): Transcript = transcribe(samples, normalize = false)
+
+    /** The chosen microphone for conversation mode (null = phone's default), with a Bluetooth headset switched on. */
+    fun beginConversationInput(): android.media.AudioDeviceInfo? = inputs.beginRecording(_state.value.selectedInputKey)
+
+    fun endConversationInput() = inputs.endRecording()
+
+    /** Channels the chosen microphone (or the built-in one) can record. */
+    fun conversationMicChannels(): Int {
+        val s = _state.value
+        val device = s.inputDevices.firstOrNull { it.key == s.selectedInputKey }
+            ?: s.inputDevices.firstOrNull { it.kind == "Built-in microphone" }
+        return device?.maxChannels ?: 2
+    }
+
+    // endregion
+
     // region Saved-audio transcription and retries
 
     /** Re-runs the current model over a note's audio (manual retry or re-transcribe). */
     fun retranscribe(noteId: String) {
-        scope.launch { transcribeSaved(noteId) }
+        scope.launch { transcribeSaved(noteId, userRequested = true) }
     }
 
     /** Retries every recording that still needs text, ignoring the auto-retry limit. */
     fun retryAll() {
         scope.launch {
-            for (note in store.notes.value.filter { it.needsTranscription }) transcribeSaved(note.id)
+            for (note in store.notes.value.filter { it.needsTranscription }) transcribeSaved(note.id, userRequested = true)
         }
     }
 
@@ -654,7 +844,7 @@ class RecordingController(
             // Each note gets at most one attempt per pass; the next pass comes
             // with the next app launch, model load or finished recording.
             val tried = mutableSetOf<String>()
-            while (engineReady && !_state.value.isRecording) {
+            while (engineReady && !_state.value.isRecording && !conversationActive) {
                 val next = store.notes.value.firstOrNull {
                     it.needsTranscription && it.attempts < MAX_AUTO_ATTEMPTS &&
                         it.id != _state.value.recordingNoteId && it.id !in tried
@@ -665,11 +855,11 @@ class RecordingController(
         }
     }
 
-    private suspend fun transcribeSaved(noteId: String) {
+    private suspend fun transcribeSaved(noteId: String, userRequested: Boolean = false) {
         val note = store.note(noteId) ?: return
         if (note.status == TranscriptionStatus.IN_PROGRESS || note.status == TranscriptionStatus.RECORDING) return
-        val file = store.audioFile(note)
-        if (file == null || !file.exists()) {
+        val stored = store.audioFile(note)
+        if (stored == null || !stored.exists()) {
             store.update(noteId) { it.copy(status = TranscriptionStatus.FAILED, lastError = "The audio file is missing.") }
             return
         }
@@ -682,7 +872,13 @@ class RecordingController(
         val source = if (note.revisions.isEmpty()) RevisionSource.TRANSCRIPTION else RevisionSource.RETRANSCRIPTION
 
         store.update(noteId) { it.copy(status = TranscriptionStatus.IN_PROGRESS, attempts = it.attempts + 1) }
+        // Archived notes are compressed: decode to a temporary WAV first.
+        val decoded = if (stored.extension == "wav") null else File(context.cacheDir, "${note.id}.decoded.wav")
         try {
+            val file = if (decoded == null) stored else withContext(Dispatchers.IO) {
+                AudioArchive.decodeToWav(stored, decoded)
+                decoded
+            }
             val total = withContext(Dispatchers.IO) { WavFile.sampleCount(file) }
             // Find the speech by streaming the file through the detector in
             // 10 s blocks, so memory stays small however long it is.
@@ -714,14 +910,17 @@ class RecordingController(
             val engines = mutableListOf<String>()
             for (chunk in chunks) {
                 val audio = withContext(Dispatchers.IO) { join(chunk.map { WavFile.readRange(file, it.start, it.end) }) }
-                val result = transcribe(audio)
+                val result = transcribe(audio, note.backgroundVoices)
                 text = join(text, result.text)
                 result.language?.let { languages += it }
                 result.engine?.let { engines += it }
             }
             val engineName = engineLabel(engines)
+            if (text.isBlank() && store.note(noteId)?.currentText?.isNotBlank() == true) {
+                showError("No speech found on re-transcription — the existing text was kept.")
+            }
             store.update(noteId) {
-                it.withRevision(text, source, engineName, mostCommon(languages)).copy(
+                it.withTranscription(text, source, engineName, mostCommon(languages), userRequested).copy(
                     status = TranscriptionStatus.DONE,
                     lastError = null,
                     partialText = null,
@@ -736,7 +935,137 @@ class RecordingController(
             }
             if (hadText) showError("Re-transcription failed: $message")
             if (e is CancellationException) throw e
+        } finally {
+            decoded?.delete()
         }
+    }
+
+    // endregion
+
+    // region Export
+
+    /** Notes an export would include. */
+    fun exportCandidates(includeArchived: Boolean): List<Note> =
+        store.notes.value.filter { it.id != _state.value.recordingNoteId && (includeArchived || !it.archived) }
+
+    /** Bytes of audio an export with recordings would hold. */
+    fun exportAudioBytes(includeArchived: Boolean): Long =
+        exportCandidates(includeArchived).sumOf { store.audioFile(it)?.takeIf { f -> f.isFile }?.length() ?: 0L }
+
+    /**
+     * Writes every note (see [com.voicepad.app.data.NoteExport]) as a ZIP to
+     * [uri], a file the user picked. Calls [onDone] with a message for them.
+     */
+    fun exportNotes(uri: android.net.Uri, includeAudio: Boolean, includeArchived: Boolean, onDone: (String) -> Unit) {
+        val notes = exportCandidates(includeArchived)
+        scope.launch {
+            val message = try {
+                val count = withContext(Dispatchers.IO) {
+                    val out = context.contentResolver.openOutputStream(uri, "wt") ?: error("Couldn't open the file.")
+                    out.use { com.voicepad.app.data.NoteExport.writeZip(it, notes, includeAudio) { n -> store.audioFile(n) } }
+                }
+                "Exported $count note${if (count == 1) "" else "s"}."
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                "Export failed: ${e.message ?: e}"
+            }
+            onDone(message)
+        }
+    }
+
+    // endregion
+
+    // region Archive and clean-up
+
+    /** Notes that must not be archived or deleted right now. */
+    private fun busyIds(): Set<String> =
+        (finishing.map { it.noteId } + listOfNotNull(session?.noteId)).toSet()
+
+    /**
+     * Archives notes: compresses each one's audio to AAC (about a tenth of the
+     * size) and moves it out of the main list. The WAV is only deleted once
+     * the compressed copy has been checked and the note saved; if compression
+     * fails the note stays as it was and you're told why.
+     */
+    fun archive(ids: Collection<String>) = runOnNotes(ids) { note ->
+        if (note.archived) return@runOnNotes true
+        val ok = compressAudio(note.id)
+        if (ok) store.update(note.id) { it.copy(archived = true, archivedAt = System.currentTimeMillis()) }
+        ok
+    }
+
+    /** Compresses notes' audio to AAC (about a tenth of the size) but keeps them in the list. */
+    fun compress(ids: Collection<String>) = runOnNotes(ids) { note -> compressAudio(note.id) }
+
+    /** Runs [work] on each idle note in turn and reports any that couldn't be compressed. */
+    private fun runOnNotes(ids: Collection<String>, work: suspend (Note) -> Boolean) {
+        scope.launch {
+            var failed = 0
+            for (id in ids) {
+                val note = store.note(id) ?: continue
+                if (id in busyIds() || note.status == TranscriptionStatus.IN_PROGRESS) continue
+                if (!work(note)) failed++
+            }
+            if (failed > 0) {
+                showError(
+                    if (failed == 1) "1 note couldn't be compressed, so it was left as it was."
+                    else "$failed notes couldn't be compressed, so they were left as they were."
+                )
+            }
+        }
+    }
+
+    /**
+     * WAV → AAC for one note. The WAV is only deleted once the compressed copy
+     * has been checked and the note saved. True if done (or nothing to do).
+     */
+    private suspend fun compressAudio(id: String): Boolean {
+        val note = store.note(id) ?: return true
+        val wav = store.audioFile(note)
+        if (wav == null || !wav.exists() || wav.extension != "wav") return true
+        return try {
+            val m4aName = wav.nameWithoutExtension + ".m4a"
+            withContext(Dispatchers.IO) { AudioArchive.compress(wav, File(store.recordingsDir, m4aName)) }
+            store.update(id) { it.copy(audioFileName = m4aName) }
+            wav.delete()
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            false
+        }
+    }
+
+    /** Back to the main list (the audio stays compressed). */
+    fun unarchive(id: String) = store.update(id) { it.copy(archived = false, archivedAt = null) }
+
+    fun delete(ids: Collection<String>) = store.deleteMany(ids.filterNot { it in busyIds() })
+
+    /** Unpinned notes older than [days] that [cleanUp] would touch. */
+    fun cleanupCandidates(action: NoteCleanup.Action, days: Int): List<Note> =
+        NoteCleanup.select(store.notes.value, action, days, System.currentTimeMillis(), busyIds())
+
+    fun cleanUp(action: NoteCleanup.Action, days: Int) {
+        val ids = cleanupCandidates(action, days).map { it.id }
+        when (action) {
+            NoteCleanup.Action.ARCHIVE -> archive(ids)
+            NoteCleanup.Action.COMPRESS -> compress(ids)
+            NoteCleanup.Action.DELETE_EMPTY, NoteCleanup.Action.DELETE -> delete(ids)
+        }
+    }
+
+    /** Current audio size of [notes] and roughly what it would be compressed (bytes). */
+    fun audioSizes(notes: List<Note>): Pair<Long, Long> {
+        var now = 0L
+        var after = 0L
+        for (note in notes) {
+            val size = store.audioFile(note)?.takeIf { it.exists() }?.length() ?: continue
+            now += size
+            // 16 kHz 16-bit WAV is 256 kbit/s; the archive format is 24 kbit/s.
+            after += if (note.audioFileName?.endsWith(".wav") == true) size * 24 / 256 else size
+        }
+        return now to after
     }
 
     // endregion
@@ -778,9 +1107,11 @@ class RecordingController(
         }
         val outcome = try {
             val result = translator.translate(revision.text, revision.language)
+            // A translation that repeats the original (misdetected English) isn't one.
+            val same = TextSimilarity.nearlySame(result.english, revision.text)
             NoteTranslation(
                 revisionId = revision.id,
-                status = if (result.english == null) TranslationStatus.NOT_NEEDED else TranslationStatus.DONE,
+                status = if (result.english == null || same) TranslationStatus.NOT_NEEDED else TranslationStatus.DONE,
                 language = result.language,
                 english = result.english,
                 romanization = result.romanization,

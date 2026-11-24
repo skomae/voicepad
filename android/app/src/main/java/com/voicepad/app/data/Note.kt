@@ -81,6 +81,11 @@ data class Note(
     /** When it was pinned; pinned notes are listed most recently pinned first. */
     val pinnedAt: Long? = null,
     val translation: NoteTranslation? = null,
+    /** Recorded in background-voices mode: its audio is normalised before transcription. */
+    val backgroundVoices: Boolean = false,
+    /** Moved out of the main list, with its audio compressed (see AudioArchive). */
+    val archived: Boolean = false,
+    val archivedAt: Long? = null,
 ) {
     val currentText: String get() = revisions.lastOrNull()?.text ?: ""
 

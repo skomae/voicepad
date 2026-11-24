@@ -13,7 +13,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /** Downloads and unpacks sherpa-onnx model archives into app storage. */
-class ModelManager(context: Context) {
+class ModelManager(private val context: Context) {
     private val modelsDir = File(context.filesDir, "models").apply { mkdirs() }
 
     fun directory(choice: EngineChoice) = File(modelsDir, choice.archive)
@@ -39,6 +39,12 @@ class ModelManager(context: Context) {
     private suspend fun installOne(choice: EngineChoice, progress: (Double) -> Unit) = withContext(Dispatchers.IO) {
         if (isInstalled(choice)) return@withContext
         val target = directory(choice)
+        val folder = ModelFolder.get(context)
+        // A copy kept in the user's model folder (e.g. from before a reinstall) beats downloading.
+        if (folder.restore("models/${choice.archive}", target)) {
+            progress(1.0)
+            return@withContext
+        }
         target.deleteRecursively()
         target.mkdirs()
 
@@ -66,6 +72,7 @@ class ModelManager(context: Context) {
             connection.disconnect()
         }
         File(target, ".complete").writeText(choice.archive)
+        folder.saveLater("models/${choice.archive}", target)
         progress(1.0)
     }
 

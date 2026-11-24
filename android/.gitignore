@@ -7,3 +7,4 @@ app/libs/
 *.jks
 *.keystore
 app/src/main/assets/silero_vad.onnx
+.kotlin/

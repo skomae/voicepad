@@ -45,12 +45,16 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.voicepad.app.RecordingController
 import kotlinx.coroutines.delay
 
 @Composable
-fun RecordBar(controller: RecordingController, state: RecordingController.UiState) {
+fun RecordBar(controller: RecordingController, state: RecordingController.UiState, compact: Boolean = false) {
+    // Small windows: smaller button and less spacing.
+    val button = if (compact) 64.dp else 80.dp
+    val inner = if (compact) 52.dp else 64.dp
     var level by remember { mutableFloatStateOf(0f) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
 
@@ -65,7 +69,7 @@ fun RecordBar(controller: RecordingController, state: RecordingController.UiStat
 
     Surface(tonalElevation = 3.dp) {
         Column(
-            Modifier.fillMaxWidth().navigationBarsPadding().padding(vertical = 10.dp),
+            Modifier.fillMaxWidth().navigationBarsPadding().padding(vertical = if (compact) 6.dp else 10.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             state.errorMessage?.let {
@@ -79,7 +83,7 @@ fun RecordBar(controller: RecordingController, state: RecordingController.UiStat
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(20.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (compact) 12.dp else 20.dp),
             ) {
                 Column(Modifier.width(72.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                     val started = state.startedAt
@@ -98,7 +102,7 @@ fun RecordBar(controller: RecordingController, state: RecordingController.UiStat
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .size(80.dp)
+                        .size(button)
                         .semantics { contentDescription = if (state.isRecording) "Stop recording" else "Start recording" }
                         .clip(CircleShape)
                         .clickable { controller.toggle() },
@@ -106,47 +110,39 @@ fun RecordBar(controller: RecordingController, state: RecordingController.UiStat
                     if (state.isRecording) {
                         Box(
                             Modifier
-                                .size(80.dp)
+                                .size(button)
                                 .scale(1f + level * 0.3f)
                                 .background(RecordingRed.copy(alpha = 0.22f), CircleShape)
                         )
-                        Box(Modifier.size(64.dp).background(RecordingRed, CircleShape))
-                        Box(Modifier.size(24.dp).background(Color.White, RoundedCornerShape(5.dp)))
+                        Box(Modifier.size(inner).background(RecordingRed, CircleShape))
+                        Box(Modifier.size(inner * 0.38f).background(Color.White, RoundedCornerShape(5.dp)))
                     } else {
                         // Idle looks clearly different: an outlined ring with a red dot, like a camera.
-                        Box(Modifier.size(64.dp).border(4.dp, MaterialTheme.colorScheme.outline, CircleShape))
-                        Box(Modifier.size(44.dp).background(RecordingRed, CircleShape))
+                        Box(Modifier.size(inner).border(4.dp, MaterialTheme.colorScheme.outline, CircleShape))
+                        Box(Modifier.size(inner * 0.7f).background(RecordingRed, CircleShape))
                     }
                 }
 
-                // Split: like a stopwatch lap — ends this note and starts the next without a gap.
-                val view = LocalView.current
-                Column(
-                    Modifier
-                        .width(72.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable(enabled = state.isRecording) {
-                            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                            controller.split()
-                        }
-                        .padding(vertical = 6.dp)
-                        .semantics { contentDescription = "Split: finish this recording and start a new one" },
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    val tint = if (state.isRecording) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
-                    Icon(Icons.Default.ContentCut, contentDescription = null, tint = tint)
-                    Text("Split", style = MaterialTheme.typography.labelMedium, color = tint)
-                }
+                // Split: tap for a new note now; drag up or long-press for auto-split.
+                SplitButton(controller, state)
             }
+            val auto = state.autoSplit.badge
             Text(
-                if (state.isRecording) {
-                    "Recording" + (if (state.partNumber > 1) " · part ${state.partNumber}" else "") + " — tap ■ to stop"
-                } else {
-                    "Not recording — tap ● to start"
+                when {
+                    state.isRecording && compact ->
+                        "Recording" + (if (auto != null) " · $auto auto" else "") + (if (state.backgroundVoices) " · bg voices" else "")
+                    state.isRecording ->
+                        "Recording" + (if (state.partNumber > 1) " · part ${state.partNumber}" else "") +
+                            (if (state.backgroundVoices) " · background voices" else "") +
+                            (if (auto != null) " · auto-split $auto" else "") + " — tap ■ to stop"
+                    compact -> "Not recording"
+                    else -> "Not recording — tap ● to start"
                 },
-                style = MaterialTheme.typography.labelLarge,
+                style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
                 color = if (state.isRecording) RecordingRed else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 6.dp),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = if (compact) 2.dp else 6.dp, start = 12.dp, end = 12.dp),
             )
         }
     }
