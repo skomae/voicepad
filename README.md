@@ -66,6 +66,36 @@ edited, and keeps a full revision history.
   Translation framework, plus pinyin with tone marks for Mandarin (or Latin
   transliteration for other scripts). Translations are saved per revision,
   redone after edits, and retried like transcriptions.
+- **Auto-split** (touch and hold the scissors): a new note after 2–30 s of
+  silence or every 5/15/30 minutes (at the next pause); never splits off a
+  note with nothing said. A badge on the scissors shows the rule.
+- **Copy when done**: each finished recording or split-off part goes to the
+  clipboard (Settings).
+- **Theme**: System, Light, Dark or Pure black (OLED).
+- **Conversation mode** (⋯ → Conversation mode): live two-way translation
+  between two languages in big text. Each utterance is transcribed, assigned
+  to one of the two languages and translated into the other; speech in
+  progress is previewed. A sentence that stops mid-way ("…and", 然后) is held
+  open for a thinking pause (a ring on the mic drains) before it's
+  translated. Speakers are told apart by voice (FluidAudio's speaker model,
+  downloaded once) or by language. Translations can be read aloud with the
+  phone's voices; the mic ignores the phone while it speaks. Layouts: across
+  (top/bottom or left/right, the far half upside down), side by side, or a
+  transcript. Each session is saved as a note. Not on iOS yet: one mic
+  channel per person, and the foldable cover screen.
+- **Export all notes** (⋯): a ZIP with `notes.json`, `notes.md` and
+  optionally the recordings, shared to Files, AirDrop and so on.
+- **Archive and clean up**: archived notes leave the list (search still finds
+  them) with their audio compressed to AAC (~10× smaller, checked before the
+  WAV is deleted). Clean up archives, compresses or deletes notes by age, or
+  deletes empty ones; pinned and busy notes are protected.
+- **Background voices** (ear button): room microphone, evened-out loudness
+  and Whisper turbo, for announcements or a TV across the room. **Model
+  switcher**: tap the model name, top left.
+- **Live Activity** on the Lock Screen and Dynamic Island while recording,
+  with Stop and Split.
+- **Your edits are final**: a transcription that finishes later goes behind
+  your edit in the history; an empty result never replaces text.
 - **Pin** notes into a Pinned section; **play** or **share** any recording
   (WAV plus transcript); deleting asks first.
 - **Full-text search** over current text, translations, pinyin (tones
@@ -133,7 +163,8 @@ VoicePad/
   App/            App entry + RecordingController (recording ⇄ live transcription)
   Audio/          AVAudioEngine capture → 16 kHz mono Float32, crash-safe WAV, mic selection
   Transcription/  TranscriptionEngine protocol, Whisper, Parakeet + SenseVoice engines
-  Translation/    Language detection, pinyin/romanisation, English translation
+  Translation/    Language detection, pinyin/romanisation, translation
+  Conversation/   Conversation mode: turns, stage, languages, voices, read-aloud
   Models/         Note / Revision / status + JSON persistence, search
   Views/          SwiftUI bubbles, record bar, edit, history, settings
 VoicePadTests/    Unit tests (pure model code, no host app)
