@@ -3,6 +3,7 @@ import FluidAudio
 import Foundation
 import Observation
 import SwiftUI
+import UIKit
 
 /// Owns the recorder and the speech engine, and turns audio into text.
 ///
@@ -94,6 +95,20 @@ final class RecordingController {
 
     let inputs = AudioInputs()
     let translator = EnglishTranslator()
+    @ObservationIgnored private let liveActivity = LiveActivityPresenter()
+
+    /// What the Live Activity shows; nil when there's nothing to show.
+    var liveActivityState: RecordingActivityAttributes.ContentState? {
+        if isRecording {
+            let words = liveText.count > 120 ? "…" + liveText.suffix(120) : liveText
+            return .init(startedAt: startedAt, part: partNumber, backgroundVoices: backgroundVoices,
+                         latest: words, finishing: finishingCount)
+        }
+        if finishingCount > 0 {
+            return .init(startedAt: nil, part: 1, backgroundVoices: false, latest: "", finishing: finishingCount)
+        }
+        return nil
+    }
 
     // MARK: Private
 
@@ -161,6 +176,11 @@ final class RecordingController {
             self.inputs.apply(id)
         }
         inputs.apply(selectedInputID)
+
+        // Stop and Split from the Lock Screen / Dynamic Island.
+        RecordingActions.stop = { [weak self] in self?.stop() }
+        RecordingActions.split = { [weak self] in self?.split() }
+        liveActivity.observe { [weak self] in self?.liveActivityState }
 
         NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification, object: nil, queue: .main
@@ -397,7 +417,12 @@ final class RecordingController {
     /// revision (and the live translation, when it finished).
     private func finish(_ s: LiveSession) async {
         let noteID = s.noteID
+        // After Stop the microphone is off, so iOS may suspend the app: ask
+        // for time to finish. (iOS grants seconds to minutes; anything left
+        // over resumes from the queue the next time the app opens.)
+        let background = UIApplication.shared.beginBackgroundTask(withName: "Finish transcript")
         defer {
+            if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
             finishing.removeAll { $0 === s }
             freeCommittedAudio()
             processQueue()

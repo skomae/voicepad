@@ -23,6 +23,8 @@ targets:
     sources:
       - VoicePad
     dependencies:
+      - target: VoicePadWidgets
+        embed: true
       - package: WhisperKit
         product: WhisperKit
       - package: FluidAudio
@@ -38,12 +40,32 @@ targets:
         NSMicrophoneUsageDescription: VoicePad records your voice as soon as it opens so it can transcribe what you say.
         UIBackgroundModes:
           - audio
+        # Recording Live Activity (Lock Screen / Dynamic Island) with Stop and Split.
+        NSSupportsLiveActivities: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.voicepad.app
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
         ENABLE_PREVIEWS: YES
+  VoicePadWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - VoicePadWidgets
+      - VoicePad/Shared
+    info:
+      path: VoicePadWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: VoicePad
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.voicepad.app.widgets
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
   VoicePadTests:
     type: bundle.unit-test
     platform: iOS
