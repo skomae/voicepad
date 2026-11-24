@@ -251,7 +251,7 @@ struct LiveBubble: View {
     private var displayText: String {
         if !controller.liveText.isEmpty { return controller.liveText }
         switch controller.engineStatus {
-        case .ready: return "Listening…"
+        case .ready: return controller.liveRecordOnly ? "Recording… the text comes when you stop" : "Listening…"
         case .loading(let p): return p.determinate ? "Recording… downloading model \(Int(p.fraction * 100))%" : "Recording… getting the model ready"
         case .failed: return "Recording… (model unavailable)"
         case .idle: return "Recording…"

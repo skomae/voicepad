@@ -53,6 +53,9 @@ final class RecordingController {
     var errorMessage: String?
     /// The note being recorded right now, if any.
     private(set) var recordingNoteID: Note.ID?
+    /// The note being recorded started before the model was ready, so it is
+    /// only being recorded; its text comes once it's stopped (or split).
+    private(set) var liveRecordOnly = false
     /// Stopped or split-off notes still being transcribed.
     private(set) var finishingCount = 0
     /// Background voices (announcements, TV): room microphone, louder speech, Whisper turbo.
@@ -293,12 +296,15 @@ final class RecordingController {
         let newEngine = choice.makeEngine()
         loadTask = Task {
             do {
-                try await newEngine.load { progress in
+                // Off the main thread: compiling a model can take minutes and must
+                // never hold up recording or the screen.
+                let loading = UncheckedBox(newEngine)
+                try await Task.detached(priority: .utility) { try await loading.value.load { progress in
                     Task { @MainActor in
                         guard self.engineLoadID == loadID, case .loading = self.engineStatus else { return }
                         self.engineStatus = .loading(progress)
                     }
-                }
+                } }.value
                 guard engineLoadID == loadID else { return }
                 engine = newEngine
                 engineStatus = .ready
@@ -482,13 +488,15 @@ final class RecordingController {
                 try? await Task.sleep(for: .seconds(self?.tickSeconds ?? 1.2))
                 guard let self, !Task.isCancelled else { return }
                 guard let current = self.session else { continue }
-                if self.isEngineReady {
+                if self.isEngineReady, !current.recordOnly {
                     _ = await self.step(current, final: false)
-                } else if !current.stepping {
-                    // No model yet: still track speech, so pauses (and auto-split) work from the start.
-                    current.stepping = true
-                    try? await self.feedDetector(current, now: self.recorder.sampleCount, final: false)
-                    current.stepping = false
+                } else {
+                    // The model isn't ready (still downloading or loading): just record.
+                    // The audio goes straight to disk and nothing else touches it; the
+                    // whole note is transcribed from the file once the model is ready.
+                    current.recordOnly = true
+                    self.liveRecordOnly = true
+                    self.freeCommittedAudio()
                 }
                 self.maybeAutoSplit(current)
                 self.checkForStuckMicrophone()
@@ -505,6 +513,7 @@ final class RecordingController {
         session = LiveSession(noteID: note.id, origin: origin, detector: newDetector())
         tailTranslateTask?.cancel()
         recordingNoteID = note.id
+        liveRecordOnly = false
         startedAt = .now
         liveText = ""
         liveTranslation = nil
@@ -545,6 +554,7 @@ final class RecordingController {
         level = 0
         startedAt = nil
         recordingNoteID = nil
+        liveRecordOnly = false
         liveText = ""
         liveTranslation = nil
         partNumber = 1
@@ -592,8 +602,8 @@ final class RecordingController {
             store.delete(noteID)
             return
         }
-        guard isEngineReady else {
-            // Audio is safe on disk; it is transcribed once the model is ready.
+        guard isEngineReady, !s.recordOnly else {
+            // Audio is safe on disk; it is transcribed from the file once the model is ready.
             let partial = s.committedText
             store.update(noteID) {
                 $0.status = .pending
@@ -762,7 +772,9 @@ final class RecordingController {
 
     /// Drops audio from memory that no live or finishing note still needs.
     private func freeCommittedAudio() {
-        guard let needed = (finishing + [session].compactMap { $0 }).map(\.committedUpTo).min() else { return }
+        // A record-only note needs nothing in memory: it's transcribed from its file.
+        let now = recorder.sampleCount
+        guard let needed = (finishing + [session].compactMap { $0 }).map({ $0.recordOnly ? now : $0.committedUpTo }).min() else { return }
         recorder.discardBefore(needed - Self.pad)
     }
 
@@ -1043,6 +1055,9 @@ private final class LiveSession {
     var stepping = false
     /// Last moment speech was heard in this note (nil: nothing said yet).
     var lastVoiceAt: Int?
+    /// The model wasn't ready while this note was recorded: no live processing;
+    /// it is transcribed from its file afterwards.
+    var recordOnly = false
     let translations = TaskGroupTracker()
 
     init(noteID: Note.ID, origin: Int, detector: SpeechDetector?) {
@@ -1281,4 +1296,10 @@ extension RecordingController {
 enum TranscriptionError: LocalizedError {
     case modelNotLoaded
     var errorDescription: String? { "The model isn't loaded." }
+}
+
+/// Hands a non-Sendable object to a detached task that is its only user.
+private struct UncheckedBox<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
 }
