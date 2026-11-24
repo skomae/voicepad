@@ -53,6 +53,16 @@ struct SettingsView: View {
                     Text("Use Auto: Western for English and European languages, Auto: Asian + English when you speak Mandarin, Cantonese, Japanese or Korean (and English). Both pick the model per sentence. Silence is skipped and audio is split at pauses. Models run entirely on device. Each is downloaded once on first use. Recording starts immediately; text catches up once the model is ready.")
                 }
 
+                Section {
+                    Button("Show the setup guide again") {
+                        dismiss()
+                        if controller.isRecording { controller.stop() }
+                        controller.onboardingDone = false
+                    }
+                } footer: {
+                    Text("Walks through the microphone, model, translation and Lock Screen settings.")
+                }
+
                 Section("Status") {
                     switch controller.engineStatus {
                     case .idle: Text("Not loaded")
