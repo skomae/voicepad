@@ -165,6 +165,11 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
+    // Even Realities G1 glasses over Bluetooth LE (the vendored Basis protocol in
+    // glasses/basis uses the Nordic BLE libraries).
+    implementation("no.nordicsemi.android:ble-ktx:2.9.0")
+    implementation("no.nordicsemi.android:ble-common:2.9.0")
+    implementation("no.nordicsemi.android.support.v18:scanner:1.6.0")
     implementation("androidx.activity:activity-compose:1.12.4")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")

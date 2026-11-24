@@ -17,6 +17,8 @@ import com.voicepad.app.data.RevisionSource
 import com.voicepad.app.data.TranscriptionStatus
 import com.voicepad.app.data.TranslationStatus
 import com.voicepad.app.data.withTranscription
+import com.voicepad.app.glasses.GlassesController
+import com.voicepad.app.glasses.GlassesScope
 import com.voicepad.app.transcription.ChunkPlanner.Span
 import com.voicepad.app.transcription.EnglishTranslator
 import com.voicepad.app.transcription.SpeechDetector
@@ -67,6 +69,7 @@ class ConversationController(
     private val context: Context,
     private val notes: RecordingController,
     val speech: SpeechOutput,
+    val glasses: GlassesController,
 ) {
     data class Settings(
         val myLanguage: String = "en",
@@ -93,6 +96,10 @@ class ConversationController(
         val coverRotation: Int = 0,
         /** Animate the stage even when the phone's own animations are off (e.g. by power saving). */
         val forceAnimations: Boolean = false,
+        /** Show the conversation on Even Realities G1 glasses. */
+        val glasses: Boolean = false,
+        /** What the glasses show: the other person only, or both sides. */
+        val glassesScope: GlassesScope = GlassesScope.THEM,
     ) {
         val pair: Pair<String, String> get() = myLanguage to theirLanguage
     }
@@ -222,6 +229,9 @@ class ConversationController(
         coverScreen = prefs.getBoolean("coverScreen", true),
         coverRotation = prefs.getInt("coverRotation", 0),
         forceAnimations = prefs.getBoolean("forceAnimations", false),
+        glasses = prefs.getBoolean("glasses", false),
+        glassesScope = prefs.getString("glassesScope", null)?.let { runCatching { GlassesScope.valueOf(it) }.getOrNull() }
+            ?: GlassesScope.THEM,
     )
 
     private fun saveSettings(s: Settings) = prefs.edit {
@@ -237,6 +247,8 @@ class ConversationController(
         putBoolean("coverScreen", s.coverScreen)
         putInt("coverRotation", s.coverRotation)
         putBoolean("forceAnimations", s.forceAnimations)
+        putBoolean("glasses", s.glasses)
+        putString("glassesScope", s.glassesScope.name)
     }
 
     private fun changeSettings(transform: (Settings) -> Settings): Settings {
@@ -303,6 +315,19 @@ class ConversationController(
 
     fun setForceAnimations(enabled: Boolean) { changeSettings { it.copy(forceAnimations = enabled) } }
 
+    /** Shows the conversation on the glasses from now on (and connects them), or stops doing so. */
+    fun setGlasses(enabled: Boolean) {
+        changeSettings { it.copy(glasses = enabled) }
+        applyGlasses()
+    }
+
+    fun setGlassesScope(scope: GlassesScope) { changeSettings { it.copy(glassesScope = scope) } }
+
+    /** Starts or stops the glasses' view of the conversation; on, it connects them if they aren't yet. */
+    private fun applyGlasses() {
+        if (settings.glasses && _state.value.visible) glasses.follow(_state) else glasses.stop()
+    }
+
     /** Reported by the activity as the phone's cover screen comes and goes. */
     fun setCover(cover: Cover) = _state.update { it.copy(cover = cover) }
 
@@ -335,6 +360,7 @@ class ConversationController(
         _state.update { it.copy(visible = true) }
         prepareTranslation()
         if (settings.identifyVoices) ensureVoiceModel()
+        applyGlasses()
         startListening()
     }
 
@@ -346,6 +372,7 @@ class ConversationController(
         _state.update { it.copy(visible = false, live = null, message = null) }
         speech.stop()
         releaseHeld()
+        glasses.stop()
         notes.leaveConversation()
     }
 

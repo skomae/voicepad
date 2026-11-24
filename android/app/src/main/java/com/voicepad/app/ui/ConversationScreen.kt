@@ -1,6 +1,8 @@
 package com.voicepad.app.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -46,6 +48,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import android.widget.Toast
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.runtime.CompositionLocalProvider
@@ -84,6 +87,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -101,6 +105,10 @@ import com.voicepad.app.conversation.SpeakerRef
 import com.voicepad.app.conversation.SpeakerSource
 import com.voicepad.app.conversation.Stage
 import com.voicepad.app.conversation.Turn
+import com.voicepad.app.glasses.GlassesController
+import com.voicepad.app.glasses.GlassesScope
+import com.voicepad.app.glasses.GlassesScreen
+import com.voicepad.app.glasses.GlassesStatus
 import com.voicepad.app.transcription.EngineChoice
 import kotlinx.coroutines.delay
 
@@ -113,13 +121,26 @@ import kotlinx.coroutines.delay
  * the middle where both can reach them.
  */
 @Composable
-fun ConversationScreen(conversation: ConversationController, notes: RecordingController) {
+fun ConversationScreen(conversation: ConversationController, notes: RecordingController, glasses: GlassesController) {
     val state by conversation.state.collectAsStateWithLifecycle()
     val notesState by notes.state.collectAsStateWithLifecycle()
     val speechState by conversation.speech.state.collectAsStateWithLifecycle()
+    val glassesState by glasses.status.collectAsStateWithLifecycle()
     var showSettings by remember { mutableStateOf(false) }
     var picking by remember { mutableStateOf<Side?>(null) }
     val context = LocalContext.current
+
+    // Turning the glasses on asks for Bluetooth first (Android 12 and later).
+    val glassesPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        if (granted.values.all { it }) conversation.setGlasses(true)
+    }
+    val setGlasses: (Boolean) -> Unit = { on ->
+        if (on && glasses.needsPermission()) glassesPermission.launch(glasses.permissions())
+        else conversation.setGlasses(on)
+    }
+    val lookForGlasses: () -> Unit = {
+        if (glasses.needsPermission()) setGlasses(true) else glasses.retry()
+    }
 
     BackHandler { conversation.close() }
     // Nobody should have to tap the screen to keep it awake mid-conversation.
@@ -164,6 +185,9 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
             onDismissMessage = conversation::dismissMessage,
             onRetryModels = { conversation.retryModels(); if (notesState.engineStatus is EngineStatus.Failed) notes.loadEngine() },
             onUseEngine = notes::selectModel,
+            glasses = glassesState,
+            onToggleGlasses = { setGlasses(!state.settings.glasses) },
+            onLookForGlasses = lookForGlasses,
         )
     }
 
@@ -224,7 +248,13 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
         )
     }
     if (showSettings) {
-        ConversationSettingsSheet(conversation, state, notesState, notes.conversationMicChannels(), onPick = { picking = it }, onDismiss = { showSettings = false })
+        ConversationSettingsSheet(
+            conversation, state, notesState, notes.conversationMicChannels(), glassesState,
+            onPick = { picking = it },
+            onToggleGlasses = setGlasses,
+            onLookForGlasses = lookForGlasses,
+            onDismiss = { showSettings = false },
+        )
     }
 }
 
@@ -428,11 +458,14 @@ internal fun ControlStrip(
     onUseEngine: (EngineChoice) -> Unit,
     onCycleLayout: () -> Unit = {},
     onToggleSpeak: () -> Unit = {},
+    glasses: GlassesStatus = GlassesStatus.Off,
+    onToggleGlasses: () -> Unit = {},
+    onLookForGlasses: () -> Unit = {},
 ) {
     val settings = state.settings
     Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(vertical = 6.dp)) {
-            StatusLines(state, notesState, onDismissMessage, onRetryModels, onUseEngine)
+            StatusLines(state, notesState, onDismissMessage, onRetryModels, onUseEngine, glasses, onLookForGlasses)
             val languages = @Composable { modifier: Modifier ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier, horizontalArrangement = Arrangement.Center) {
                     LanguageButton(settings.myLanguage) { onPick(Side.MINE) }
@@ -472,6 +505,22 @@ internal fun ControlStrip(
                         if (settings.autoSpeak) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
                         contentDescription = if (settings.autoSpeak) "Reading translations aloud. Tap to stop." else "Not reading aloud. Tap to read translations aloud.",
                         tint = if (settings.autoSpeak) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // Show the conversation on Even Realities G1 glasses; dimmed while they're not connected.
+                IconButton(onClick = onToggleGlasses, modifier = Modifier.size(40.dp)) {
+                    Icon(
+                        Icons.Default.Subtitles,
+                        contentDescription = when {
+                            !settings.glasses -> "Show the conversation on Even Realities G1 glasses."
+                            glasses is GlassesStatus.Connected -> "Showing on the G1 glasses. Tap to stop."
+                            else -> "The G1 glasses aren't connected. Tap to stop showing on them."
+                        },
+                        tint = when {
+                            !settings.glasses -> MaterialTheme.colorScheme.onSurfaceVariant
+                            glasses is GlassesStatus.Connected -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                        },
                     )
                 }
                 Spacer(Modifier.width(2.dp))
@@ -562,6 +611,8 @@ private fun StatusLines(
     onDismissMessage: () -> Unit,
     onRetry: () -> Unit,
     onUseEngine: (EngineChoice) -> Unit,
+    glasses: GlassesStatus = GlassesStatus.Off,
+    onLookForGlasses: () -> Unit = {},
 ) {
     val settings = state.settings
     val lines = buildList<@Composable () -> Unit> {
@@ -610,6 +661,28 @@ private fun StatusLines(
                 if (status is SpeechOutput.VoiceStatus.Downloading) {
                     add { StatusText("Downloading ${voice.displayName} voice… ${(status.progress * 100).toInt()}% (the phone's voice speaks meanwhile)") }
                 }
+            }
+        }
+        if (settings.glasses) {
+            when (val g = glasses) {
+                GlassesStatus.Scanning -> add { StatusText("Looking for G1 glasses…") }
+                is GlassesStatus.Connecting -> add { StatusText("Connecting to ${g.name}…") }
+                GlassesStatus.NotFound -> add {
+                    StatusText(
+                        "No G1 glasses found: turn them on, and quit the Even Realities app.",
+                        action = "Look again", onAction = onLookForGlasses,
+                    )
+                }
+                GlassesStatus.Disconnected -> add {
+                    StatusText("The G1 glasses disconnected.", action = "Look again", onAction = onLookForGlasses)
+                }
+                is GlassesStatus.Failed -> add {
+                    StatusText("Glasses: ${g.message}", error = true, action = "Try again", onAction = onLookForGlasses)
+                }
+                GlassesStatus.NeedsPermission -> add {
+                    StatusText("The glasses need permission to use Bluetooth.", error = true)
+                }
+                else -> {}
             }
         }
         if (!state.listening) add { StatusText("Paused — tap the microphone to listen.") }
@@ -669,7 +742,10 @@ private fun ConversationSettingsSheet(
     state: ConversationController.UiState,
     notesState: RecordingController.UiState,
     micChannels: Int,
+    glasses: GlassesStatus,
     onPick: (Side) -> Unit,
+    onToggleGlasses: (Boolean) -> Unit,
+    onLookForGlasses: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val settings = state.settings
@@ -774,6 +850,45 @@ private fun ConversationSettingsSheet(
                 }
             }
 
+            SectionTitle("Even Realities G1 glasses")
+            ToggleRow(
+                title = "Show the conversation on the glasses",
+                subtitle = when (val g = glasses) {
+                    is GlassesStatus.Connected ->
+                        "Connected to ${g.name}${g.battery?.let { " · $it%" } ?: ""}. The glasses show five lines of 40 characters, " +
+                            "newest at the bottom; the phone keeps its own screen."
+                    GlassesStatus.Scanning -> "Looking for the glasses…"
+                    is GlassesStatus.Connecting -> "Connecting to ${g.name}…"
+                    GlassesStatus.NotFound -> "Not found: turn them on, and quit the Even Realities app (it holds the connection)."
+                    GlassesStatus.Disconnected -> "The glasses disconnected. Turn them on again."
+                    is GlassesStatus.Failed -> "Couldn't reach them: ${g.message}"
+                    GlassesStatus.NeedsPermission -> "Bluetooth permission is needed to find them."
+                    else -> "Five lines of 40 characters: the newest words at the bottom, older ones scrolling off the top."
+                },
+                checked = settings.glasses,
+                onChange = onToggleGlasses,
+            )
+            if (settings.glasses) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
+                    GlassesScope.entries.forEach { scope ->
+                        FilterChip(
+                            selected = settings.glassesScope == scope,
+                            onClick = { conversation.setGlassesScope(scope) },
+                            label = { Text(scope.label) },
+                        )
+                    }
+                }
+                Text(settings.glassesScope.description, style = MaterialTheme.typography.bodySmall, color = muted)
+                GlassesPreview(state)
+                when (glasses) {
+                    GlassesStatus.NotFound, GlassesStatus.Disconnected, GlassesStatus.NeedsPermission -> {
+                        TextButton(onClick = onLookForGlasses) { Text("Look for the glasses again") }
+                    }
+                    is GlassesStatus.Failed -> TextButton(onClick = onLookForGlasses) { Text("Try again") }
+                    else -> {}
+                }
+            }
+
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             ToggleRow(
                 title = "Tell voices apart",
@@ -863,6 +978,39 @@ private fun SpeechSettings(conversation: ConversationController, settings: Conve
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * What the glasses are showing, as the settings sheet draws it: the five
+ * 40-column lines, in the waveguide's green on black. It's the same page the
+ * glasses get, so the display's limits are visible while choosing.
+ */
+@Composable
+internal fun GlassesPreview(state: ConversationController.UiState, modifier: Modifier = Modifier) {
+    val settings = state.settings
+    val page = remember(state.stage, settings.myLanguage, settings.theirLanguage, settings.glassesScope, state.listening) {
+        GlassesScreen.of(state.stage, settings.myLanguage, settings.theirLanguage, settings.glassesScope, state.listening)
+    }
+    Column(
+        modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color(0xFF0A120B))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        page.forEach { line ->
+            Text(
+                line.ifEmpty { " " },
+                fontFamily = FontFamily.Monospace,
+                fontSize = 9.sp,
+                lineHeight = 13.sp,
+                color = Color(0xFF7EF29A),
+                maxLines = 1,
+                softWrap = false,
+            )
         }
     }
 }
