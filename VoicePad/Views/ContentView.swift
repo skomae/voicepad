@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(NoteStore.self) private var store
     @Environment(RecordingController.self) private var controller
+    @Environment(ConversationController.self) private var conversation
 
     @State private var editingNoteID: Note.ID?
     @State private var historyNoteID: Note.ID?
@@ -51,6 +52,7 @@ struct ContentView: View {
                     .tint(controller.isRecording ? .white : controller.backgroundVoices ? .accentColor : .primary)
                     .accessibilityLabel(controller.backgroundVoices ? "Background voices on" : "Background voices off")
                     Menu {
+                        Button("Conversation mode", systemImage: "bubble.left.and.text.bubble.right") { conversation.open() }
                         Button("Settings", systemImage: "gearshape") { showSettings = true }
                         Button("Archived notes (\(store.notes.filter(\.archived).count))", systemImage: "archivebox") { showArchive = true }
                         Button("Clean up…", systemImage: "sparkles") { showCleanup = true }
@@ -68,6 +70,9 @@ struct ContentView: View {
             .sheet(isPresented: $showArchive) { ArchivedNotesView(actions: bubbleActions, player: player) }
             .sheet(isPresented: $showCleanup) { CleanupView().presentationDetents([.medium, .large]) }
             .sheet(isPresented: $showExport) { ExportView().presentationDetents([.medium, .large]) }
+            .fullScreenCover(isPresented: Binding(get: { conversation.visible }, set: { if !$0 { conversation.close() } })) {
+                ConversationView()
+            }
             .sheet(item: $shareItem) { item in ShareSheet(items: item.items).presentationDetents([.medium, .large]) }
             .confirmationDialog(
                 "Delete recording?",

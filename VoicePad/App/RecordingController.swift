@@ -298,6 +298,37 @@ final class RecordingController {
 
     private func newDetector() -> SpeechDetector? { vad.map(SpeechDetector.init(vad:)) }
 
+    /// A speech detector for conversation mode (nil until the model is loaded).
+    func newSpeechDetector() -> SpeechDetector? { newDetector() }
+
+    // MARK: Conversation mode
+
+    /// True while conversation mode has the microphone and the model; notes don't record meanwhile.
+    @ObservationIgnored private(set) var conversationActive = false
+    @ObservationIgnored private var resumeAfterConversation = false
+
+    /// Hands the microphone and the model to conversation mode, saving any note being recorded.
+    func enterConversation() {
+        guard !conversationActive else { return }
+        resumeAfterConversation = isRecording
+        if isRecording { stop() }
+        conversationActive = true
+        if engine == nil, case .idle = engineStatus { loadEngine() }
+    }
+
+    /// Back to notes: recording resumes if it was on before conversation mode.
+    func leaveConversation() {
+        guard conversationActive else { return }
+        conversationActive = false
+        if resumeAfterConversation { Task { await start() } }
+        processQueue()
+    }
+
+    /// One model call for conversation mode (shares the loaded model with notes).
+    func transcribeForConversation(_ samples: [Float]) async throws -> Transcript {
+        try await transcribeSerially(samples, normalize: false)
+    }
+
     private var grouping: ChunkPlanner.Grouping { engine?.grouping ?? .utterances }
 
     /// Runs model calls one at a time; engines are not re-entrant.
@@ -320,12 +351,12 @@ final class RecordingController {
         translationTried.removeAll()
         processTranslations()
         if engine == nil, case .idle = engineStatus { loadEngine() } else { processQueue() }
-        guard autoRecordOnOpen, !isRecording else { return }
+        guard autoRecordOnOpen, !isRecording, !conversationActive else { return }
         await start()
     }
 
     func start() async {
-        guard !isRecording else { return }
+        guard !isRecording, !conversationActive else { return }
         errorMessage = nil
 
         guard await AVAudioApplication.requestRecordPermission() else {
@@ -768,7 +799,7 @@ final class RecordingController {
             // Each note gets at most one attempt per pass; the next pass comes
             // with the next app launch, model load or finished recording.
             var tried = Set<Note.ID>()
-            while isEngineReady, !isRecording {
+            while isEngineReady, !isRecording, !conversationActive {
                 guard let next = store.notes.first(where: {
                     $0.needsTranscription && $0.attempts < Self.maxAutoAttempts &&
                         $0.id != recordingNoteID && !tried.contains($0.id)

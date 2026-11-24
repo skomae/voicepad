@@ -51,7 +51,9 @@ final class EnglishTranslator {
     /// Drives the hidden `.translationTask`; changing it starts a session.
     /// (A `TranslationSession.Configuration`, typed loosely for iOS 17.)
     var configuration: Any?
-    @ObservationIgnored var hostAttached = false
+    /// Hidden hosts on screen (the main window, and conversation mode on top of it).
+    @ObservationIgnored var hosts = 0
+    var hostAttached: Bool { hosts > 0 }
     @ObservationIgnored private var job: (text: String, continuation: CheckedContinuation<String, Error>)?
     /// One request at a time: there is a single hidden session host, and live
     /// translation and saved notes both use it.
@@ -84,10 +86,77 @@ final class EnglishTranslator {
     }
 
     private func translateText(_ text: String, from source: String, languageName: String) async throws -> String {
+        try await translate(text, fromIdentifier: source, toIdentifier: "en", languageName: languageName)
+    }
+
+    // MARK: Any language pair (conversation mode)
+
+    /// Translates `text` from language `from` into `to` (codes such as "zh", "es").
+    func translate(_ text: String, from: String, to: String) async throws -> String {
+        try await translate(text, fromIdentifier: Self.identifier(from, text: text), toIdentifier: Self.identifier(to, text: ""),
+                            languageName: LanguageTags.displayName(from))
+    }
+
+    /// Pinyin or other Latin letters for `text` in `language`, when it isn't written in Latin letters.
+    func romanize(_ language: String, _ text: String) -> String? { Romanizer.romanize(language: language, text: text) }
+
+    /// The text detector's guesses for `text`, with confidence.
+    func languageCandidates(_ text: String) -> [(String, Double)] {
+        let recognizer = NLLanguageRecognizer()
+        recognizer.processString(text)
+        return recognizer.languageHypotheses(withMaximum: 6).map { ($0.key.rawValue, $0.value) }
+    }
+
+    /// Makes sure both directions between `a` and `b` can be translated on
+    /// the device: iOS asks to download each missing language pack once.
+    func prepare(_ a: String, _ b: String) async throws {
+        #if canImport(Translation)
+        guard #available(iOS 18.0, *) else { throw TranslationError.needsNewerIOS }
+        for (from, to) in [(a, b), (b, a)] {
+            let source = Locale.Language(identifier: Self.identifier(from, text: ""))
+            let target = Locale.Language(identifier: Self.identifier(to, text: ""))
+            let availability = LanguageAvailability()
+            switch await availability.status(from: source, to: target) {
+            case .installed: continue
+            case .unsupported:
+                if await availability.supportedLanguages.isEmpty { throw TranslationError.unavailableOnDevice }
+                throw TranslationError.unsupported("\(LanguageTags.displayName(from)) → \(LanguageTags.displayName(to))")
+            default:
+                await acquire()
+                defer { release() }
+                guard hostAttached else { throw TranslationError.notReady }
+                _ = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, Error>) in
+                    job = ("", continuation)
+                    preparing = true
+                    configure(source, target)
+                }
+            }
+        }
+        #else
+        throw TranslationError.needsNewerIOS
+        #endif
+    }
+
+    /// Apple's identifier for a language code: written Chinese is simplified
+    /// unless the text looks traditional; Cantonese is written traditional.
+    static func identifier(_ code: String, text: String) -> String {
+        switch code {
+        case "zh":
+            let recognizer = NLLanguageRecognizer()
+            recognizer.processString(text)
+            return recognizer.dominantLanguage?.rawValue == "zh-Hant" ? "zh-Hant" : "zh-Hans"
+        case "yue": return "zh-Hant"
+        default: return code
+        }
+    }
+
+    @ObservationIgnored private var preparing = false
+
+    private func translate(_ text: String, fromIdentifier source: String, toIdentifier targetID: String, languageName: String) async throws -> String {
         #if canImport(Translation)
         guard #available(iOS 18.0, *) else { throw TranslationError.needsNewerIOS }
         let from = Locale.Language(identifier: source)
-        let to = Locale.Language(identifier: "en")
+        let to = Locale.Language(identifier: targetID)
         let availability = LanguageAvailability()
         let status = await availability.status(from: from, to: to)
         if status == .unsupported {
@@ -101,18 +170,25 @@ final class EnglishTranslator {
         guard hostAttached, job == nil else { throw TranslationError.notReady }
         return try await withCheckedThrowingContinuation { continuation in
             job = (text, continuation)
-            if var current = configuration as? TranslationSession.Configuration,
-               current.source == from, current.target == to {
-                current.invalidate() // same pair: run the task again
-                configuration = current
-            } else {
-                configuration = TranslationSession.Configuration(source: from, target: to)
-            }
+            preparing = false
+            configure(from, to)
         }
         #else
         throw TranslationError.needsNewerIOS
         #endif
     }
+
+    #if canImport(Translation)
+    @available(iOS 18.0, *)
+    private func configure(_ from: Locale.Language, _ to: Locale.Language) {
+        if var current = configuration as? TranslationSession.Configuration, current.source == from, current.target == to {
+            current.invalidate() // same pair: run the task again
+            configuration = current
+        } else {
+            configuration = TranslationSession.Configuration(source: from, target: to)
+        }
+    }
+    #endif
 
     #if canImport(Translation)
     /// Called from the host view's `.translationTask` with a live session.
@@ -121,6 +197,11 @@ final class EnglishTranslator {
         guard let job else { return }
         self.job = nil
         do {
+            if preparing {
+                try await session.prepareTranslation()
+                job.continuation.resume(returning: "")
+                return
+            }
             // Asks the user to download the language pack the first time.
             let response = try await session.translate(job.text)
             job.continuation.resume(returning: response.targetText)
@@ -148,7 +229,8 @@ final class EnglishTranslator {
 
     /// The host went away (e.g. scene closed) with a request outstanding.
     func detach() {
-        hostAttached = false
+        hosts = max(0, hosts - 1)
+        guard hosts == 0 else { return }
         job?.continuation.resume(throwing: TranslationError.notReady)
         job = nil
     }
@@ -162,7 +244,7 @@ struct TranslationHost: View {
         Color.clear
             .frame(width: 0, height: 0)
             .modifier(TranslationTaskModifier(translator: translator))
-            .onAppear { translator.hostAttached = true }
+            .onAppear { translator.hosts += 1 }
             .onDisappear { translator.detach() }
             .accessibilityHidden(true)
     }
