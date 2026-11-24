@@ -15,6 +15,7 @@ import com.voicepad.app.data.NoteStore
 import com.voicepad.app.data.NoteTranslation
 import com.voicepad.app.data.RevisionSource
 import com.voicepad.app.data.TranscriptionStatus
+import com.voicepad.app.data.TextSimilarity
 import com.voicepad.app.data.TranslationJoin
 import com.voicepad.app.data.TranslationStatus
 import com.voicepad.app.data.withRevision
@@ -833,9 +834,11 @@ class RecordingController(
         }
         val outcome = try {
             val result = translator.translate(revision.text, revision.language)
+            // A translation that repeats the original (misdetected English) isn't one.
+            val same = TextSimilarity.nearlySame(result.english, revision.text)
             NoteTranslation(
                 revisionId = revision.id,
-                status = if (result.english == null) TranslationStatus.NOT_NEEDED else TranslationStatus.DONE,
+                status = if (result.english == null || same) TranslationStatus.NOT_NEEDED else TranslationStatus.DONE,
                 language = result.language,
                 english = result.english,
                 romanization = result.romanization,

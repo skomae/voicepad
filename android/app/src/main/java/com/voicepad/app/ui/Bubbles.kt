@@ -64,6 +64,7 @@ import com.voicepad.app.data.NoteSearch
 import com.voicepad.app.data.RevisionSource
 import com.voicepad.app.data.TranscriptionStatus
 import com.voicepad.app.data.NoteTranslation
+import com.voicepad.app.data.TextSimilarity
 import com.voicepad.app.data.TranslationStatus
 import com.voicepad.app.transcription.LanguageTags
 
@@ -193,7 +194,10 @@ internal fun TextWithTranslation(
     highlightTerms: List<String>,
     onRetry: () -> Unit,
 ) {
-    if (translation == null || translation.status == TranslationStatus.NOT_NEEDED) {
+    // Also collapses notes saved before this check existed.
+    if (translation == null || translation.status == TranslationStatus.NOT_NEEDED ||
+        TextSimilarity.nearlySame(translation.english, text)
+    ) {
         Text(highlighted(text, highlightTerms), color = color)
         return
     }
