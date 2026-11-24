@@ -135,7 +135,7 @@ fun KeyboardMenu(
                 Switch(checked = state.llmEnabled, onCheckedChange = controller::setLlmEnabled)
             }
             if (state.llmStatus is LlmStatus.Failed) {
-                TextButton(onClick = controller::loadLlm) { Text("Retry") }
+                TextButton(onClick = { controller.loadLlm() }) { Text("Retry") }
             }
 
             Spacer(Modifier.height(16.dp))

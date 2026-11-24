@@ -614,12 +614,18 @@ private fun RecordingTitle(state: RecordingController.UiState, compact: Boolean)
             delay(500)
         }
     }
-    val elapsed = state.startedAt?.let { DateUtils.formatElapsedTime(((now - it) / 1000).coerceAtLeast(0)) } ?: ""
+    val elapsed = state.startedAt?.let {
+        DateUtils.formatElapsedTime((((state.pausedAt ?: now) - it) / 1000).coerceAtLeast(0))
+    } ?: ""
     Row(verticalAlignment = Alignment.CenterVertically) {
         PulsingDot(color = Color.White, size = 12.dp)
         Spacer(Modifier.width(8.dp))
         Text(
-            if (compact) elapsed else "REC  $elapsed",
+            when {
+                compact -> elapsed
+                state.pausedAt != null -> "PAUSED  $elapsed"
+                else -> "REC  $elapsed"
+            },
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             softWrap = false,

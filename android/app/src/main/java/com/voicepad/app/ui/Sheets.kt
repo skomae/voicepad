@@ -230,6 +230,20 @@ fun SettingsSheet(
             }
             Spacer(Modifier.height(12.dp))
             NoteTapSetting(state.noteTapAction, onSelect = controller::setNoteTapAction)
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Tabletop layout when half-folded")
+                    Text(
+                        "On a foldable stood up like a laptop: transcript on the top half, big controls " +
+                            "(previous/next, send, send with LLM, pause, split) on the bottom half.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = state.tabletopLayout, onCheckedChange = controller::setTabletopLayout)
+            }
             Spacer(Modifier.height(16.dp))
             MicrophoneSection(state, onSelect = controller::setInputDevice)
             Spacer(Modifier.height(12.dp))
@@ -408,7 +422,7 @@ fun SettingsSheet(
                         Text("Failed to load model", color = MaterialTheme.colorScheme.error)
                         Text(status.message, style = MaterialTheme.typography.bodySmall)
                         Spacer(Modifier.height(6.dp))
-                        Button(onClick = controller::loadLlm) { Text("Retry") }
+                        Button(onClick = { controller.loadLlm() }) { Text("Retry") }
                     }
                 }
             }
