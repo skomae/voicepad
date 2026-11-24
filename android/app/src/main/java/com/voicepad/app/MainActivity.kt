@@ -27,12 +27,27 @@ import com.voicepad.app.ui.CrashGuardDialog
 import com.voicepad.app.ui.VoicePadScreen
 import com.voicepad.app.ui.VoicePadTheme
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
+import com.voicepad.app.transmit.SinkStatus
+import com.voicepad.app.ui.LocalTypeOnKeyboard
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.voicepad.app.ui.TabletopHinge
+import com.voicepad.app.ui.TabletopScreen
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
+import com.voicepad.app.ui.PausedOverlay
 
 class MainActivity : ComponentActivity() {
     private val app get() = application as VoicePadApplication
     private val controller get() = app.controller
     private val conversation get() = app.conversation
     private var askedForPermission = false
+
+    /** Set while half-folded with a horizontal hinge (tabletop / flex mode). */
+    private var tabletopHinge by mutableStateOf<TabletopHinge?>(null)
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -65,10 +80,20 @@ class MainActivity : ComponentActivity() {
                 } else {
                     CrashReportDialog()
                 }
-                if (conversationState.visible) {
-                    ConversationScreen(conversation, controller)
-                } else {
-                    VoicePadScreen(controller, conversation)
+                val connected = state.transmitStatus == SinkStatus.CONNECTED
+                val typeOnKeyboard: ((String) -> Unit)? =
+                    remember(connected) { if (connected) controller::typeText else null }
+                CompositionLocalProvider(LocalTypeOnKeyboard provides typeOnKeyboard) {
+                    val hinge = tabletopHinge
+                    when {
+                        conversationState.visible -> ConversationScreen(conversation, controller)
+                        hinge != null && state.tabletopLayout -> TabletopScreen(controller, hinge)
+                        else -> Box(Modifier.fillMaxSize()) {
+                            VoicePadScreen(controller, conversation)
+                            // Paused can't be missed: amber over everything, with Resume / Stop.
+                            PausedOverlay(controller, state)
+                        }
+                    }
                 }
             }
         }
@@ -77,14 +102,16 @@ class MainActivity : ComponentActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 WindowInfoTracker.getOrCreate(this@MainActivity).windowLayoutInfo(this@MainActivity).collect { info ->
                     val hinge = info.displayFeatures.filterIsInstance<FoldingFeature>().firstOrNull()
-                    // Standing half open with the hinge across the screen: like a laptop.
-                    val laptop = hinge?.takeIf {
+                    // Standing half open with the hinge across the screen: like a laptop / tabletop posture.
+                    val tabletop = hinge?.takeIf {
                         it.state == FoldingFeature.State.HALF_OPENED && it.orientation == FoldingFeature.Orientation.HORIZONTAL
                     }
                     conversation.onFoldStateChanged(
                         unfolded = hinge != null,
-                        fold = laptop?.let { ConversationController.FoldLine(it.bounds.top, it.bounds.bottom) },
+                        fold = tabletop?.let { ConversationController.FoldLine(it.bounds.top, it.bounds.bottom) },
                     )
+                    // Separately: half-open with the hinge across the screen is tabletop posture.
+                    tabletopHinge = tabletop?.let { TabletopHinge(top = it.bounds.top, bottom = it.bounds.bottom) }
                 }
             }
         }

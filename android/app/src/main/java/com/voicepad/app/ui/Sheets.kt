@@ -68,10 +68,18 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.voicepad.app.RecordingController
 import com.voicepad.app.RecordingController.EngineStatus
+import com.voicepad.app.RecordingController.LlmStatus
 import com.voicepad.app.data.Note
 import com.voicepad.app.data.Revision
+import com.voicepad.app.llm.Guidance
+import com.voicepad.app.llm.LlmChoice
 import com.voicepad.app.transcription.EngineChoice
 import java.util.Date
+import androidx.compose.foundation.layout.Box
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -224,6 +232,22 @@ fun SettingsSheet(
                 Spacer(Modifier.width(12.dp))
                 Switch(checked = state.copyWhenDone, onCheckedChange = controller::setCopyWhenDone)
             }
+            Spacer(Modifier.height(12.dp))
+            NoteTapSetting(state.noteTapAction, onSelect = controller::setNoteTapAction)
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Tabletop layout when half-folded")
+                    Text(
+                        "On a foldable stood up like a laptop: transcript on the top half, big controls " +
+                            "(previous/next, send, send with LLM, pause, split) on the bottom half.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = state.tabletopLayout, onCheckedChange = controller::setTabletopLayout)
+            }
             Spacer(Modifier.height(16.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -357,6 +381,85 @@ fun SettingsSheet(
                     Button(onClick = controller::loadEngine) { Text("Retry") }
                 }
             }
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Clean up with a small LLM")
+                    Text(
+                        "Optionally run a tiny on-device model over the text before it's typed as a keyboard. " +
+                            "Runs alongside the speech model; the picker recommends a size for this phone. " +
+                            "Also in the keyboard icon's menu (long-press the icon).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = state.llmEnabled, onCheckedChange = controller::setLlmEnabled)
+            }
+            if (state.llmEnabled) {
+                Text("Prompt", style = MaterialTheme.typography.titleSmall)
+                PromptChooser(
+                    current = state.typePrompt,
+                    recent = state.recentPrompts,
+                    onUse = controller::setTypePrompt,
+                    onForget = controller::forgetPrompt,
+                )
+                Text("Model", style = MaterialTheme.typography.titleSmall)
+                LlmChoice.entries.forEach { choice ->
+                    val advice = controller.llmAdvice(choice)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = choice == state.llmChoice,
+                                role = Role.RadioButton,
+                                onClick = { controller.setLlmChoice(choice) },
+                            )
+                            .padding(vertical = 6.dp),
+                    ) {
+                        RadioButton(selected = choice == state.llmChoice, onClick = null)
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(choice.displayName)
+                                if (advice.verdict == Guidance.RECOMMENDED) {
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        "Recommended",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            }
+                            Text(
+                                "${choice.approximateSize} · ${advice.reason}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                when (val status = state.llmStatus) {
+                    LlmStatus.Idle -> Text("Model not loaded")
+                    is LlmStatus.Loading -> Column {
+                        Text(if (status.downloading) "Downloading model…" else "Loading model…")
+                        Spacer(Modifier.height(6.dp))
+                        if (status.downloading) {
+                            LinearProgressIndicator(progress = { status.progress.toFloat() }, modifier = Modifier.fillMaxWidth())
+                        } else {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                        }
+                    }
+                    LlmStatus.Ready -> Text("Model ready", color = MaterialTheme.colorScheme.primary)
+                    is LlmStatus.Failed -> Column {
+                        Text("Failed to load model", color = MaterialTheme.colorScheme.error)
+                        Text(status.message, style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(6.dp))
+                        Button(onClick = { controller.loadLlm() }) { Text("Retry") }
+                    }
+                }
+            }
             Spacer(Modifier.height(32.dp))
         }
     }
@@ -475,5 +578,41 @@ private fun ModelFolderSection() {
     Row {
         TextButton(onClick = { pick.launch(null) }) { Text(if (state.folderName == null) "Choose folder" else "Change folder") }
         if (state.folderName != null) TextButton(onClick = folder::forget) { Text("Stop using it") }
+    }
+}
+
+/** "Tap a note to": any long-press menu action, or nothing. */
+@Composable
+private fun NoteTapSetting(current: NoteTapAction, onSelect: (NoteTapAction) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Tap a note to")
+            Text(
+                "Long-press still opens the full menu, and double-tap types the note while a keyboard is connected.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Box {
+            TextButton(onClick = { open = true }) {
+                Text(current.label)
+                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+            }
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                NoteTapAction.entries.forEach { action ->
+                    DropdownMenuItem(
+                        text = { Text(action.label) },
+                        onClick = { open = false; onSelect(action) },
+                        leadingIcon = if (action == current) {
+                            { Icon(Icons.Default.Check, contentDescription = "Selected") }
+                        } else {
+                            null
+                        },
+                    )
+                }
+            }
+        }
     }
 }

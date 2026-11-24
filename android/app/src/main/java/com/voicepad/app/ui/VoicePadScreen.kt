@@ -102,6 +102,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.voicepad.app.RecordingController
 import com.voicepad.app.RecordingController.EngineStatus
 import com.voicepad.app.conversation.ConversationController
+import com.voicepad.app.transmit.SinkStatus
 import androidx.compose.material.icons.filled.Translate
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -153,12 +154,19 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
         if (!searching && itemCount > 0) listState.animateScrollToItem(itemCount - 1)
     }
 
-    fun copy(text: String) = copyToClipboard(context, text)
+    // Copying also types the text when a Bluetooth keyboard host is connected.
+    fun copy(text: String) {
+        copyToClipboard(context, text)
+        if (controller.sendToKeyboardIfConnected(text)) {
+            Toast.makeText(context, "Copied and typing on ${state.transmitHost ?: "the paired device"}", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     @Composable
     fun Bubble(note: Note, highlight: List<String> = emptyList(), matchedEarlier: Boolean = false) {
         NoteBubble(
             compact = compact,
+            tapAction = state.noteTapAction,
             note = note,
             engineStatus = state.engineStatus,
             isPlaying = player.playingId == note.id,
@@ -175,6 +183,11 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
             onTranslate = { controller.translateNow(note.id) },
             onArchive = { if (note.archived) controller.unarchive(note.id) else controller.archive(listOf(note.id)) },
             onCopyText = ::copy,
+            onType = if (state.transmitStatus == SinkStatus.CONNECTED) {
+                { controller.typeNote(note.id) }
+            } else {
+                null
+            },
         )
     }
 
@@ -220,6 +233,15 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
                         IconButton(onClick = { conversation.open() }) {
                             Icon(Icons.Default.Translate, contentDescription = "Conversation mode")
                         }
+                        KeyboardButton(controller, state, onTypeLatest = {
+                            val latest = notes.filter { !it.archived && it.currentText.isNotBlank() }
+                                .maxByOrNull { it.createdAt }
+                            if (latest != null) {
+                                controller.typeNote(latest.id)
+                            } else {
+                                Toast.makeText(context, "No note to type yet.", Toast.LENGTH_SHORT).show()
+                            }
+                        })
                         IconButton(onClick = { searchActive = true }) {
                             Icon(Icons.Default.Search, contentDescription = "Search")
                         }
@@ -602,12 +624,18 @@ private fun RecordingTitle(state: RecordingController.UiState, compact: Boolean)
             delay(500)
         }
     }
-    val elapsed = state.startedAt?.let { DateUtils.formatElapsedTime(((now - it) / 1000).coerceAtLeast(0)) } ?: ""
+    val elapsed = state.startedAt?.let {
+        DateUtils.formatElapsedTime((((state.pausedAt ?: now) - it) / 1000).coerceAtLeast(0))
+    } ?: ""
     Row(verticalAlignment = Alignment.CenterVertically) {
         PulsingDot(color = Color.White, size = 12.dp)
         Spacer(Modifier.width(8.dp))
         Text(
-            if (compact) elapsed else "REC  $elapsed",
+            when {
+                compact -> elapsed
+                state.pausedAt != null -> "PAUSED  $elapsed"
+                else -> "REC  $elapsed"
+            },
             fontWeight = FontWeight.Bold,
             maxLines = 1,
             softWrap = false,

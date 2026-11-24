@@ -169,7 +169,9 @@ internal fun StagePane(
 @Composable
 private fun Hero(turn: Turn, phase: Phase, language: String, textSize: Int, color: Color, motion: Boolean) {
     val original = turn.language == language
-    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+    // Double-tap types what this reader sees (finished turns only).
+    val typed = if (phase == Phase.LANDED) (turn.textIn(language) ?: turn.text) else ""
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).doubleTapToType(typed)) {
         Box(Modifier.width(5.dp).fillMaxHeight().background(color, RoundedCornerShape(3.dp)))
         Spacer(Modifier.width(10.dp))
         Column {
@@ -313,7 +315,8 @@ private fun rememberScramble(language: String, active: Boolean): State<String> {
 @Composable
 private fun HistoryTurn(turn: Turn, language: String, textSize: Int) {
     val size = (textSize * 0.5f).coerceAtLeast(15f)
-    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+    val typed = turn.textIn(language) ?: turn.text
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).doubleTapToType(typed)) {
         Box(Modifier.width(5.dp).fillMaxHeight().background(speakerColor(turn.speaker).copy(alpha = 0.6f), RoundedCornerShape(3.dp)))
         Spacer(Modifier.width(10.dp))
         Text(

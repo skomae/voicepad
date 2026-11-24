@@ -371,7 +371,9 @@ internal fun TranscriptPane(state: ConversationController.UiState, textSize: Int
             val newest = turn === newestFirst.first()
             val size = if (newest) textSize else (textSize * 0.7f).toInt()
             val color = speakerColor(turn.speaker)
-            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+            // Double-tap types the translation if there is one, else what was said.
+            val typed = if (isLive) "" else turn.translation ?: turn.text
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).doubleTapToType(typed)) {
                 Box(Modifier.width(5.dp).fillMaxHeight().background(color, RoundedCornerShape(3.dp)))
                 Spacer(Modifier.width(10.dp))
                 Column {
