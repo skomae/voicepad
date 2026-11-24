@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.media.MediaRecorder
+import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import com.voicepad.app.RecordingController
@@ -74,6 +75,15 @@ class ConversationController(
         val identifyVoices: Boolean = true,
         /** Open conversation mode when a foldable phone is unfolded. */
         val openOnUnfold: Boolean = false,
+        /**
+         * Seconds a turn that sounds unfinished is held open before it's
+         * translated anyway, so a pause to think doesn't cut it in two; 0 turns holding off.
+         */
+        val thinkingPause: Int = 5,
+        /** On a foldable, show their side on the cover screen when the phone offers it. */
+        val coverScreen: Boolean = true,
+        /** Quarter turns to rotate the cover screen's picture by, if the phone shows it sideways. */
+        val coverRotation: Int = 0,
     ) {
         val pair: Pair<String, String> get() = myLanguage to theirLanguage
     }
@@ -86,6 +96,21 @@ class ConversationController(
         data class Failed(val message: String) : Readiness
     }
 
+    /** A turn held open: [endsAtMs] (uptime) is when it's translated unless speech resumes. */
+    data class Hold(val turnId: Long, val endsAtMs: Long, val totalMs: Long)
+
+    /** Where a half-open foldable bends, in window pixels from the top. */
+    data class FoldLine(val top: Int, val bottom: Int)
+
+    /** Whether their side can be shown on a foldable's cover screen. */
+    enum class Cover(val label: String) {
+        UNKNOWN("Not checked yet"),
+        UNSUPPORTED("This phone doesn't offer its cover screen to apps"),
+        UNAVAILABLE("Offered by this phone, but not available right now"),
+        AVAILABLE("Available"),
+        ACTIVE("Showing their side"),
+    }
+
     data class UiState(
         val visible: Boolean = false,
         val listening: Boolean = false,
@@ -93,6 +118,16 @@ class ConversationController(
         val turns: List<Turn> = emptyList(),
         /** Speech in progress: not final, may still change. */
         val live: Turn? = null,
+        /** A voice is being heard right now. */
+        val hearing: Boolean = false,
+        /** A finished utterance is being transcribed. */
+        val working: Boolean = false,
+        val hold: Hold? = null,
+        /** A foldable is open (flat or half open). */
+        val unfolded: Boolean = false,
+        /** Set while a foldable stands half open like a laptop. */
+        val fold: FoldLine? = null,
+        val cover: Cover = Cover.UNKNOWN,
         /** Channels actually being recorded. */
         val recordingChannels: Int = 1,
         /** The channels carry the same sound, so voices are told apart by sound instead. */
@@ -108,6 +143,8 @@ class ConversationController(
                 settings.identifyVoices && voiceModel == Readiness.Ready -> SpeakerSource.VOICE
                 else -> SpeakerSource.LANGUAGE
             }
+
+        val stage: Stage get() = Stage.of(turns, live, working)
     }
 
     companion object {
@@ -155,6 +192,9 @@ class ConversationController(
         textSize = prefs.getInt("textSize", 34),
         identifyVoices = prefs.getBoolean("identifyVoices", true),
         openOnUnfold = prefs.getBoolean("openOnUnfold", false),
+        thinkingPause = prefs.getInt("thinkingPause", 5),
+        coverScreen = prefs.getBoolean("coverScreen", true),
+        coverRotation = prefs.getInt("coverRotation", 0),
     )
 
     private fun saveSettings(s: Settings) = prefs.edit {
@@ -165,6 +205,9 @@ class ConversationController(
         putInt("textSize", s.textSize)
         putBoolean("identifyVoices", s.identifyVoices)
         putBoolean("openOnUnfold", s.openOnUnfold)
+        putInt("thinkingPause", s.thinkingPause)
+        putBoolean("coverScreen", s.coverScreen)
+        putInt("coverRotation", s.coverRotation)
     }
 
     private fun changeSettings(transform: (Settings) -> Settings): Settings {
@@ -204,12 +247,24 @@ class ConversationController(
 
     fun setOpenOnUnfold(enabled: Boolean) { changeSettings { it.copy(openOnUnfold = enabled) } }
 
+    fun setThinkingPause(seconds: Int) { changeSettings { it.copy(thinkingPause = seconds.coerceIn(0, 15)) } }
+
+    fun setCoverScreen(enabled: Boolean) { changeSettings { it.copy(coverScreen = enabled) } }
+
+    fun setCoverRotation(quarterTurns: Int) { changeSettings { it.copy(coverRotation = quarterTurns.mod(4)) } }
+
+    /** Reported by the activity as the phone's cover screen comes and goes. */
+    fun setCover(cover: Cover) = _state.update { it.copy(cover = cover) }
+
     fun dismissMessage() = _state.update { it.copy(message = null) }
 
     private fun showMessage(message: String) = _state.update { it.copy(message = message) }
 
     /** Clears the screen (everything is already saved as notes). */
-    fun clearTurns() = _state.update { it.copy(turns = emptyList(), live = null) }
+    fun clearTurns() {
+        heldTurnId = null
+        _state.update { it.copy(turns = emptyList(), live = null, hold = null) }
+    }
 
     // endregion
 
@@ -239,6 +294,7 @@ class ConversationController(
         pausedInBackground = false
         stopListening()
         _state.update { it.copy(visible = false, live = null, message = null) }
+        releaseHeld()
         notes.leaveConversation()
     }
 
@@ -247,9 +303,10 @@ class ConversationController(
      * conversation mode (if that's switched on); folding again closes it if
      * unfolding opened it.
      */
-    fun onFoldStateChanged(unfolded: Boolean) {
+    fun onFoldStateChanged(unfolded: Boolean, fold: FoldLine? = null) {
         val previous = lastUnfolded
         lastUnfolded = unfolded
+        if (_state.value.unfolded != unfolded || _state.value.fold != fold) _state.update { it.copy(unfolded = unfolded, fold = fold) }
         if (previous == null || previous == unfolded) return
         if (unfolded && settings.openOnUnfold && !_state.value.visible) open(byUnfold = true)
         if (!unfolded && openedByUnfold && _state.value.visible) close()
@@ -296,6 +353,8 @@ class ConversationController(
     private var nextTurnId = 1L
     private val translationJobs = mutableMapOf<Long, Job>()
     private var liveTranslateJob: Job? = null
+    /** The turn held open for a thinking pause, if any. */
+    private var heldTurnId: Long? = null
     private var separationTotal = 0f
     private var separationCount = 0
 
@@ -369,9 +428,13 @@ class ConversationController(
 
     fun stopListening() {
         if (!_state.value.listening) return
-        _state.update { it.copy(listening = false, live = null) }
+        _state.update { it.copy(listening = false, live = null, hearing = false, working = false) }
         liveTranslateJob?.cancel()
-        val s = session ?: return
+        val s = session
+        if (s == null) {
+            releaseHeld()
+            return
+        }
         session = null
         recorder.stop()
         notes.endConversationInput()
@@ -386,6 +449,7 @@ class ConversationController(
             } catch (e: Throwable) {
                 showMessage("Transcription failed: ${e.message ?: e}")
             }
+            releaseHeld()
             // Give translations of the last turns a moment to land in the note.
             withTimeoutOrNull(15_000) { translationJobs.values.toList().joinAll() }
             save(s)
@@ -400,13 +464,24 @@ class ConversationController(
     private suspend fun step(s: Session, final: Boolean) {
         val now = recorder.sampleCount
         for (lane in s.lanes) feed(lane, now, final)
-        if (!notes.isEngineReady) return // audio waits in memory (and on disk) until the model is ready
-        while (true) {
-            val lane = s.lanes.filter { it.pending.isNotEmpty() }.minByOrNull { it.pending.first().start } ?: break
-            val span = lane.pending.removeFirst()
-            lane.finishedUpTo = maxOf(lane.finishedUpTo, span.end)
-            finishUtterance(s, lane.channel, span)
+        val hearing = !final && s.lanes.any { it.detector?.inSpeech == true }
+        if (_state.value.hearing != hearing) _state.update { it.copy(hearing = hearing) }
+        if (!notes.isEngineReady) { // audio waits in memory (and on disk) until the model is ready
+            releaseHeldIfDue(s, now, hearing)
+            return
         }
+        try {
+            while (true) {
+                val lane = s.lanes.filter { it.pending.isNotEmpty() }.minByOrNull { it.pending.first().start } ?: break
+                val span = lane.pending.removeFirst()
+                lane.finishedUpTo = maxOf(lane.finishedUpTo, span.end)
+                if (!final) _state.update { it.copy(working = true) }
+                finishUtterance(s, lane.channel, span, final)
+            }
+        } finally {
+            if (_state.value.working) _state.update { it.copy(working = false) }
+        }
+        if (final) releaseHeld() else releaseHeldIfDue(s, recorder.sampleCount, hearing)
         if (!final && session === s) updateLive(s, now)
         // Audio still needed: utterances waiting for the model, and speech in progress.
         // (A channel nobody speaks on needs nothing, so it doesn't hold memory.)
@@ -443,7 +518,24 @@ class ConversationController(
         ChannelAttribution.frameLevels(recorder.channelSamples(it, span.start, span.end))
     }
 
-    private suspend fun finishUtterance(s: Session, channel: Int, span: Span) {
+    /** Translates the held turn once its pause has outlasted the thinking window with nobody speaking. */
+    private fun releaseHeldIfDue(s: Session, now: Int, hearing: Boolean) {
+        val id = heldTurnId ?: return
+        val turn = _state.value.turns.firstOrNull { it.id == id }
+        if (turn == null || turn.session != s.number) return releaseHeld()
+        if (hearing || s.lanes.any { it.pending.isNotEmpty() }) return
+        if (now - turn.end >= settings.thinkingPause * SR) releaseHeld()
+    }
+
+    /** Stops holding the held turn open and translates it. */
+    private fun releaseHeld() {
+        val id = heldTurnId ?: return
+        heldTurnId = null
+        _state.update { st -> st.copy(hold = null, turns = st.turns.map { if (it.id == id) it.copy(held = false) else it }) }
+        translate(id)
+    }
+
+    private suspend fun finishUtterance(s: Session, channel: Int, span: Span, final: Boolean) {
         if (multiChannel) {
             val levels = levels(span)
             ChannelAttribution.separationDb(levels)?.let(::trackSeparation)
@@ -465,22 +557,35 @@ class ConversationController(
         val language = ConversationLanguages.spoken(pair, transcript.language, translator.languageCandidates(text), text, fallback)
         val speaker = channelSpeaker ?: voiceSpeaker(audio, language, pair)
 
-        val turn = if (Turns.continues(previous, s.number, speaker, language, span.start, SR) && previous === _state.value.turns.lastOrNull()) {
+        val window = settings.thinkingPause
+        // A turn held open for a thinking pause can be picked up again for as long as it's held.
+        val maxGap = if (previous?.held == true) maxOf(window.toDouble(), Turns.MAX_GAP_SECONDS) else Turns.MAX_GAP_SECONDS
+        val joinedTurn = if (Turns.continues(previous, s.number, speaker, language, span.start, SR, maxGap) && previous === _state.value.turns.lastOrNull()) {
             val joined = Turns.join(previous!!.text, text)
-            previous.copy(text = joined, end = span.end, romanization = translator.romanize(language, joined))
+            previous.copy(text = joined, end = span.end, romanization = translator.romanize(language, joined), pending = true)
         } else {
             Turn(
                 id = nextTurnId++, session = s.number, speaker = speaker, language = language, text = text,
                 target = ConversationLanguages.target(pair, language),
+                // Until the real translation lands, the preview's is better than nothing.
+                translation = _state.value.live?.takeIf { it.language == language }?.translation,
+                pending = true,
                 romanization = translator.romanize(language, text), start = span.start, end = span.end,
             )
         }
+        // Sounds unfinished: hold it open rather than translate a fragment.
+        val hold = !final && window > 0 && Turns.looksUnfinished(joinedTurn.text) && joinedTurn.text.length < Turns.MAX_TURN_CHARS
+        val turn = joinedTurn.copy(held = hold)
+        if (heldTurnId != null && heldTurnId != turn.id) releaseHeld()
+        heldTurnId = turn.id.takeIf { hold }
+        val totalMs = window * 1000L
+        val leftMs = (totalMs - (recorder.sampleCount - span.end) * 1000L / SR).coerceIn(0, totalMs)
         _state.update { st ->
             val turns = if (st.turns.lastOrNull()?.id == turn.id) st.turns.dropLast(1) + turn else st.turns + turn
-            st.copy(turns = turns, live = null)
+            st.copy(turns = turns, live = null, hold = if (hold) Hold(turn.id, SystemClock.uptimeMillis() + leftMs, totalMs) else null)
         }
         liveTranslateJob?.cancel()
-        translate(turn.id)
+        if (hold) translationJobs.remove(turn.id)?.cancel() else translate(turn.id)
         // Keep the transcript on disk in case the app dies.
         store.update(s.noteId) { it.copy(partialText = transcriptOf(s.number)) }
     }
@@ -576,8 +681,10 @@ class ConversationController(
                 st.copy(turns = st.turns.map { t ->
                     if (t.id != id || t.text != source) t
                     else outcome.fold(
-                        onSuccess = { tr -> t.copy(translation = tr, translationFailed = false, translationRomanization = translator.romanize(t.target, tr)) },
-                        onFailure = { t.copy(translationFailed = true) },
+                        onSuccess = { tr ->
+                            t.copy(translation = tr, translationFailed = false, pending = false, translationRomanization = translator.romanize(t.target, tr))
+                        },
+                        onFailure = { t.copy(translationFailed = true, pending = false) },
                     )
                 })
             }

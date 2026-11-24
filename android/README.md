@@ -73,15 +73,38 @@ copied, edited, re-transcribed and rolled back through its revision history.
   each utterance is detected at its pause, assigned to one of the two
   languages (writing system first, then the speech model's tag, then text
   language ID limited to just those two), and translated into the other.
-  Speech in progress shows live, in italics, translation included.
+  Speech in progress shows live, translation included.
   - **Layouts**: *Across, top / bottom* (default) splits the screen, the far half
     upside down, each half the whole conversation in one language — lay the
     phone between you; *Across, left / right* (the same split sideways, for a
     wide or unfolded screen with one person at each end); *Side by side*
     (one column per language, both reading the same way, for an
     unfolded or landscape screen); *Transcript* (original, pinyin and
-    translation together). Newest turn largest; text size adjustable
-    (18–96 sp); the screen stays on.
+    translation together). Text size adjustable (18–96 sp); the screen
+    stays on.
+  - **The newest thought owns the stage**: it's big at the bottom of each
+    side, lit in its speaker's colour (the glow follows their voice), and
+    everything older is small and dim above it — scroll up to read back.
+    While words arrive, the newest few are brightest on the speaker's side;
+    on the listener's side stand-in characters in *their* script flicker
+    where the translation will be and resolve into it when it lands.
+  - **Thinking pause** (conversation settings; Off / 3 / 5 / 8 s, default
+    5): a turn that stops mid-sentence — no sentence-ending punctuation, an
+    ellipsis, or a last word like "and" / 然后 — is held open instead of
+    being translated as a fragment. A ring round the microphone drains
+    while it's held and refills when the speaker goes on; it's translated
+    when the sentence is finished or the time runs out. Finished sentences
+    are translated straight away, as before.
+  - **Laptop posture and cover screen** (foldables): stand the phone half
+    open with the hinge across the screen and the upright half becomes the
+    stage while the flat half holds the controls and the conversation so far
+    in both languages. If the phone offers its cover screen to apps
+    (Android's dual-screen mode), their side is shown there, facing the
+    person opposite, and the inside is all yours, with a line saying what
+    their screen is showing. Conversation settings say what this phone
+    reports, and can turn the cover picture in 90° steps if it comes out
+    sideways. Without cover-screen support, both languages share the
+    upright half.
   - **One or more microphone channels**: with 1 channel, speakers are told
     apart **by voice** — a 28 MB CAM++ speaker-embedding model (downloaded
     once, on-device) fingerprints each utterance and groups them into
