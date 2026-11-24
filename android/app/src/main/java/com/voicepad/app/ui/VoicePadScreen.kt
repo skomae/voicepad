@@ -5,6 +5,10 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import android.text.format.DateUtils
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Delete
@@ -356,50 +360,76 @@ fun VoicePadScreen(controller: RecordingController) {
     }
 }
 
-/** Archive or delete every unpinned note older than 1, 7 or 30 days. */
+/** Archive, compress, delete empty, or delete notes older than 1, 7 or 30 days (or any age). */
 @Composable
 private fun CleanupDialog(controller: RecordingController, onDismiss: () -> Unit) {
     var action by remember { mutableStateOf(NoteCleanup.Action.ARCHIVE) }
     var days by remember { mutableIntStateOf(7) }
-    val count = remember(action, days) { controller.cleanupCandidates(action, days).size }
+    val matches = remember(action, days) { controller.cleanupCandidates(action, days) }
+    val count = matches.size
+    val sizes = remember(matches, action) {
+        if (action == NoteCleanup.Action.COMPRESS || action == NoteCleanup.Action.ARCHIVE) controller.audioSizes(matches) else null
+    }
+    val destructive = action == NoteCleanup.Action.DELETE || action == NoteCleanup.Action.DELETE_EMPTY
+    val notes = "$count note${if (count == 1) "" else "s"}"
+    fun mb(bytes: Long) = if (bytes >= 10_000_000) "${bytes / 1_000_000} MB" else "%.1f MB".format(bytes / 1_000_000.0)
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Clean up notes") },
         text = {
             Column {
-                Text("Unpinned notes older than:", style = MaterialTheme.typography.bodyMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 8.dp)) {
-                    listOf(1 to "1 day", 7 to "7 days", 30 to "30 days").forEach { (d, label) ->
+                Text("Notes older than:", style = MaterialTheme.typography.bodyMedium)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(vertical = 8.dp).horizontalScroll(rememberScrollState()),
+                ) {
+                    listOf(0 to "Any age", 1 to "1 day", 7 to "7 days", 30 to "30 days").forEach { (d, label) ->
                         FilterChip(selected = days == d, onClick = { days = d }, label = { Text(label) })
                     }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = action == NoteCleanup.Action.ARCHIVE,
-                        onClick = { action = NoteCleanup.Action.ARCHIVE },
-                        label = { Text("Archive") },
-                        leadingIcon = { Icon(Icons.Default.Archive, null, Modifier.size(18.dp)) },
-                    )
-                    FilterChip(
-                        selected = action == NoteCleanup.Action.DELETE,
-                        onClick = { action = NoteCleanup.Action.DELETE },
-                        label = { Text("Delete") },
-                        leadingIcon = { Icon(Icons.Default.Delete, null, Modifier.size(18.dp)) },
-                    )
+                listOf(
+                    listOf(NoteCleanup.Action.ARCHIVE to Icons.Default.Archive, NoteCleanup.Action.COMPRESS to Icons.Default.Compress),
+                    listOf(NoteCleanup.Action.DELETE_EMPTY to Icons.Default.DeleteSweep, NoteCleanup.Action.DELETE to Icons.Default.Delete),
+                ).forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        row.forEach { (a, icon) ->
+                            FilterChip(
+                                selected = action == a,
+                                onClick = { action = a },
+                                label = { Text(a.label) },
+                                leadingIcon = { Icon(icon, null, Modifier.size(18.dp)) },
+                            )
+                        }
+                    }
                 }
                 Spacer(Modifier.height(12.dp))
                 Text(
                     when {
                         count == 0 -> "No notes match."
                         action == NoteCleanup.Action.ARCHIVE ->
-                            "$count note${if (count == 1) "" else "s"} will be archived: hidden from the list, audio compressed to about a tenth of its size."
-                        else -> "$count note${if (count == 1) "" else "s"} and their audio will be permanently deleted."
+                            "$notes will be archived: hidden from the list, audio compressed to about a tenth of its size."
+                        action == NoteCleanup.Action.COMPRESS ->
+                            "$notes will have their audio compressed and stay in the list."
+                        action == NoteCleanup.Action.DELETE_EMPTY ->
+                            "$notes with no speech (\u201cNo speech detected\u201d) and their audio will be permanently deleted."
+                        else -> "$notes and their audio will be permanently deleted."
                     },
-                    color = if (action == NoteCleanup.Action.DELETE && count > 0) MaterialTheme.colorScheme.error
-                    else MaterialTheme.colorScheme.onSurface,
+                    color = if (destructive && count > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
                 )
+                if (sizes != null && count > 0 && sizes.first > sizes.second) {
+                    Text(
+                        "Audio: ${mb(sizes.first)} \u2192 about ${mb(sizes.second)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
                 Text(
-                    "Pinned notes are never touched.",
+                    when (action) {
+                        NoteCleanup.Action.COMPRESS -> "Includes pinned notes. Each file is checked before the original is removed."
+                        NoteCleanup.Action.DELETE_EMPTY -> "Pinned notes and recordings still waiting for transcription are kept."
+                        else -> "Pinned notes are never touched."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
@@ -415,8 +445,12 @@ private fun CleanupDialog(controller: RecordingController, onDismiss: () -> Unit
                 },
             ) {
                 Text(
-                    if (action == NoteCleanup.Action.ARCHIVE) "Archive $count" else "Delete $count",
-                    color = if (action == NoteCleanup.Action.DELETE && count > 0) MaterialTheme.colorScheme.error else Color.Unspecified,
+                    when (action) {
+                        NoteCleanup.Action.ARCHIVE -> "Archive $count"
+                        NoteCleanup.Action.COMPRESS -> "Compress $count"
+                        else -> "Delete $count"
+                    },
+                    color = if (destructive && count > 0) MaterialTheme.colorScheme.error else Color.Unspecified,
                 )
             }
         },
@@ -424,10 +458,6 @@ private fun CleanupDialog(controller: RecordingController, onDismiss: () -> Unit
     )
 }
 
-/**
- * Top-left: the model in use. Tap to switch between models already on the
- * phone (both Autos, Whisper…) or toggle background voices.
- */
 @Composable
 private fun ModelSwitcher(
     controller: RecordingController,

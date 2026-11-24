@@ -910,28 +910,24 @@ class RecordingController(
      * the compressed copy has been checked and the note saved; if compression
      * fails the note stays as it was and you're told why.
      */
-    fun archive(ids: Collection<String>) {
+    fun archive(ids: Collection<String>) = runOnNotes(ids) { note ->
+        if (note.archived) return@runOnNotes true
+        val ok = compressAudio(note.id)
+        if (ok) store.update(note.id) { it.copy(archived = true, archivedAt = System.currentTimeMillis()) }
+        ok
+    }
+
+    /** Compresses notes' audio to AAC (about a tenth of the size) but keeps them in the list. */
+    fun compress(ids: Collection<String>) = runOnNotes(ids) { note -> compressAudio(note.id) }
+
+    /** Runs [work] on each idle note in turn and reports any that couldn't be compressed. */
+    private fun runOnNotes(ids: Collection<String>, work: suspend (Note) -> Boolean) {
         scope.launch {
             var failed = 0
             for (id in ids) {
                 val note = store.note(id) ?: continue
-                if (note.archived || id in busyIds() || note.status == TranscriptionStatus.IN_PROGRESS) continue
-                val wav = store.audioFile(note)
-                try {
-                    if (wav != null && wav.exists() && wav.extension == "wav") {
-                        val m4aName = wav.nameWithoutExtension + ".m4a"
-                        val m4a = File(store.recordingsDir, m4aName)
-                        withContext(Dispatchers.IO) { AudioArchive.compress(wav, m4a) }
-                        store.update(id) { it.copy(audioFileName = m4aName, archived = true, archivedAt = System.currentTimeMillis()) }
-                        wav.delete()
-                    } else {
-                        store.update(id) { it.copy(archived = true, archivedAt = System.currentTimeMillis()) }
-                    }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Throwable) {
-                    failed++
-                }
+                if (id in busyIds() || note.status == TranscriptionStatus.IN_PROGRESS) continue
+                if (!work(note)) failed++
             }
             if (failed > 0) {
                 showError(
@@ -939,6 +935,27 @@ class RecordingController(
                     else "$failed notes couldn't be compressed, so they were left as they were."
                 )
             }
+        }
+    }
+
+    /**
+     * WAV → AAC for one note. The WAV is only deleted once the compressed copy
+     * has been checked and the note saved. True if done (or nothing to do).
+     */
+    private suspend fun compressAudio(id: String): Boolean {
+        val note = store.note(id) ?: return true
+        val wav = store.audioFile(note)
+        if (wav == null || !wav.exists() || wav.extension != "wav") return true
+        return try {
+            val m4aName = wav.nameWithoutExtension + ".m4a"
+            withContext(Dispatchers.IO) { AudioArchive.compress(wav, File(store.recordingsDir, m4aName)) }
+            store.update(id) { it.copy(audioFileName = m4aName) }
+            wav.delete()
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            false
         }
     }
 
@@ -955,8 +972,22 @@ class RecordingController(
         val ids = cleanupCandidates(action, days).map { it.id }
         when (action) {
             NoteCleanup.Action.ARCHIVE -> archive(ids)
-            NoteCleanup.Action.DELETE -> delete(ids)
+            NoteCleanup.Action.COMPRESS -> compress(ids)
+            NoteCleanup.Action.DELETE_EMPTY, NoteCleanup.Action.DELETE -> delete(ids)
         }
+    }
+
+    /** Current audio size of [notes] and roughly what it would be compressed (bytes). */
+    fun audioSizes(notes: List<Note>): Pair<Long, Long> {
+        var now = 0L
+        var after = 0L
+        for (note in notes) {
+            val size = store.audioFile(note)?.takeIf { it.exists() }?.length() ?: continue
+            now += size
+            // 16 kHz 16-bit WAV is 256 kbit/s; the archive format is 24 kbit/s.
+            after += if (note.audioFileName?.endsWith(".wav") == true) size * 24 / 256 else size
+        }
+        return now to after
     }
 
     // endregion

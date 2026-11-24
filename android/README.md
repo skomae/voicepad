@@ -97,9 +97,15 @@ copied, edited, re-transcribed and rolled back through its revision history.
   for the right length before the WAV is deleted; if anything is off the
   note is left untouched. Archived notes can still be played, shared,
   unarchived and re-transcribed.
-- **Clean up** (⋮ → Clean up…): archive or delete every **unpinned** note
-  older than 1, 7 or 30 days, with a count before you confirm. Notes being
-  recorded or transcribed are skipped.
+- **Clean up** (⋮ → Clean up…), for notes older than 1, 7 or 30 days or
+  any age:
+  - **Archive** unpinned notes (hidden, audio compressed);
+  - **Compress audio** of every uncompressed recording, pinned ones too,
+    keeping them in the list — shows the space before → after;
+  - **Delete empty** "No speech detected" notes and their audio (never ones
+    still waiting for or retrying transcription);
+  - **Delete** unpinned notes.
+  Notes being recorded or transcribed are always skipped.
 - **Your edits are final**: editing or restoring a note marks it done, a
   transcription that finishes afterwards goes into the history behind your
   edit, and an empty result never replaces text.
