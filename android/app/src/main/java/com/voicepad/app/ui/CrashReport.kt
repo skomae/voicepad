@@ -21,6 +21,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.voicepad.app.CrashGuard
 import com.voicepad.app.CrashLog
 
 /** After an unexpected close: what happened, ready to copy or share into a bug report. */
@@ -65,22 +66,21 @@ fun CrashReportDialog() {
 }
 
 /**
- * After VoicePad closed while recording several microphone channels (most
- * likely a crash, since a clean stop clears the mark): offer to go back to
- * one channel before the microphone is opened again.
+ * After VoicePad closed while a risky native feature was running (see
+ * [CrashGuard]): offer to turn that feature off before it runs again.
  */
 @Composable
-fun ChannelCrashDialog(channels: Int, onAnswer: (useOneChannel: Boolean) -> Unit) {
+fun CrashGuardDialog(risky: CrashGuard.Risky, onAnswer: (turnOff: Boolean) -> Unit) {
     val context = LocalContext.current
     val report = remember { CrashLog.pending(context) }
     AlertDialog(
-        onDismissRequest = {}, // needs an answer: the microphone waits for it
-        title = { Text("VoicePad closed while recording $channels channels") },
+        onDismissRequest = {}, // needs an answer: the feature waits for it
+        title = { Text("VoicePad closed while ${risky.doing}") },
         text = {
             Column {
                 Text(
-                    "It looks like recording $channels microphone channels made the app crash. Switch back to " +
-                        "1 channel? You can try more channels again in conversation settings.",
+                    "That most likely made the app crash. Turn it off? You can turn it back on in " +
+                        "conversation settings.",
                 )
                 if (report != null) {
                     Text(
@@ -89,7 +89,7 @@ fun ChannelCrashDialog(channels: Int, onAnswer: (useOneChannel: Boolean) -> Unit
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 8.dp),
                     )
-                    TextButton(onClick = { copyToClipboard(context, report) }) { Text("Copy crash details") }
+                    TextButton(onClick = { copyToClipboard(context, "During: ${risky.doing}\n\n$report") }) { Text("Copy crash details") }
                 }
             }
         },
@@ -97,13 +97,13 @@ fun ChannelCrashDialog(channels: Int, onAnswer: (useOneChannel: Boolean) -> Unit
             TextButton(onClick = {
                 CrashLog.clear(context)
                 onAnswer(true)
-            }) { Text("Use 1 channel") }
+            }) { Text(risky.offer) }
         },
         dismissButton = {
             TextButton(onClick = {
                 CrashLog.clear(context)
                 onAnswer(false)
-            }) { Text("Keep $channels") }
+            }) { Text(risky.keep) }
         },
     )
 }

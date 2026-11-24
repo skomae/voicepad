@@ -3,6 +3,7 @@ package com.voicepad.app.conversation
 import android.content.Context
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractor
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
+import com.voicepad.app.CrashGuard
 import com.voicepad.app.audio.AudioRecorder
 import com.voicepad.app.transcription.ModelFolder
 import kotlinx.coroutines.Dispatchers
@@ -60,11 +61,11 @@ class SpeakerEmbedder private constructor(private val extractor: SpeakerEmbeddin
                 }
             }
             return withContext(Dispatchers.Default) {
-                SpeakerEmbedder(
+                CrashGuard.during(CrashGuard.Risky.VOICE_ID) { SpeakerEmbedder(
                     SpeakerEmbeddingExtractor(
                         config = SpeakerEmbeddingExtractorConfig(model = target.absolutePath, numThreads = 2),
                     )
-                )
+                ) }
             }
         }
 

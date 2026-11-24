@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.media.MediaRecorder
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
+import com.voicepad.app.CrashGuard
 import com.voicepad.app.RecordingController
 import com.voicepad.app.audio.AudioRecorder
 import com.voicepad.app.data.Note
@@ -121,10 +122,11 @@ class ConversationController(
         val voiceModel: Readiness = Readiness.Off,
         val message: String? = null,
         /**
-         * The app closed while recording this many channels (a crash, most
-         * likely): ask whether to go back to one before recording again.
+         * Features that were running when the app last closed unexpectedly
+         * (a native crash, most likely): each is held back until the user
+         * says whether to turn it off. See [CrashGuard].
          */
-        val crashedWithChannels: Int? = null,
+        val crashedDuring: List<CrashGuard.Risky> = emptyList(),
     ) {
         val layout: ConversationLayout get() = layoutOverride ?: settings.layout
 
@@ -170,8 +172,7 @@ class ConversationController(
     private val _state = MutableStateFlow(
         UiState(
             settings = loadSettings(),
-            // Still marked from last time: it never stopped cleanly.
-            crashedWithChannels = prefs.getInt("multiChannelRecording", 0).takeIf { it > 1 },
+            crashedDuring = CrashGuard.crashedDuring,
         )
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -240,6 +241,8 @@ class ConversationController(
 
     fun setLayout(layout: ConversationLayout) {
         layoutChosen = true
+        // Choosing it by hand turns it back on after a crash prompt turned it off.
+        if (layout == ConversationLayout.OUTER_SCREEN) prefs.edit { remove("outerScreenOff") }
         changeSettings { it.copy(layout = layout) }
         _state.update { it.copy(layoutOverride = null) }
     }
@@ -248,7 +251,7 @@ class ConversationController(
     fun setOuterScreen(status: OuterScreen) {
         if (status == _state.value.outerScreen) return
         // The outer screen often reports in only after the unfold that opened this.
-        val useIt = status == OuterScreen.AVAILABLE && openedByUnfold && _state.value.visible && !layoutChosen
+        val useIt = status == OuterScreen.AVAILABLE && openedByUnfold && _state.value.visible && !layoutChosen && outerScreenAllowed
         _state.update { it.copy(outerScreen = status, layoutOverride = if (useIt) ConversationLayout.OUTER_SCREEN else it.layoutOverride) }
     }
 
@@ -301,7 +304,7 @@ class ConversationController(
         lastVoiceFor.clear()
         notes.enterConversation()
         // Unfolded with an outer screen to spare: the other person gets it.
-        val outer = byUnfold && _state.value.outerScreen != OuterScreen.UNSUPPORTED
+        val outer = byUnfold && _state.value.outerScreen != OuterScreen.UNSUPPORTED && outerScreenAllowed
         _state.update { it.copy(visible = true, layoutOverride = if (outer) ConversationLayout.OUTER_SCREEN else null) }
         prepareTranslation()
         if (settings.identifyVoices) ensureVoiceModel()
@@ -411,25 +414,38 @@ class ConversationController(
     fun toggleListening() = if (_state.value.listening) stopListening() else startListening()
 
     /**
-     * Answer to "VoicePad closed while recording N channels — switch back to
-     * one?": [useOneChannel] switches; either way, listening (re)starts.
+     * Answer to "VoicePad closed while [risky] — turn it off?". Either way
+     * the feature is no longer held back.
      */
-    fun answerCrashPrompt(useOneChannel: Boolean) {
-        prefs.edit { remove("multiChannelRecording") }
-        _state.update { it.copy(crashedWithChannels = null) }
-        if (useOneChannel) changeSettings { it.copy(channels = 1) }
-        if (_state.value.visible) startListening()
+    fun answerCrashPrompt(risky: CrashGuard.Risky, turnOff: Boolean) {
+        CrashGuard.resolved(risky)
+        _state.update { it.copy(crashedDuring = it.crashedDuring - risky) }
+        if (turnOff) when (risky) {
+            CrashGuard.Risky.MULTI_CHANNEL -> changeSettings { it.copy(channels = 1) }
+            CrashGuard.Risky.VOICE_ID -> changeSettings { it.copy(identifyVoices = false) }
+            CrashGuard.Risky.OUTER_SCREEN -> {
+                prefs.edit { putBoolean("outerScreenOff", true) }
+                if (settings.layout == ConversationLayout.OUTER_SCREEN) changeSettings { it.copy(layout = ConversationLayout.FACE_TO_FACE) }
+                _state.update { it.copy(layoutOverride = null) }
+            }
+            CrashGuard.Risky.LOCAL_VOICE -> speech.setUseLocalVoices(false)
+        }
+        if (!_state.value.visible) return
+        if (risky == CrashGuard.Risky.VOICE_ID && settings.identifyVoices) ensureVoiceModel()
+        startListening()
     }
 
-    /** Marks a multi-channel recording as running, written to disk at once so a crash can't lose it. */
-    private fun markMultiChannel(channels: Int?) {
-        prefs.edit(commit = true) { if (channels != null && channels > 1) putInt("multiChannelRecording", channels) else remove("multiChannelRecording") }
-    }
+    private fun heldBack(risky: CrashGuard.Risky) = risky in _state.value.crashedDuring
+
+    /** Unfolding may pick the outer screen only if it hasn't been turned off after a crash. */
+    private val outerScreenAllowed get() = !heldBack(CrashGuard.Risky.OUTER_SCREEN) && !prefs.getBoolean("outerScreenOff", false)
+
+    private var multiChannelMarked = false
 
     fun startListening() {
         if (_state.value.listening || !_state.value.visible) return
         // Don't risk the same crash again before the user has decided.
-        if (_state.value.crashedWithChannels != null && settings.channels > 1) return
+        if (heldBack(CrashGuard.Risky.MULTI_CHANNEL) && settings.channels > 1) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             showMessage("Microphone access is needed for conversation mode.")
             return
@@ -463,7 +479,10 @@ class ConversationController(
             return
         }
         val got = recorder.channelCount
-        markMultiChannel(got)
+        if (got > 1 && !multiChannelMarked) {
+            multiChannelMarked = true
+            CrashGuard.enter(CrashGuard.Risky.MULTI_CHANNEL)
+        }
         if (got < wanted && _state.value.message == null) {
             showMessage("The microphone gave $got channel${if (got == 1) "" else "s"} instead of $wanted.")
         }
@@ -504,7 +523,10 @@ class ConversationController(
         val s = session ?: return
         session = null
         recorder.stop()
-        markMultiChannel(null) // stopped cleanly
+        if (multiChannelMarked) {
+            multiChannelMarked = false
+            CrashGuard.exit(CrashGuard.Risky.MULTI_CHANNEL) // stopped cleanly
+        }
         notes.endConversationInput()
         val job = loopJob
         loopJob = null
@@ -650,7 +672,7 @@ class ConversationController(
         val model = embedder
         if (!settings.identifyVoices || model == null) return byLanguage
         val embedding = runCatching {
-            embedMutex.withLock { withContext(Dispatchers.Default) { model.embed(audio) } }
+            embedMutex.withLock { withContext(Dispatchers.Default) { CrashGuard.during(CrashGuard.Risky.VOICE_ID) { model.embed(audio) } } }
         }.getOrNull()
         if (embedding == null) return lastVoiceFor[language] ?: byLanguage
         return SpeakerRef(SpeakerSource.VOICE, voices.assign(embedding, language)).also { lastVoiceFor[language] = it }
@@ -812,6 +834,7 @@ class ConversationController(
 
     private fun ensureVoiceModel() {
         if (embedder != null || embedderJob?.isActive == true) return
+        if (heldBack(CrashGuard.Risky.VOICE_ID)) return
         embedderJob = scope.launch {
             val downloading = !SpeakerEmbedder.isInstalled(context)
             _state.update { it.copy(voiceModel = Readiness.Preparing(if (downloading) 0.0 else null)) }
