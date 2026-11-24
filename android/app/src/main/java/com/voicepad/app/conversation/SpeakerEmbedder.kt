@@ -4,6 +4,7 @@ import android.content.Context
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractor
 import com.k2fsa.sherpa.onnx.SpeakerEmbeddingExtractorConfig
 import com.voicepad.app.audio.AudioRecorder
+import com.voicepad.app.transcription.ModelFolder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -50,7 +51,14 @@ class SpeakerEmbedder private constructor(private val extractor: SpeakerEmbeddin
         /** Downloads the model if needed, then loads it. [progress] reports 0..1. */
         suspend fun load(context: Context, progress: (Double) -> Unit): SpeakerEmbedder {
             val target = file(context)
-            if (!target.exists()) download(target, progress)
+            if (!target.exists()) {
+                val folder = ModelFolder.get(context)
+                val restored = withContext(Dispatchers.IO) { folder.restore("models/speaker/${target.name}", target) }
+                if (!restored) {
+                    download(target, progress)
+                    folder.saveLater("models/speaker/${target.name}", target)
+                }
+            }
             return withContext(Dispatchers.Default) {
                 SpeakerEmbedder(
                     SpeakerEmbeddingExtractor(

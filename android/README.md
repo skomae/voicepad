@@ -16,6 +16,15 @@ copied, edited, re-transcribed and rolled back through its revision history.
 
   Each downloads once on first use. Recording starts immediately; text
   catches up once the model is ready.
+- **Where models come from**: speech models, voices and the speaker model
+  download from GitHub Releases (k2-fsa/sherpa-onnx); translation packs
+  from Google ML Kit. Each downloads once, into VoicePad's own storage,
+  which Android deletes on uninstall. **Model folder** (Settings): choose a
+  folder (e.g. in Download) and every installed model is copied there; a
+  model missing after a reinstall is copied back from it instead of
+  downloaded, which also skips unpacking the archive on the phone. (An
+  access token wouldn't speed downloads up: GitHub serves public release
+  files from its CDN the same either way.)
 - **Quick model switcher**: tap the model name (top left) to switch between
   models already on the phone, e.g. Auto: Western ↔ Auto: Asian + English.
 - **Background voices** (ear button, top bar; also in Settings and the

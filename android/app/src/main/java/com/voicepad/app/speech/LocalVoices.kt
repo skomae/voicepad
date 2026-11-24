@@ -2,6 +2,7 @@ package com.voicepad.app.speech
 
 import android.content.Context
 import com.k2fsa.sherpa.onnx.GeneratedAudio
+import com.voicepad.app.transcription.ModelFolder
 import com.k2fsa.sherpa.onnx.OfflineTts
 import com.k2fsa.sherpa.onnx.OfflineTtsConfig
 import com.k2fsa.sherpa.onnx.OfflineTtsKittenModelConfig
@@ -51,7 +52,7 @@ enum class LocalVoice(
 }
 
 /** Downloads and unpacks local voices into app storage. */
-class LocalVoiceFiles(context: Context) {
+class LocalVoiceFiles(private val context: Context) {
     private val root = File(context.filesDir, "voices").apply { mkdirs() }
 
     fun directory(voice: LocalVoice) = File(root, voice.archive)
@@ -72,6 +73,11 @@ class LocalVoiceFiles(context: Context) {
     suspend fun install(voice: LocalVoice, progress: (Double) -> Unit) = withContext(Dispatchers.IO) {
         if (isInstalled(voice)) return@withContext
         val target = directory(voice)
+        val folder = ModelFolder.get(context)
+        if (folder.restore("voices/${voice.archive}", target)) {
+            progress(1.0)
+            return@withContext
+        }
         target.deleteRecursively()
         target.mkdirs()
         val extra = if (voice == LocalVoice.KITTEN_EN) 0.15 else 0.0
@@ -95,6 +101,7 @@ class LocalVoiceFiles(context: Context) {
             }
         }
         File(target, ".complete").writeText(voice.archive)
+        folder.saveLater("voices/${voice.archive}", target)
         progress(1.0)
     }
 
