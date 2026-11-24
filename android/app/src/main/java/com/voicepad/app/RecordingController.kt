@@ -25,6 +25,14 @@ import com.voicepad.app.data.TextSimilarity
 import com.voicepad.app.data.TranslationJoin
 import com.voicepad.app.data.TranslationStatus
 import com.voicepad.app.data.withTranscription
+import com.voicepad.app.llm.DeviceSpecs
+import com.voicepad.app.llm.LlmAdvice
+import com.voicepad.app.llm.LlmChoice
+import com.voicepad.app.llm.LlmEngine
+import com.voicepad.app.llm.LlmGuidance
+import com.voicepad.app.llm.LlmModelManager
+import com.voicepad.app.llm.LlmPrompt.TypeStyle
+import com.voicepad.app.llm.createLlmEngine
 import com.voicepad.app.transcription.AudioLevel
 import com.voicepad.app.transcription.AutoEngine
 import com.voicepad.app.transcription.ChunkPlanner
@@ -87,6 +95,13 @@ class RecordingController(
         data class Failed(val message: String) : EngineStatus
     }
 
+    sealed interface LlmStatus {
+        data object Idle : LlmStatus
+        data class Loading(val progress: Double, val downloading: Boolean) : LlmStatus
+        data object Ready : LlmStatus
+        data class Failed(val message: String) : LlmStatus
+    }
+
     data class UiState(
         val isRecording: Boolean = false,
         val startedAt: Long? = null,
@@ -122,6 +137,11 @@ class RecordingController(
         /** Whether the phone is paired as a Bluetooth keyboard (type-as-keyboard). */
         val transmitStatus: SinkStatus = SinkStatus.UNAVAILABLE,
         val transmitError: String? = null,
+        /** Whether the optional LLM transform runs before typing. */
+        val llmEnabled: Boolean = false,
+        val llmStatus: LlmStatus = LlmStatus.Idle,
+        val llmChoice: LlmChoice = LlmChoice.QWEN_0_5B,
+        val typeStyle: TypeStyle = TypeStyle.CLEANUP,
     ) {
         /** The model actually in use: Whisper turbo while background voices is on. */
         val activeEngine: EngineChoice get() = if (backgroundVoices) BACKGROUND_ENGINE else engineChoice
@@ -152,6 +172,8 @@ class RecordingController(
     private val engineMutex = Mutex()
     private val inputs = AudioInputs(context)
     private val keyboard = createKeyboardSink(context)
+    private val llmModels = LlmModelManager(context)
+    private val deviceSpecs = DeviceSpecs.read(context)
 
     private val _state = MutableStateFlow(
         UiState(
@@ -168,6 +190,11 @@ class RecordingController(
                 ?.let { runCatching { AutoSplit.valueOf(it) }.getOrNull() } ?: AutoSplit.OFF,
             inputDevices = inputs.devices.value,
             selectedInputKey = prefs.getString("inputDevice", null),
+            llmEnabled = prefs.getBoolean("llmEnabled", false),
+            llmChoice = prefs.getString("llmChoice", null)
+                ?.let { runCatching { LlmChoice.valueOf(it) }.getOrNull() } ?: LlmChoice.QWEN_0_5B,
+            typeStyle = prefs.getString("typeStyle", null)
+                ?.let { runCatching { TypeStyle.valueOf(it) }.getOrNull() } ?: TypeStyle.CLEANUP,
         )
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -183,6 +210,9 @@ class RecordingController(
     /** Notes already attempted since the app was last opened; failures wait for the next open. */
     private val translationTried = mutableSetOf<String>()
     private val translator by lazy { EnglishTranslator() }
+    private var llm: LlmEngine? = null
+    private var llmLoadJob: Job? = null
+    private val llmMutex = Mutex()
 
     /** One finished utterance (or chunk) of a live recording, with its translation. */
     private class LiveSegment(val text: String, val language: String?) {
@@ -1120,12 +1150,85 @@ class RecordingController(
     /** Types [text] as keystrokes on the paired host. */
     fun typeText(text: String) {
         if (text.isBlank()) return
-        scope.launch { keyboard.type(text) }
+        scope.launch {
+            val final = if (_state.value.llmEnabled) transform(text) else text
+            keyboard.type(final)
+        }
     }
 
     /** Types a note's current text. */
     fun typeNote(noteId: String) {
         typeText(store.note(noteId)?.currentText.orEmpty())
+    }
+
+    // endregion
+
+    // region LLM transformer
+
+    fun setLlmEnabled(enabled: Boolean) {
+        prefs.edit { putBoolean("llmEnabled", enabled) }
+        _state.update { it.copy(llmEnabled = enabled) }
+        if (enabled) loadLlm() else releaseLlm()
+    }
+
+    fun setLlmChoice(choice: LlmChoice) {
+        if (choice == _state.value.llmChoice) return
+        prefs.edit { putString("llmChoice", choice.name) }
+        _state.update { it.copy(llmChoice = choice) }
+        if (_state.value.llmEnabled) loadLlm()
+    }
+
+    fun setTypeStyle(style: TypeStyle) {
+        prefs.edit { putString("typeStyle", style.name) }
+        _state.update { it.copy(typeStyle = style) }
+    }
+
+    fun llmAdvice(choice: LlmChoice): LlmAdvice =
+        LlmGuidance.advice(deviceSpecs, _state.value.engineChoice, choice)
+
+    fun loadLlm() {
+        if (!_state.value.llmEnabled) return
+        val choice = _state.value.llmChoice
+        llmLoadJob?.cancel()
+        llmLoadJob = scope.launch {
+            llmMutex.withLock { llm?.release(); llm = null }
+            setLlmStatus(LlmStatus.Loading(0.0, !llmModels.isInstalled(choice)))
+            try {
+                llmModels.install(choice) { p ->
+                    scope.launch { if (_state.value.llmChoice == choice) setLlmStatus(LlmStatus.Loading(p, true)) }
+                }
+                setLlmStatus(LlmStatus.Loading(1.0, false))
+                val engine = withContext(Dispatchers.Default) { createLlmEngine(choice, llmModels.file(choice)) }
+                llmMutex.withLock { llm = engine }
+                setLlmStatus(LlmStatus.Ready)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                llmModels.discard(choice)
+                setLlmStatus(LlmStatus.Failed(e.message ?: e.toString()))
+            }
+        }
+    }
+
+    private fun releaseLlm() {
+        llmLoadJob?.cancel()
+        llmLoadJob = null
+        scope.launch { llmMutex.withLock { llm?.release(); llm = null } }
+        setLlmStatus(LlmStatus.Idle)
+    }
+
+    private fun setLlmStatus(status: LlmStatus) = _state.update { it.copy(llmStatus = status) }
+
+    /** Runs the optional LLM transform over [text], falling back to the original. */
+    private suspend fun transform(text: String): String {
+        val engine = llm ?: return text
+        return try {
+            llmMutex.withLock { withContext(Dispatchers.Default) { engine.transform(text, _state.value.typeStyle) } }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            text // never block typing on the LLM
+        }
     }
 
     // endregion

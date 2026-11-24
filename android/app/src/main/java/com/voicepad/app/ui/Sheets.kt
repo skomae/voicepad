@@ -64,8 +64,12 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.voicepad.app.RecordingController
 import com.voicepad.app.RecordingController.EngineStatus
+import com.voicepad.app.RecordingController.LlmStatus
 import com.voicepad.app.data.Note
 import com.voicepad.app.data.Revision
+import com.voicepad.app.llm.Guidance
+import com.voicepad.app.llm.LlmChoice
+import com.voicepad.app.llm.LlmPrompt.TypeStyle
 import com.voicepad.app.transcription.EngineChoice
 import java.util.Date
 
@@ -321,6 +325,90 @@ fun SettingsSheet(
                     Text(status.message, style = MaterialTheme.typography.bodySmall)
                     Spacer(Modifier.height(6.dp))
                     Button(onClick = controller::loadEngine) { Text("Retry") }
+                }
+            }
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Clean up with a small LLM")
+                    Text(
+                        "Optionally run a tiny on-device model over the text before it's typed as a keyboard. " +
+                            "Runs alongside the speech model; the picker recommends a size for this phone.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = state.llmEnabled, onCheckedChange = controller::setLlmEnabled)
+            }
+            if (state.llmEnabled) {
+                Text("Style", style = MaterialTheme.typography.titleSmall)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(top = 6.dp).horizontalScroll(rememberScrollState()),
+                ) {
+                    TypeStyle.entries.forEach { style ->
+                        FilterChip(
+                            selected = state.typeStyle == style,
+                            onClick = { controller.setTypeStyle(style) },
+                            label = { Text(style.label) },
+                        )
+                    }
+                }
+                Text("Model", style = MaterialTheme.typography.titleSmall)
+                LlmChoice.entries.forEach { choice ->
+                    val advice = controller.llmAdvice(choice)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = choice == state.llmChoice,
+                                role = Role.RadioButton,
+                                onClick = { controller.setLlmChoice(choice) },
+                            )
+                            .padding(vertical = 6.dp),
+                    ) {
+                        RadioButton(selected = choice == state.llmChoice, onClick = null)
+                        Spacer(Modifier.width(12.dp))
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(choice.displayName)
+                                if (advice.verdict == Guidance.RECOMMENDED) {
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        "Recommended",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            }
+                            Text(
+                                "${choice.approximateSize} · ${advice.reason}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                when (val status = state.llmStatus) {
+                    LlmStatus.Idle -> Text("Model not loaded")
+                    is LlmStatus.Loading -> Column {
+                        Text(if (status.downloading) "Downloading model…" else "Loading model…")
+                        Spacer(Modifier.height(6.dp))
+                        if (status.downloading) {
+                            LinearProgressIndicator(progress = { status.progress.toFloat() }, modifier = Modifier.fillMaxWidth())
+                        } else {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                        }
+                    }
+                    LlmStatus.Ready -> Text("Model ready", color = MaterialTheme.colorScheme.primary)
+                    is LlmStatus.Failed -> Column {
+                        Text("Failed to load model", color = MaterialTheme.colorScheme.error)
+                        Text(status.message, style = MaterialTheme.typography.bodySmall)
+                        Spacer(Modifier.height(6.dp))
+                        Button(onClick = controller::loadLlm) { Text("Retry") }
+                    }
                 }
             }
             Spacer(Modifier.height(32.dp))
