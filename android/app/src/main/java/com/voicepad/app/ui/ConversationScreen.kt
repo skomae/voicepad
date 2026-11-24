@@ -919,7 +919,9 @@ private fun ConversationSettingsSheet(
             )
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             Text(
-                "Every conversation is also saved as a note, with its audio and the transcript with translations.",
+                "Listening carries on with the app in the background or the phone locked: a Conversation " +
+                    "notification stays in the status bar, with Pause and Leave. Leaving conversation mode stops it. " +
+                    "Every conversation is also saved as a note, with its audio and the transcript with translations.",
                 style = MaterialTheme.typography.bodySmall, color = muted,
             )
             TextButton(onClick = { conversation.clearTurns(); onDismiss() }) { Text("Clear the screen") }

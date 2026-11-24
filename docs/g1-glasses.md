@@ -70,14 +70,24 @@ and lost acknowledgements no longer block the write queue for 15 s.
 
 ## Limits
 
-- Conversation mode listens only while the app is in front (it pauses when the
-  app is backgrounded), so "phone in a pocket" means unlocked, screen on, with
-  VoicePad in front — `keepScreenOn` keeps it that way. Running the
-  conversation from a foreground service is the next step if the phone should
-  be able to lock.
-- The Even Realities app holds the glasses' connection; they can be paired
-  with VoicePad or with that app, not both.
-- One conversation per pair of glasses: the two arms are written together.
+- One pair of glasses at a time, and the Even Realities app holds their
+  connection; they can be paired with VoicePad or with that app, not both.
+- The two arms are always written together: one conversation per pair.
+
+## Listening with the screen off
+
+Conversation mode runs under a foreground service
+(`conversation/ConversationService.kt`, type `microphone`), so the microphone
+keeps working with the app in the background or the phone locked — otherwise
+Android stops giving audio the moment the activity is stopped. A *Conversation*
+notification stays in the status bar with the newest line and **Pause** /
+**Leave**; it's private, so the lock screen shows nothing until unlocked, and on
+Android 16 it's promoted to a Live Update ("LIVE" chip). Pausing or leaving
+conversation mode stops the service; nothing runs in the background after that.
+
+If the system refuses to start the service (Android 12+ won't start a foreground
+service from the background), listening falls back to pausing when the app goes
+away, and restarts when it comes back.
 
 ## Not yet verified — needs the hardware
 
@@ -90,6 +100,8 @@ real pair of G1s (there were none to hand):
 - how much text the waveguide really fits at 40 columns (Basis's own limit,
   and the source of the "5 lines × 40" figure) — if lines come out clipped,
   lower `GlassesScreen.COLUMNS` and the wrapping follows;
+- the foreground service holding the microphone with the phone locked (the
+  Conversation notification, its Pause/Leave actions and the Live Update chip);
 - Bluetooth permission prompts on Android 12+ when the glasses are first
   switched on.
 

@@ -390,18 +390,34 @@ class ConversationController(
         if (!unfolded && openedByUnfold && _state.value.visible) close()
     }
 
-    /** The app went to the background: Android stops giving it microphone audio, so pause. */
+    /**
+     * The app went to the background. With [ConversationService] running, the
+     * microphone keeps working (and so do the glasses) until the user pauses;
+     * without it Android stops giving us audio, so pause as before.
+     */
     fun onAppStopped() {
-        if (_state.value.visible && _state.value.listening) {
-            pausedInBackground = true
-            stopListening()
-        }
+        if (!_state.value.visible || !_state.value.listening) return
+        if (backgroundService) return
+        pausedInBackground = true
+        stopListening()
     }
 
     fun onAppStarted() {
-        if (_state.value.visible && pausedInBackground) {
+        if (!_state.value.visible) return
+        if (pausedInBackground) {
             pausedInBackground = false
             startListening()
+            return
+        }
+        // Listening says on but nothing is recording (the system took the
+        // service, or the microphone failed while away): start it again.
+        if (_state.value.listening && session == null && finishingJob?.isActive != true) {
+            startBackgroundService()
+            val previous = finishingJob
+            scope.launch {
+                previous?.join()
+                if (_state.value.listening && session == null) begin()
+            }
         }
     }
 
@@ -503,12 +519,32 @@ class ConversationController(
             return
         }
         _state.update { it.copy(listening = true) }
+        startBackgroundService()
         val previous = finishingJob
         scope.launch {
             // The recorder still holds the previous session's audio until it's done.
             previous?.join()
             if (_state.value.listening && session == null) begin()
         }
+    }
+
+    /** Whether [ConversationService] is keeping the microphone alive while the app is away. */
+    private var backgroundService = false
+
+    private fun startBackgroundService() {
+        backgroundService = try {
+            ConversationService.start(context)
+            true
+        } catch (e: Throwable) {
+            // Android 12+ refuses to start a foreground service from the background;
+            // listening then pauses when the app goes away, as it used to.
+            false
+        }
+    }
+
+    private fun stopBackgroundService() {
+        backgroundService = false
+        ConversationService.stop(context)
     }
 
     private fun begin() {
@@ -527,6 +563,7 @@ class ConversationController(
         } catch (e: Throwable) {
             notes.endConversationInput()
             _state.update { it.copy(listening = false) }
+            stopBackgroundService()
             showMessage(e.message ?: "Could not start the microphone.")
             return
         }
@@ -571,6 +608,7 @@ class ConversationController(
     fun stopListening() {
         if (!_state.value.listening) return
         _state.update { it.copy(listening = false, live = null, hearing = false, working = false) }
+        stopBackgroundService()
         liveTranslateJob?.cancel()
         val s = session
         if (s == null) {

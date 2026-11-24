@@ -172,9 +172,16 @@ copied, edited, re-transcribed and rolled back through its revision history.
     text exactly. Every clip is cached (up to 150 MB), so replays are
     instant. (Piper voices for other languages need a phonemiser that
     sherpa-onnx 2.0 no longer includes, so they aren't offered.)
-  - Pauses when the app goes to the background; note recording is paused
-    while it's open and resumes after. Each listening stretch is saved as a
-    note: its audio plus the speaker-labelled transcript with translations.
+  - **Keeps listening with the phone locked**: conversation mode runs under a
+    foreground service (microphone type), so the app can go to the background
+    or the screen can lock and it still hears, translates and updates the
+    glasses. A *Conversation* notification stays in the status bar with the
+    newest line and **Pause** / **Leave** — private, so a locked screen shows
+    nothing until unlocked, and on Android 16 it's a Live Update ("LIVE"
+    chip). Pausing or leaving stops it. Note recording is paused while
+    conversation mode is open, and resumes after. Each listening stretch is
+    saved as a note: its audio plus the speaker-labelled transcript with
+    translations.
 - **Recordings are never lost to a model failure.** Every note saves its
   transcription status (recording → pending → transcribing → done/failed).
   Audio stays on disk until it has text; failed or waiting recordings show

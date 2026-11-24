@@ -69,5 +69,12 @@
             android:name=".audio.RecordingService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
+
+        <!-- Keeps conversation mode listening (and the glasses updating) with the app
+             in the background or the phone locked. -->
+        <service
+            android:name=".conversation.ConversationService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
     </application>
 </manifest>
