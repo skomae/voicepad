@@ -37,6 +37,12 @@ import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
+import com.voicepad.app.speech.LocalVoice
+import com.voicepad.app.speech.SpeechOutput
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -101,6 +107,7 @@ import kotlinx.coroutines.delay
 fun ConversationScreen(conversation: ConversationController, notes: RecordingController) {
     val state by conversation.state.collectAsStateWithLifecycle()
     val notesState by notes.state.collectAsStateWithLifecycle()
+    val speechState by conversation.speech.state.collectAsStateWithLifecycle()
     var showSettings by remember { mutableStateOf(false) }
     var picking by remember { mutableStateOf<Side?>(null) }
 
@@ -141,6 +148,9 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
         )
     }
 
+    CompositionLocalProvider(
+        LocalSpeak provides SpeakActions(speechState, onSpeak = conversation::speak, onDismissError = conversation.speech::dismissError),
+    ) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         if (state.fold != null || coverActive) {
             LaptopLayout(state, level, controls)
@@ -180,6 +190,7 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
             }
         }
     }
+    }
 
     picking?.let { side ->
         LanguagePickerDialog(
@@ -199,6 +210,31 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
 }
 
 internal enum class Side { MINE, THEIRS }
+
+/** Speaking turns aloud; absent (e.g. in previews, or on the cover screen) the speaker icons are hidden. */
+internal class SpeakActions(
+    val state: SpeechOutput.State,
+    val onSpeak: (Turn, String) -> Unit,
+    val onDismissError: () -> Unit,
+)
+
+internal val LocalSpeak = staticCompositionLocalOf<SpeakActions?> { null }
+
+/** Speaker icon: says the turn in [language]; while it's being said, a stop icon. */
+@Composable
+internal fun SpeakButton(turn: Turn, language: String, tint: Color) {
+    val speak = LocalSpeak.current ?: return
+    if (turn.id < 0 || turn.textIn(language) == null) return
+    val active = speak.state.activeId == ConversationController.speechId(turn.id, language)
+    IconButton(onClick = { speak.onSpeak(turn, language) }, modifier = Modifier.size(32.dp)) {
+        Icon(
+            if (active) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
+            contentDescription = if (active) "Stop" else "Say it",
+            tint = tint,
+            modifier = Modifier.size(20.dp),
+        )
+    }
+}
 
 /**
  * A foldable standing half open like a laptop, or showing their side on its
@@ -320,12 +356,16 @@ internal fun TranscriptPane(state: ConversationController.UiState, textSize: Int
                 Box(Modifier.width(5.dp).fillMaxHeight().background(color, RoundedCornerShape(3.dp)))
                 Spacer(Modifier.width(10.dp))
                 Column {
-                    Text(
-                        (if (turn.speaker == null) "" else ConversationController.speakerLabel(turn) + " · ") +
-                            LanguageNames.native(turn.language) + if (isLive) " · speaking…" else "",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = color,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            (if (turn.speaker == null) "" else ConversationController.speakerLabel(turn) + " · ") +
+                                LanguageNames.native(turn.language) + if (isLive) " · speaking…" else "",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = color,
+                        )
+                        // Says the translation, for the other person.
+                        SpeakButton(turn, turn.target, color)
+                    }
                     Text(
                         turn.text,
                         fontSize = (size * 0.8f).sp,
@@ -507,6 +547,14 @@ private fun StatusLines(
         if (state.listening && state.channelsIdentical) {
             add { StatusText("Your mic's channels carry the same sound, so speakers are told apart by voice instead.") }
         }
+        LocalSpeak.current?.let { speak ->
+            speak.state.error?.let { add { StatusText(it, error = true, action = "OK", onAction = speak.onDismissError) } }
+            speak.state.voices.forEach { (voice, status) ->
+                if (status is SpeechOutput.VoiceStatus.Downloading) {
+                    add { StatusText("Downloading ${voice.displayName} voice… ${(status.progress * 100).toInt()}% (the phone's voice speaks meanwhile)") }
+                }
+            }
+        }
         if (!state.listening) add { StatusText("Paused — tap the microphone to listen.") }
     }
     lines.take(3).forEach { it() }
@@ -678,6 +726,8 @@ private fun ConversationSettingsSheet(
                 checked = settings.identifyVoices,
                 onChange = conversation::setIdentifyVoices,
             )
+            SpeechSettings(conversation, settings)
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
             ToggleRow(
                 title = "Open when the phone is unfolded",
                 subtitle = "On a foldable, unfolding it opens conversation mode; folding it again goes back to notes.",
@@ -709,5 +759,42 @@ private fun ToggleRow(title: String, subtitle: String, checked: Boolean, onChang
         }
         Spacer(Modifier.width(12.dp))
         Switch(checked = checked, onCheckedChange = onChange)
+    }
+}
+
+/** Reading aloud: automatically, and which voices. */
+@Composable
+private fun SpeechSettings(conversation: ConversationController, settings: ConversationController.Settings) {
+    val speech by conversation.speech.state.collectAsStateWithLifecycle()
+    val muted = MaterialTheme.colorScheme.onSurfaceVariant
+    ToggleRow(
+        title = "Read translations aloud",
+        subtitle = "Says each translation once its speaker pauses. The microphone ignores the phone's own voice " +
+            "meanwhile, so speak after it finishes. Tap the speaker icon on any turn to hear it again.",
+        checked = settings.autoSpeak,
+        onChange = conversation::setAutoSpeak,
+    )
+    ToggleRow(
+        title = "Use on-device voices",
+        subtitle = "Kitten for English and MeloTTS for Mandarin, run on the phone and downloaded the first time " +
+            "they're needed. Other languages, and English words Kitten doesn't know, use the phone's own voice. " +
+            "Every clip is kept, so replaying is instant.",
+        checked = speech.useLocalVoices,
+        onChange = conversation.speech::setUseLocalVoices,
+    )
+    if (speech.useLocalVoices) {
+        LocalVoice.entries.forEach { voice ->
+            val status = speech.voices[voice]
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(start = 4.dp)) {
+                Text("${voice.displayName} · ${voice.sizeLabel}", Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                when (status) {
+                    SpeechOutput.VoiceStatus.Ready -> Text("Ready", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+                    is SpeechOutput.VoiceStatus.Downloading -> Text("${(status.progress * 100).toInt()}%", color = muted, style = MaterialTheme.typography.bodySmall)
+                    else -> TextButton(onClick = { conversation.speech.download(voice) }) {
+                        Text(if (status is SpeechOutput.VoiceStatus.Failed) "Retry download" else "Download")
+                    }
+                }
+            }
+        }
     }
 }

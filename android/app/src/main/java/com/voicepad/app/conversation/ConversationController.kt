@@ -19,6 +19,9 @@ import com.voicepad.app.data.withTranscription
 import com.voicepad.app.transcription.ChunkPlanner.Span
 import com.voicepad.app.transcription.EnglishTranslator
 import com.voicepad.app.transcription.SpeechDetector
+import com.voicepad.app.speech.SpeechOutput
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -62,6 +65,7 @@ import kotlin.coroutines.cancellation.CancellationException
 class ConversationController(
     private val context: Context,
     private val notes: RecordingController,
+    val speech: SpeechOutput,
 ) {
     data class Settings(
         val myLanguage: String = "en",
@@ -75,6 +79,8 @@ class ConversationController(
         val identifyVoices: Boolean = true,
         /** Open conversation mode when a foldable phone is unfolded. */
         val openOnUnfold: Boolean = false,
+        /** Read each translation aloud once its turn is finished. */
+        val autoSpeak: Boolean = false,
         /**
          * Seconds a turn that sounds unfinished is held open before it's
          * translated anyway, so a pause to think doesn't cut it in two; 0 turns holding off.
@@ -157,6 +163,9 @@ class ConversationController(
         /** Average dB between the loudest and next channel below which channels count as identical. */
         private const val IDENTICAL_DB = 1.5f
 
+        /** Identifies a turn read out in one language, for the speaker icons. */
+        fun speechId(turnId: Long, language: String) = "$turnId:$language"
+
         /** Who said [turn], for labels and the saved transcript. */
         fun speakerLabel(turn: Turn): String = speakerLabel(turn.speaker, turn.language)
 
@@ -192,6 +201,7 @@ class ConversationController(
         textSize = prefs.getInt("textSize", 34),
         identifyVoices = prefs.getBoolean("identifyVoices", true),
         openOnUnfold = prefs.getBoolean("openOnUnfold", false),
+        autoSpeak = prefs.getBoolean("autoSpeak", false),
         thinkingPause = prefs.getInt("thinkingPause", 5),
         coverScreen = prefs.getBoolean("coverScreen", true),
         coverRotation = prefs.getInt("coverRotation", 0),
@@ -205,6 +215,7 @@ class ConversationController(
         putInt("textSize", s.textSize)
         putBoolean("identifyVoices", s.identifyVoices)
         putBoolean("openOnUnfold", s.openOnUnfold)
+        putBoolean("autoSpeak", s.autoSpeak)
         putInt("thinkingPause", s.thinkingPause)
         putBoolean("coverScreen", s.coverScreen)
         putInt("coverRotation", s.coverRotation)
@@ -247,6 +258,18 @@ class ConversationController(
 
     fun setOpenOnUnfold(enabled: Boolean) { changeSettings { it.copy(openOnUnfold = enabled) } }
 
+    fun setAutoSpeak(enabled: Boolean) {
+        // Only what's said from now on is read out, not the conversation so far.
+        if (enabled) spokenTurns += _state.value.turns.map { it.id }
+        changeSettings { it.copy(autoSpeak = enabled) }
+        if (!enabled) speech.stop()
+    }
+
+    /** Says [turn] in [language] (its original or its translation); tapping again stops it. */
+    fun speak(turn: Turn, language: String) {
+        val text = turn.textIn(language) ?: return
+        speech.say(speechId(turn.id, language), text, language)
+    }
     fun setThinkingPause(seconds: Int) { changeSettings { it.copy(thinkingPause = seconds.coerceIn(0, 15)) } }
 
     fun setCoverScreen(enabled: Boolean) { changeSettings { it.copy(coverScreen = enabled) } }
@@ -294,6 +317,7 @@ class ConversationController(
         pausedInBackground = false
         stopListening()
         _state.update { it.copy(visible = false, live = null, message = null) }
+        speech.stop()
         releaseHeld()
         notes.leaveConversation()
     }
@@ -357,6 +381,36 @@ class ConversationController(
     private var heldTurnId: Long? = null
     private var separationTotal = 0f
     private var separationCount = 0
+    /** Turns already read aloud (or that shouldn't be). */
+    private val spokenTurns = mutableSetOf<Long>()
+    /**
+     * Stretches of the recording during which the phone was talking. Speech
+     * found there is the phone's own voice coming back through the mic.
+     */
+    private val muted = mutableListOf<IntRange>()
+    private var mutedFrom: Int? = null
+
+    init {
+        scope.launch {
+            speech.state.map { it.playing }.distinctUntilChanged().collect { playing ->
+                if (session == null) return@collect
+                val now = recorder.sampleCount
+                if (playing) {
+                    mutedFrom = now
+                } else {
+                    // The room keeps echoing for a moment after the voice stops.
+                    muted += (mutedFrom ?: now)..(now + SR * 3 / 10)
+                    mutedFrom = null
+                }
+            }
+        }
+    }
+
+    private fun isEcho(span: Span): Boolean {
+        val from = mutedFrom
+        if (from != null && span.end > from) return true
+        return muted.any { span.start < it.last && span.end > it.first }
+    }
 
     fun toggleListening() = if (_state.value.listening) stopListening() else startListening()
 
@@ -406,6 +460,8 @@ class ConversationController(
         store.add(note)
         val s = Session(++sessionCount, note.id, List(got) { Lane(it) })
         session = s
+        muted.clear()
+        mutedFrom = if (speech.state.value.playing) 0 else null
         _state.update { it.copy(recordingChannels = got, channelsIdentical = false, live = null) }
         loopJob = scope.launch {
             while (isActive) {
@@ -482,7 +538,10 @@ class ConversationController(
             if (_state.value.working) _state.update { it.copy(working = false) }
         }
         if (final) releaseHeld() else releaseHeldIfDue(s, recorder.sampleCount, hearing)
-        if (!final && session === s) updateLive(s, now)
+        if (!final && session === s) {
+            if (!speech.state.value.playing) updateLive(s, now)
+            if (settings.autoSpeak) speakSettled(s, now)
+        }
         // Audio still needed: utterances waiting for the model, and speech in progress.
         // (A channel nobody speaks on needs nothing, so it doesn't hold memory.)
         val keep = s.lanes.minOf { lane ->
@@ -536,6 +595,7 @@ class ConversationController(
     }
 
     private suspend fun finishUtterance(s: Session, channel: Int, span: Span, final: Boolean) {
+        if (isEcho(span)) return
         if (multiChannel) {
             val levels = levels(span)
             ChannelAttribution.separationDb(levels)?.let(::trackSeparation)
@@ -560,7 +620,10 @@ class ConversationController(
         val window = settings.thinkingPause
         // A turn held open for a thinking pause can be picked up again for as long as it's held.
         val maxGap = if (previous?.held == true) maxOf(window.toDouble(), Turns.MAX_GAP_SECONDS) else Turns.MAX_GAP_SECONDS
-        val joinedTurn = if (Turns.continues(previous, s.number, speaker, language, span.start, SR, maxGap) && previous === _state.value.turns.lastOrNull()) {
+        val joinedTurn = if (
+            Turns.continues(previous, s.number, speaker, language, span.start, SR, maxGap) && previous === _state.value.turns.lastOrNull() &&
+            previous?.id !in spokenTurns // already read aloud: what follows is read as its own turn
+        ) {
             val joined = Turns.join(previous!!.text, text)
             previous.copy(text = joined, end = span.end, romanization = translator.romanize(language, joined), pending = true)
         } else {
@@ -607,6 +670,22 @@ class ConversationController(
         }.getOrNull()
         if (embedding == null) return lastVoiceFor[language] ?: byLanguage
         return SpeakerRef(SpeakerSource.VOICE, voices.assign(embedding, language)).also { lastVoiceFor[language] = it }
+    }
+
+    /**
+     * Reads out translations of turns that are finished: translated, and no
+     * longer able to continue (the speaker has been quiet long enough).
+     */
+    private fun speakSettled(s: Session, now: Int) {
+        for (turn in _state.value.turns) {
+            if (turn.session != s.number || turn.id in spokenTurns) continue
+            val translation = turn.translation ?: continue
+            // Held open for a thinking pause, or its translation is being redone: not finished yet.
+            if (turn.held || turn.pending) continue
+            if (turn.id in translationJobs || now - turn.end < Turns.MAX_GAP_SECONDS * SR) continue
+            spokenTurns += turn.id
+            speech.enqueue(speechId(turn.id, turn.target), translation, turn.target)
+        }
     }
 
     private fun trackSeparation(db: Float) {

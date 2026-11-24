@@ -189,6 +189,7 @@ private fun Hero(turn: Turn, phase: Phase, language: String, textSize: Int, colo
                     Spacer(Modifier.width(10.dp))
                     ThinkingDots(color)
                 }
+                if (phase != Phase.SPEAKING && phase != Phase.HOLDING) SpeakButton(turn, language, color)
             }
             if (original) SpokenText(turn, phase, textSize) else TranslatedText(turn, phase, language, textSize, color, motion)
             if (!original) {
@@ -315,7 +316,9 @@ private fun HistoryTurn(turn: Turn, language: String, textSize: Int) {
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
             maxLines = 6,
             overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
         )
+        SpeakButton(turn, language, speakerColor(turn.speaker).copy(alpha = 0.8f))
     }
 }
 
