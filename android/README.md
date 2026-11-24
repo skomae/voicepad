@@ -136,6 +136,13 @@ copied, edited, re-transcribed and rolled back through its revision history.
   for the right length before the WAV is deleted; if anything is off the
   note is left untouched. Archived notes can still be played, shared,
   unarchived and re-transcribed.
+- **Export** (⋮ → Export all notes…): saves a ZIP wherever you pick (the
+  phone, Drive…) in open formats: `notes.json` with every note — its
+  transcript and every earlier version, translation, language, model,
+  dates, pinned/archived — and `notes.md`, the same as readable Markdown.
+  Optionally the recordings too (`audio/…`, WAV or M4A, linked from both).
+  Conversations are exported like any note, with their speaker-labelled
+  transcript and translations.
 - **Clean up** (⋮ → Clean up…), for notes older than 1, 7 or 30 days or
   any age:
   - **Archive** unpinned notes (hidden, audio compressed);

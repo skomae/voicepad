@@ -942,6 +942,40 @@ class RecordingController(
 
     // endregion
 
+    // region Export
+
+    /** Notes an export would include. */
+    fun exportCandidates(includeArchived: Boolean): List<Note> =
+        store.notes.value.filter { it.id != _state.value.recordingNoteId && (includeArchived || !it.archived) }
+
+    /** Bytes of audio an export with recordings would hold. */
+    fun exportAudioBytes(includeArchived: Boolean): Long =
+        exportCandidates(includeArchived).sumOf { store.audioFile(it)?.takeIf { f -> f.isFile }?.length() ?: 0L }
+
+    /**
+     * Writes every note (see [com.voicepad.app.data.NoteExport]) as a ZIP to
+     * [uri], a file the user picked. Calls [onDone] with a message for them.
+     */
+    fun exportNotes(uri: android.net.Uri, includeAudio: Boolean, includeArchived: Boolean, onDone: (String) -> Unit) {
+        val notes = exportCandidates(includeArchived)
+        scope.launch {
+            val message = try {
+                val count = withContext(Dispatchers.IO) {
+                    val out = context.contentResolver.openOutputStream(uri, "wt") ?: error("Couldn't open the file.")
+                    out.use { com.voicepad.app.data.NoteExport.writeZip(it, notes, includeAudio) { n -> store.audioFile(n) } }
+                }
+                "Exported $count note${if (count == 1) "" else "s"}."
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                "Export failed: ${e.message ?: e}"
+            }
+            onDone(message)
+        }
+    }
+
+    // endregion
+
     // region Archive and clean-up
 
     /** Notes that must not be archived or deleted right now. */

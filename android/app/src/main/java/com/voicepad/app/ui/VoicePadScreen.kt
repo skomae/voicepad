@@ -11,6 +11,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
@@ -117,6 +118,7 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
     var confirmDeleteId by remember { mutableStateOf<String?>(null) }
     var showArchive by remember { mutableStateOf(false) }
     var showCleanup by remember { mutableStateOf(false) }
+    var showExport by remember { mutableStateOf(false) }
     var overflowOpen by remember { mutableStateOf(false) }
     val player = remember { AudioPlayer() }
     DisposableEffect(Unit) { onDispose { player.stop() } }
@@ -256,6 +258,11 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
                                     leadingIcon = { Icon(Icons.Default.CleaningServices, contentDescription = null) },
                                     onClick = { overflowOpen = false; showCleanup = true },
                                 )
+                                DropdownMenuItem(
+                                    text = { Text("Export all notes…") },
+                                    leadingIcon = { Icon(Icons.Default.FileDownload, contentDescription = null) },
+                                    onClick = { overflowOpen = false; showExport = true },
+                                )
                             }
                         }
                     },
@@ -389,6 +396,9 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
                 items(archivedNotes, key = { "archived-" + it.id }) { Bubble(it) }
             }
         }
+    }
+    if (showExport) {
+        ExportDialog(controller, onDismiss = { showExport = false })
     }
     if (showCleanup) {
         CleanupDialog(controller, onDismiss = { showCleanup = false })
