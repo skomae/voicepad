@@ -26,12 +26,13 @@ import com.voicepad.app.data.TranslationJoin
 import com.voicepad.app.data.TranslationStatus
 import com.voicepad.app.data.withTranscription
 import com.voicepad.app.llm.DeviceSpecs
+import com.voicepad.app.llm.LlamaEngine
 import com.voicepad.app.llm.LlmAdvice
 import com.voicepad.app.llm.LlmChoice
 import com.voicepad.app.llm.LlmEngine
 import com.voicepad.app.llm.LlmGuidance
 import com.voicepad.app.llm.LlmModelManager
-import com.voicepad.app.llm.LlmPrompt.TypeStyle
+import com.voicepad.app.llm.LlmPrompt
 import com.voicepad.app.llm.createLlmEngine
 import com.voicepad.app.transcription.AudioLevel
 import com.voicepad.app.transcription.AutoEngine
@@ -45,8 +46,11 @@ import com.voicepad.app.transcription.SherpaEngine
 import com.voicepad.app.transcription.SpeechDetector
 import com.voicepad.app.transcription.SpeechEngine
 import com.voicepad.app.transcription.Transcript
+import com.voicepad.app.transmit.KeyboardHost
+import com.voicepad.app.transmit.ScanState
 import com.voicepad.app.transmit.SinkStatus
 import com.voicepad.app.transmit.createKeyboardSink
+import com.voicepad.app.ui.NoteTapAction
 import com.voicepad.app.ui.ThemeMode
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -54,6 +58,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -66,6 +71,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
+import org.json.JSONArray
 
 /**
  * Owns the recorder and the speech engine and turns audio into text.
@@ -113,6 +119,10 @@ class RecordingController(
         val backgroundVoices: Boolean = false,
         /** Light, dark, pure black (OLED), or follow the phone. */
         val themeMode: ThemeMode = ThemeMode.SYSTEM,
+        /** What a single tap on a note bubble does. */
+        val noteTapAction: NoteTapAction = NoteTapAction.EDIT,
+        /** Half-folded with a horizontal hinge: transcript on top, controls below. */
+        val tabletopLayout: Boolean = true,
         /** When a recording (or split part) finishes transcribing, copy it to the clipboard (with a toast). */
         val copyWhenDone: Boolean = true,
         /** Start a new note automatically after a silence or every few minutes. */
@@ -132,6 +142,8 @@ class RecordingController(
         val liveTranslation: NoteTranslation? = null,
         /** Which part of a split recording is being recorded (1 = not split). */
         val partNumber: Int = 1,
+        /** When the current recording was paused, or null while it's capturing. */
+        val pausedAt: Long? = null,
         /** Stopped or split-off notes still being transcribed (the notification stays until 0). */
         val finishingCount: Int = 0,
         /** Whether the phone is paired as a Bluetooth keyboard (type-as-keyboard). */
@@ -141,7 +153,14 @@ class RecordingController(
         val llmEnabled: Boolean = false,
         val llmStatus: LlmStatus = LlmStatus.Idle,
         val llmChoice: LlmChoice = LlmChoice.QWEN_0_5B,
-        val typeStyle: TypeStyle = TypeStyle.CLEANUP,
+        /** Instruction the LLM follows before typing (a preset or the user's own). */
+        val typePrompt: String = LlmPrompt.CLEANUP.instruction,
+        /** User-written prompts, most recent first (presets aren't included). */
+        val recentPrompts: List<String> = emptyList(),
+        /** Name of the computer the keyboard is connected to. */
+        val transmitHost: String? = null,
+        /** Text is being transformed and/or typed on the paired host. */
+        val isTyping: Boolean = false,
     ) {
         /** The model actually in use: Whisper turbo while background voices is on. */
         val activeEngine: EngineChoice get() = if (backgroundVoices) BACKGROUND_ENGINE else engineChoice
@@ -186,6 +205,9 @@ class RecordingController(
             copyWhenDone = prefs.getBoolean("copyWhenDone", true),
             themeMode = prefs.getString("theme", null)
                 ?.let { runCatching { ThemeMode.valueOf(it) }.getOrNull() } ?: ThemeMode.SYSTEM,
+            tabletopLayout = prefs.getBoolean("tabletopLayout", true),
+            noteTapAction = prefs.getString("noteTapAction", null)
+                ?.let { runCatching { NoteTapAction.valueOf(it) }.getOrNull() } ?: NoteTapAction.EDIT,
             autoSplit = prefs.getString("autoSplit", null)
                 ?.let { runCatching { AutoSplit.valueOf(it) }.getOrNull() } ?: AutoSplit.OFF,
             inputDevices = inputs.devices.value,
@@ -193,8 +215,14 @@ class RecordingController(
             llmEnabled = prefs.getBoolean("llmEnabled", false),
             llmChoice = prefs.getString("llmChoice", null)
                 ?.let { runCatching { LlmChoice.valueOf(it) }.getOrNull() } ?: LlmChoice.QWEN_0_5B,
-            typeStyle = prefs.getString("typeStyle", null)
-                ?.let { runCatching { TypeStyle.valueOf(it) }.getOrNull() } ?: TypeStyle.CLEANUP,
+            typePrompt = prefs.getString("typePrompt", null)?.takeIf { it.isNotBlank() }
+                ?: LlmPrompt.CLEANUP.instruction,
+            recentPrompts = prefs.getString("recentPrompts", null)?.let { json ->
+                runCatching {
+                    val array = JSONArray(json)
+                    List(array.length()) { array.getString(it) }
+                }.getOrNull()
+            }.orEmpty(),
         )
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -212,6 +240,7 @@ class RecordingController(
     private val translator by lazy { EnglishTranslator() }
     private var llm: LlmEngine? = null
     private var llmLoadJob: Job? = null
+    private var typingJob: Job? = null
     private val llmMutex = Mutex()
 
     /** One finished utterance (or chunk) of a live recording, with its translation. */
@@ -276,7 +305,7 @@ class RecordingController(
         }
 
         // Reflect the Bluetooth keyboard sink's state into the UI.
-        scope.launch { keyboard.state.collect { s -> _state.update { it.copy(transmitStatus = s.status, transmitError = s.error) } } }
+        scope.launch { keyboard.state.collect { s -> _state.update { it.copy(transmitStatus = s.status, transmitError = s.error, transmitHost = s.host) } } }
 
         // Translate whenever a note gets new text (transcription, edit, restore).
         scope.launch { store.notes.collect { processTranslations() } }
@@ -424,6 +453,7 @@ class RecordingController(
         try {
             // A chosen mic that isn't connected falls back to the phone's default.
             val preferred = inputs.beginRecording(s.selectedInputKey)
+            recorder.paused = false
             recorder.start(File(store.recordingsDir, fileName), preferred, AudioRecorder.sourceFor(context, s.backgroundVoices))
         } catch (e: Throwable) {
             inputs.endRecording()
@@ -453,9 +483,12 @@ class RecordingController(
         store.add(note)
         session = LiveSession(note.id, origin)
         tailTranslateJob?.cancel()
+        val now = System.currentTimeMillis()
         _state.update {
             it.copy(
-                startedAt = System.currentTimeMillis(),
+                startedAt = now,
+                // A split while paused starts the new part paused too.
+                pausedAt = it.pausedAt?.let { now },
                 liveText = "",
                 liveTranslation = null,
                 recordingNoteId = note.id,
@@ -485,9 +518,30 @@ class RecordingController(
         scope.launch { finishSession(old) }
     }
 
+    /** Pauses the microphone without ending the note; [resume] carries on in the same note. */
+    fun pause() {
+        val s = _state.value
+        if (!s.isRecording || s.pausedAt != null) return
+        recorder.paused = true
+        _state.update { it.copy(pausedAt = System.currentTimeMillis()) }
+    }
+
+    fun resume() {
+        val pausedAt = _state.value.pausedAt ?: return
+        recorder.paused = false
+        // Shift the start so the elapsed time doesn't count the pause.
+        val pausedFor = System.currentTimeMillis() - pausedAt
+        _state.update { it.copy(pausedAt = null, startedAt = it.startedAt?.plus(pausedFor)) }
+    }
+
+    fun togglePause() {
+        if (_state.value.pausedAt != null) resume() else pause()
+    }
+
     fun stop() {
         val current = session ?: return
         if (!_state.value.isRecording) return
+        recorder.paused = false
         recorder.stop()
         inputs.endRecording()
         current.end = recorder.sampleCount
@@ -497,7 +551,7 @@ class RecordingController(
         tailTranslateJob?.cancel()
         _state.update {
             it.copy(isRecording = false, startedAt = null, activeInputName = null, recordingNoteId = null,
-                liveText = "", liveTranslation = null, partNumber = 1)
+                liveText = "", liveTranslation = null, partNumber = 1, pausedAt = null)
         }
         recorder.writeError?.let { showError("Part of this recording couldn't be saved: $it") }
         // Taken now, so a quick restart's new live job isn't the one cancelled.
@@ -634,6 +688,16 @@ class RecordingController(
         }
     }
 
+    fun setTabletopLayout(enabled: Boolean) {
+        prefs.edit { putBoolean("tabletopLayout", enabled) }
+        _state.update { it.copy(tabletopLayout = enabled) }
+    }
+
+    fun setNoteTapAction(action: NoteTapAction) {
+        prefs.edit { putString("noteTapAction", action.name) }
+        _state.update { it.copy(noteTapAction = action) }
+    }
+
     fun setThemeMode(mode: ThemeMode) {
         prefs.edit { putString("theme", mode.name) }
         _state.update { it.copy(themeMode = mode) }
@@ -650,7 +714,12 @@ class RecordingController(
         val text = store.note(noteId)?.currentText?.takeIf { it.isNotBlank() } ?: return
         val clipboard = context.getSystemService(ClipboardManager::class.java)
         clipboard.setPrimaryClip(ClipData.newPlainText("VoicePad transcript", text))
-        Toast.makeText(context, "Transcript copied to clipboard", Toast.LENGTH_SHORT).show()
+        val typing = sendToKeyboardIfConnected(text)
+        Toast.makeText(
+            context,
+            if (typing) "Transcript copied and typing on the keyboard" else "Transcript copied to clipboard",
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 
     fun setAutoSplit(mode: AutoSplit) {
@@ -1142,23 +1211,108 @@ class RecordingController(
     /** Starts or stops advertising as a Bluetooth keyboard. */
     fun toggleKeyboard() {
         when (keyboard.state.value.status) {
-            SinkStatus.REGISTERING, SinkStatus.ADVERTISING, SinkStatus.CONNECTED -> keyboard.stop()
+            SinkStatus.REGISTERING, SinkStatus.ADVERTISING, SinkStatus.CONNECTED -> stopKeyboard()
             else -> keyboard.start()
         }
     }
 
-    /** Types [text] as keystrokes on the paired host. */
+    /** Paired devices the keyboard can connect to from the phone side. */
+    fun keyboardHosts(): List<KeyboardHost> = keyboard.hosts()
+
+    /** Connects the (registered) keyboard to an already-paired host. */
+    fun connectKeyboard(address: String): Boolean = keyboard.connect(address)
+
+    /** Nearby computers found by [startKeyboardScan]. */
+    val keyboardScan: StateFlow<ScanState> get() = keyboard.scan
+
+    fun startKeyboardScan(): Boolean = keyboard.startScan()
+
+    fun stopKeyboardScan() = keyboard.stopScan()
+
+    /** Pairs with a newly found computer, then connects to it as a keyboard. */
+    fun pairKeyboardHost(address: String): Boolean = keyboard.pair(address)
+
+    /** Removes a computer from the remembered list (it stays paired with the phone). */
+    fun forgetKeyboardHost(address: String) = keyboard.forget(address)
+
+    fun stopKeyboard() {
+        typingJob?.cancel()
+        keyboard.stop()
+    }
+
+    /**
+     * Types [text] as keystrokes on the paired host, after the optional LLM
+     * transform. Ignored while a previous text is still being typed; use
+     * [stopTyping] to abandon that one.
+     */
     fun typeText(text: String) {
-        if (text.isBlank()) return
-        scope.launch {
-            val final = if (_state.value.llmEnabled) transform(text) else text
-            keyboard.type(final)
+        if (text.isBlank() || typingJob?.isActive == true) return
+        typingJob = scope.launch {
+            _state.update { it.copy(isTyping = true) }
+            try {
+                val final = if (_state.value.llmEnabled) transform(text) else text
+                keyboard.type(final)
+            } finally {
+                _state.update { it.copy(isTyping = false) }
+            }
         }
     }
+
+    /**
+     * "Send" from the tabletop controls: types [text] on the connected
+     * computer, or copies it when none is connected. With [rewrite] the LLM
+     * prompt is applied for this send even if the rewrite toggle is off; it
+     * needs the model loaded (it's loaded on demand, which can take a while).
+     */
+    fun sendText(text: String, rewrite: Boolean) {
+        if (text.isBlank()) return
+        if (typingJob?.isActive == true) {
+            toast("Still typing the previous text.")
+            return
+        }
+        if (rewrite && llm == null) {
+            if (_state.value.llmStatus !is LlmStatus.Loading) loadLlm(force = true)
+            toast("Loading the LLM model; try again when it's ready.")
+            return
+        }
+        val connected = _state.value.transmitStatus == SinkStatus.CONNECTED
+        typingJob = scope.launch {
+            _state.update { it.copy(isTyping = true) }
+            try {
+                val final = if (rewrite) transform(text) else text
+                if (connected) {
+                    keyboard.type(final)
+                } else {
+                    context.getSystemService(ClipboardManager::class.java)
+                        .setPrimaryClip(ClipData.newPlainText("VoicePad", final))
+                    toast(if (rewrite) "Rewritten and copied (no keyboard connected)" else "Copied (no keyboard connected)")
+                }
+            } finally {
+                _state.update { it.copy(isTyping = false) }
+            }
+        }
+    }
+
+    private fun toast(message: String) = Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
 
     /** Types a note's current text. */
     fun typeNote(noteId: String) {
         typeText(store.note(noteId)?.currentText.orEmpty())
+    }
+
+    /**
+     * Also types [text] when a host is connected; used wherever the app
+     * copies text to the clipboard. Returns whether typing started.
+     */
+    fun sendToKeyboardIfConnected(text: String): Boolean {
+        if (_state.value.transmitStatus != SinkStatus.CONNECTED || text.isBlank()) return false
+        if (typingJob?.isActive == true) return false
+        typeText(text)
+        return true
+    }
+
+    fun stopTyping() {
+        typingJob?.cancel()
     }
 
     // endregion
@@ -1178,52 +1332,88 @@ class RecordingController(
         if (_state.value.llmEnabled) loadLlm()
     }
 
-    fun setTypeStyle(style: TypeStyle) {
-        prefs.edit { putString("typeStyle", style.name) }
-        _state.update { it.copy(typeStyle = style) }
+    /** Uses [instruction] for the LLM rewrite and remembers it if it's the user's own. */
+    fun setTypePrompt(instruction: String) {
+        val trimmed = instruction.trim()
+        if (trimmed.isEmpty()) return
+        val recent = LlmPrompt.remember(_state.value.recentPrompts, trimmed)
+        prefs.edit {
+            putString("typePrompt", trimmed)
+            putString("recentPrompts", JSONArray(recent).toString())
+        }
+        _state.update { it.copy(typePrompt = trimmed, recentPrompts = recent) }
+    }
+
+    fun forgetPrompt(instruction: String) {
+        val recent = _state.value.recentPrompts - instruction
+        prefs.edit { putString("recentPrompts", JSONArray(recent).toString()) }
+        _state.update { it.copy(recentPrompts = recent) }
     }
 
     fun llmAdvice(choice: LlmChoice): LlmAdvice =
         LlmGuidance.advice(deviceSpecs, _state.value.engineChoice, choice)
 
-    fun loadLlm() {
-        if (!_state.value.llmEnabled) return
+    /** Loads the chosen model; [force] loads it for one-off rewrites even with the toggle off. */
+    fun loadLlm(force: Boolean = false) {
+        if (!_state.value.llmEnabled && !force) return
         val choice = _state.value.llmChoice
-        llmLoadJob?.cancel()
+        val previous = llmLoadJob
+        previous?.cancel()
         llmLoadJob = scope.launch {
+            // A cancelled load may still be inside native code; let it finish
+            // so two models are never loading (and resident) at once.
+            previous?.join()
             llmMutex.withLock { llm?.release(); llm = null }
             setLlmStatus(LlmStatus.Loading(0.0, !llmModels.isInstalled(choice)))
             try {
-                llmModels.install(choice) { p ->
-                    scope.launch { if (_state.value.llmChoice == choice) setLlmStatus(LlmStatus.Loading(p, true)) }
-                }
+                llmModels.install(choice) { p -> setLlmStatus(LlmStatus.Loading(p, true)) }
                 setLlmStatus(LlmStatus.Loading(1.0, false))
-                val engine = withContext(Dispatchers.Default) { createLlmEngine(choice, llmModels.file(choice)) }
-                llmMutex.withLock { llm = engine }
+                val engine = withContext(Dispatchers.Default) { createLlmEngine(llmModels.file(choice), context.applicationInfo.nativeLibraryDir) }
+                llmMutex.withLock {
+                    if (isActive) {
+                        llm = engine
+                    } else {
+                        engine.release()
+                    }
+                }
+                ensureActive()
                 setLlmStatus(LlmStatus.Ready)
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: LlamaEngine.ModelLoadException) {
+                // Only throw the download away if it isn't a GGUF file at all;
+                // otherwise Retry would re-download hundreds of MB for nothing.
+                if (!llmModels.looksValid(choice)) llmModels.discard(choice)
+                setLlmStatus(LlmStatus.Failed(e.message ?: e.toString()))
             } catch (e: Throwable) {
-                llmModels.discard(choice)
                 setLlmStatus(LlmStatus.Failed(e.message ?: e.toString()))
             }
         }
     }
 
     private fun releaseLlm() {
-        llmLoadJob?.cancel()
+        val job = llmLoadJob
+        job?.cancel()
         llmLoadJob = null
-        scope.launch { llmMutex.withLock { llm?.release(); llm = null } }
         setLlmStatus(LlmStatus.Idle)
+        scope.launch {
+            job?.join()
+            llmMutex.withLock { llm?.release(); llm = null }
+        }
     }
 
     private fun setLlmStatus(status: LlmStatus) = _state.update { it.copy(llmStatus = status) }
 
-    /** Runs the optional LLM transform over [text], falling back to the original. */
-    private suspend fun transform(text: String): String {
-        val engine = llm ?: return text
-        return try {
-            llmMutex.withLock { withContext(Dispatchers.Default) { engine.transform(text, _state.value.typeStyle) } }
+    /**
+     * Runs the optional LLM transform over [text], falling back to the
+     * original. Holds [llmMutex] for the whole call so the engine can't be
+     * released underneath it.
+     */
+    private suspend fun transform(text: String): String = llmMutex.withLock {
+        val engine = llm ?: return@withLock text
+        try {
+            withContext(Dispatchers.Default) { engine.transform(text, _state.value.typePrompt) }
+                .ifBlank { text }
         } catch (e: CancellationException) {
             throw e
         } catch (_: Throwable) {

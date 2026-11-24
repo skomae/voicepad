@@ -24,12 +24,27 @@ import com.voicepad.app.ui.ConversationScreen
 import com.voicepad.app.ui.VoicePadScreen
 import com.voicepad.app.ui.VoicePadTheme
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
+import com.voicepad.app.transmit.SinkStatus
+import com.voicepad.app.ui.LocalTypeOnKeyboard
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.voicepad.app.ui.TabletopHinge
+import com.voicepad.app.ui.TabletopScreen
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
+import com.voicepad.app.ui.PausedOverlay
 
 class MainActivity : ComponentActivity() {
     private val app get() = application as VoicePadApplication
     private val controller get() = app.controller
     private val conversation get() = app.conversation
     private var askedForPermission = false
+
+    /** Set while half-folded with a horizontal hinge (tabletop / flex mode). */
+    private var tabletopHinge by mutableStateOf<TabletopHinge?>(null)
 
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -56,10 +71,20 @@ class MainActivity : ComponentActivity() {
             }
             VoicePadTheme(state.themeMode) {
                 val conversationState by conversation.state.collectAsStateWithLifecycle()
-                if (conversationState.visible) {
-                    ConversationScreen(conversation, controller)
-                } else {
-                    VoicePadScreen(controller, conversation)
+                val connected = state.transmitStatus == SinkStatus.CONNECTED
+                val typeOnKeyboard: ((String) -> Unit)? =
+                    remember(connected) { if (connected) controller::typeText else null }
+                CompositionLocalProvider(LocalTypeOnKeyboard provides typeOnKeyboard) {
+                    val hinge = tabletopHinge
+                    when {
+                        conversationState.visible -> ConversationScreen(conversation, controller)
+                        hinge != null && state.tabletopLayout -> TabletopScreen(controller, hinge)
+                        else -> Box(Modifier.fillMaxSize()) {
+                            VoicePadScreen(controller, conversation)
+                            // Paused can't be missed: amber over everything, with Resume / Stop.
+                            PausedOverlay(controller, state)
+                        }
+                    }
                 }
             }
         }
@@ -67,7 +92,15 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 WindowInfoTracker.getOrCreate(this@MainActivity).windowLayoutInfo(this@MainActivity).collect { info ->
-                    conversation.onFoldStateChanged(info.displayFeatures.any { it is FoldingFeature })
+                    val fold = info.displayFeatures.filterIsInstance<FoldingFeature>().firstOrNull()
+                    conversation.onFoldStateChanged(fold != null)
+                    // Separately: half-open with the hinge across the screen is tabletop posture.
+                    tabletopHinge = fold
+                        ?.takeIf {
+                            it.state == FoldingFeature.State.HALF_OPENED &&
+                                it.orientation == FoldingFeature.Orientation.HORIZONTAL
+                        }
+                        ?.let { TabletopHinge(top = it.bounds.top, bottom = it.bounds.bottom) }
                 }
             }
         }
@@ -96,7 +129,6 @@ class MainActivity : ComponentActivity() {
             val wanted = buildList {
                 add(Manifest.permission.RECORD_AUDIO)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.POST_NOTIFICATIONS)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) add(Manifest.permission.BLUETOOTH_CONNECT)
             }
             permissionLauncher.launch(wanted.toTypedArray())
         }

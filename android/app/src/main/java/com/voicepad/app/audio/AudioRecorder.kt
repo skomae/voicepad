@@ -73,6 +73,13 @@ class AudioRecorder {
     @Volatile var isRunning = false
         private set
 
+    /**
+     * While true the microphone keeps running (so resuming is instant) but
+     * its audio is dropped: nothing reaches the recording, the file or the
+     * live transcript.
+     */
+    @Volatile var paused = false
+
     /** Set if the audio file could not be written (e.g. storage full). */
     @Volatile var writeError: String? = null
         private set
@@ -313,6 +320,11 @@ class AudioRecorder {
             if (readValues <= 0) continue
             val read = readValues / n
             if (read == 0) continue
+            if (paused) {
+                level = 0f
+                channelLevels = FloatArray(n)
+                continue
+            }
 
             if (split != null) {
                 // Interleaved L R L R… → one array per channel, plus their average.

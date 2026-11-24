@@ -115,8 +115,9 @@ New packages sit beside the existing `audio`, `data`, `transcription`, `ui`:
   size, the per-device recommendation (`LlmGuidance`), and the reason (e.g.
   "6 GB RAM + SenseVoice — 1.5B will work but may stutter live transcription").
   The choice is always the user's; the label is guidance only.
-- `MainActivity.kt`: request `BLUETOOTH_CONNECT` (API 31+) alongside
-  `RECORD_AUDIO` in the existing permission launcher.
+- `ui/KeyboardButton.kt`: request `BLUETOOTH_CONNECT` + `BLUETOOTH_ADVERTISE`
+  (API 31+) when keyboard mode is first switched on, not at launch, then ask
+  to make the phone discoverable so the host can find it.
 
 ---
 
@@ -314,11 +315,12 @@ Style presets only change the system instruction (e.g. *Formal email* adds
 <uses-permission android:name="android.permission.BLUETOOTH" />
 <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
 <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" /> <!-- API 31+ runtime -->
+<uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" /> <!-- API 31+, discoverability -->
 <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 ```
 
-- `BLUETOOTH_CONNECT` is a runtime "Nearby devices" permission on API 31+;
-  request it in `MainActivity`'s existing `wanted` list.
+- `BLUETOOTH_CONNECT` / `BLUETOOTH_ADVERTISE` are runtime "Nearby devices"
+  permissions on API 31+; request them on first use of keyboard mode.
 - Keep everything optional so the feature is invisible on devices without
   Bluetooth or below API 30.
 
@@ -365,3 +367,24 @@ Style presets only change the system instruction (e.g. *Formal email* adds
   from "Tight", and what OS/foreground reserve (1.5 GB vs 2 GB) is realistic?
 - Should the recommendation re-check after the user picks a heavier ASR model
   (and warn if the current LLM choice no longer fits)?
+
+---
+
+## As built (keyboard mode UX)
+
+- **Sending:** while a host is connected, double-tap any note bubble or
+  conversation turn, use a note's "Type on paired device" menu item, or tap
+  the keyboard icon (latest note). Anything the app copies to the clipboard
+  (Copy, copy translation, copy from history, auto-copy when a recording
+  finishes) is also typed.
+- **Keyboard icon:** pull down for a quick-pick list of computers (release
+  on one to connect or switch to it; also "Pair or pick another…" and
+  "Keyboard settings…"). Long-press opens the keyboard menu: connection
+  controls, the LLM rewrite toggle and the prompt.
+- **Prompts:** two presets, *Clean up* (fix recognition, punctuation and
+  capitalisation; keep wording) and *Polish* (drop filler words and false
+  starts, fix grammar, split into sentences and paragraphs), plus your own
+  prompts; the last 8 you used are remembered. These replace the fixed style
+  presets above.
+- **Icon colours:** tertiary while waiting for a host, primary (with a dot)
+  when connected, filled while typing. Never red, which is the recording colour.

@@ -43,6 +43,23 @@ class HidKeyMapTest {
     }
 
     @Test
+    fun smartQuotesAndDashesTypeAsAscii() {
+        assertEquals(HidKeyMap.strokes("don't \"x\" - y"), HidKeyMap.strokes("don’t “x” — y"))
+    }
+
+    @Test
+    fun multiCharacterFolds() {
+        assertEquals(HidKeyMap.strokes("..."), HidKeyMap.strokes("…")) // …
+        assertEquals(HidKeyMap.strokes("1/2"), HidKeyMap.strokes("½")) // ½
+        assertEquals(HidKeyMap.strokes("strasse"), HidKeyMap.strokes("straße")) // ß
+    }
+
+    @Test
+    fun crlfTypesOneEnter() {
+        assertEquals(listOf(HidKeyMap.Stroke(0, HidKeyMap.KEY_ENTER)), HidKeyMap.strokes("\r\n"))
+    }
+
+    @Test
     fun unsupportedSkipped() {
         assertEquals(emptyList<HidKeyMap.Stroke>(), HidKeyMap.strokes("银行"))
     }
