@@ -67,6 +67,42 @@ copied, edited, re-transcribed and rolled back through its revision history.
   **Live Update** with a "REC" chip in the status bar. After you stop it
   shows "Finishing transcript…" until background transcription is done,
   which also keeps Android from killing that work.
+- **Conversation mode** (translate icon, top bar): live two-way translation
+  for talking with someone who speaks another language, in **big text**.
+  Pick the two languages (any pair ML Kit translates, e.g. English ⇄ 中文);
+  each utterance is detected at its pause, assigned to one of the two
+  languages (writing system first, then the speech model's tag, then text
+  language ID limited to just those two), and translated into the other.
+  Speech in progress shows live, in italics, translation included.
+  - **Layouts**: *Across, top / bottom* (default) splits the screen, the far half
+    upside down, each half the whole conversation in one language — lay the
+    phone between you; *Across, left / right* (the same split sideways, for a
+    wide or unfolded screen with one person at each end); *Side by side*
+    (one column per language, both reading the same way, for an
+    unfolded or landscape screen); *Transcript* (original, pinyin and
+    translation together). Newest turn largest; text size adjustable
+    (18–96 sp); the screen stays on.
+  - **One or more microphone channels**: with 1 channel, speakers are told
+    apart **by voice** — a 28 MB CAM++ speaker-embedding model (downloaded
+    once, on-device) fingerprints each utterance and groups them into
+    Speaker 1, 2, 3… (measured on real recordings: same speaker ≥ 0.49
+    similarity within a recording, different speakers ≤ 0.41, threshold
+    0.45). With 2+ channels — a two-transmitter wireless kit in stereo mode,
+    a multi-channel USB interface, or the phone's own two mics — **each
+    channel is one speaker** (Mic 1, Mic 2…), each with its own voice
+    detector; speech leaking into the other mics is dropped where it's
+    quieter. If the channels turn out to carry the same sound (a mono mic
+    exposed as stereo), it notices and falls back to telling voices apart.
+    Without the voice model, turns are labelled by language.
+  - Warns when the current speech model doesn't understand one of the two
+    languages and offers the right one (e.g. Auto: Asian for English ⇄
+    Mandarin, Parakeet for European pairs, Whisper turbo otherwise).
+  - **Open when unfolded** (Settings, or the conversation settings): on a
+    foldable, unfolding the phone opens conversation mode and folding it
+    goes back to notes.
+  - Pauses when the app goes to the background; note recording is paused
+    while it's open and resumes after. Each listening stretch is saved as a
+    note: its audio plus the speaker-labelled transcript with translations.
 - **Recordings are never lost to a model failure.** Every note saves its
   transcription status (recording → pending → transcribing → done/failed).
   Audio stays on disk until it has text; failed or waiting recordings show
@@ -129,7 +165,7 @@ Requires JDK 17+ and the Android SDK (platform 36).
 cd android
 ./gradlew assembleDebug        # app/build/outputs/apk/debug/app-debug.apk
 ./gradlew assembleRelease      # signed with the debug key unless the env vars below are set
-./gradlew testDebugUnitTest    # recovery, search, pinning, mic naming, pinyin and translation tests
+./gradlew testDebugUnitTest    # recovery, search, pinning, mic naming, pinyin, translation and conversation tests
 ```
 
 The sherpa-onnx library (`app/libs/sherpa-onnx-2.0.3.aar`) is downloaded

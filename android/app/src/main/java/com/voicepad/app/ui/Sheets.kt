@@ -180,7 +180,13 @@ fun HistorySheet(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsSheet(controller: RecordingController, state: RecordingController.UiState, onDismiss: () -> Unit) {
+fun SettingsSheet(
+    controller: RecordingController,
+    state: RecordingController.UiState,
+    openOnUnfold: Boolean,
+    onOpenOnUnfoldChange: (Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
             Text("Settings", style = MaterialTheme.typography.titleMedium)
@@ -246,6 +252,20 @@ fun SettingsSheet(controller: RecordingController, state: RecordingController.Ui
                 }
                 Spacer(Modifier.width(12.dp))
                 Switch(checked = state.autoTranslate, onCheckedChange = controller::setAutoTranslate)
+            }
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Conversation mode when unfolded")
+                    Text(
+                        "On a foldable phone, unfolding it opens conversation mode (live two-way " +
+                            "translation in big text); folding it again goes back to notes.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = openOnUnfold, onCheckedChange = onOpenOnUnfoldChange)
             }
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             Text("Transcription model", style = MaterialTheme.typography.titleSmall)

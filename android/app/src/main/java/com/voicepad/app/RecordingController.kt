@@ -367,7 +367,7 @@ class RecordingController(
         processTranslations()
         if (engine == null && loadJob?.isActive != true) loadEngine() else processQueue()
         val s = _state.value
-        if (s.autoRecordOnOpen && !s.isRecording) start()
+        if (s.autoRecordOnOpen && !s.isRecording && !conversationActive) start()
     }
 
     fun toggle() {
@@ -376,7 +376,7 @@ class RecordingController(
 
     fun start() {
         val s = _state.value
-        if (s.isRecording) return
+        if (s.isRecording || conversationActive) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             showError("Microphone access is needed to record.")
             return
@@ -776,6 +776,49 @@ class RecordingController(
 
     // endregion
 
+    // region Conversation mode
+
+    /** True while conversation mode has the microphone and the model; notes don't record meanwhile. */
+    private var conversationActive = false
+    private var resumeAfterConversation = false
+
+    /** Hands the microphone and the model to conversation mode, saving any note being recorded. */
+    fun enterConversation() {
+        if (conversationActive) return
+        resumeAfterConversation = _state.value.isRecording
+        if (_state.value.isRecording) stop()
+        conversationActive = true
+        if (engine == null && loadJob?.isActive != true) loadEngine()
+    }
+
+    /** Back to notes: recording resumes if it was on before conversation mode. */
+    fun leaveConversation() {
+        if (!conversationActive) return
+        conversationActive = false
+        if (resumeAfterConversation) start()
+        processQueue()
+    }
+
+    val isEngineReady: Boolean get() = engineReady
+
+    /** One model call for conversation mode (shares the loaded model with notes). */
+    suspend fun transcribeForConversation(samples: FloatArray): Transcript = transcribe(samples, normalize = false)
+
+    /** The chosen microphone for conversation mode (null = phone's default), with a Bluetooth headset switched on. */
+    fun beginConversationInput(): android.media.AudioDeviceInfo? = inputs.beginRecording(_state.value.selectedInputKey)
+
+    fun endConversationInput() = inputs.endRecording()
+
+    /** Channels the chosen microphone (or the built-in one) can record. */
+    fun conversationMicChannels(): Int {
+        val s = _state.value
+        val device = s.inputDevices.firstOrNull { it.key == s.selectedInputKey }
+            ?: s.inputDevices.firstOrNull { it.kind == "Built-in microphone" }
+        return device?.maxChannels ?: 2
+    }
+
+    // endregion
+
     // region Saved-audio transcription and retries
 
     /** Re-runs the current model over a note's audio (manual retry or re-transcribe). */
@@ -801,7 +844,7 @@ class RecordingController(
             // Each note gets at most one attempt per pass; the next pass comes
             // with the next app launch, model load or finished recording.
             val tried = mutableSetOf<String>()
-            while (engineReady && !_state.value.isRecording) {
+            while (engineReady && !_state.value.isRecording && !conversationActive) {
                 val next = store.notes.value.firstOrNull {
                     it.needsTranscription && it.attempts < MAX_AUTO_ATTEMPTS &&
                         it.id != _state.value.recordingNoteId && it.id !in tried

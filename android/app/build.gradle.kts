@@ -118,6 +118,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
     implementation("androidx.core:core-ktx:1.18.0")
+    // Fold state, to open conversation mode when a foldable is unfolded.
+    implementation("androidx.window:window:1.5.1")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")

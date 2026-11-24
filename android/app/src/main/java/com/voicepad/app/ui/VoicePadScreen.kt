@@ -100,11 +100,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.voicepad.app.RecordingController
 import com.voicepad.app.RecordingController.EngineStatus
+import com.voicepad.app.conversation.ConversationController
+import androidx.compose.material.icons.filled.Translate
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun VoicePadScreen(controller: RecordingController) {
+fun VoicePadScreen(controller: RecordingController, conversation: ConversationController) {
     val state by controller.state.collectAsStateWithLifecycle()
+    val conversationState by conversation.state.collectAsStateWithLifecycle()
     val notes by controller.store.notes.collectAsStateWithLifecycle()
     val context = LocalContext.current
 
@@ -211,6 +214,9 @@ fun VoicePadScreen(controller: RecordingController) {
                                     tint = if (state.backgroundVoices && !recording) MaterialTheme.colorScheme.primary else onBar,
                                 )
                             }
+                        }
+                        IconButton(onClick = { conversation.open() }) {
+                            Icon(Icons.Default.Translate, contentDescription = "Conversation mode")
                         }
                         IconButton(onClick = { searchActive = true }) {
                             Icon(Icons.Default.Search, contentDescription = "Search")
@@ -353,7 +359,12 @@ fun VoicePadScreen(controller: RecordingController) {
         )
     }
     if (showSettings) {
-        SettingsSheet(controller, state, onDismiss = { showSettings = false })
+        SettingsSheet(
+            controller, state,
+            openOnUnfold = conversationState.settings.openOnUnfold,
+            onOpenOnUnfoldChange = conversation::setOpenOnUnfold,
+            onDismiss = { showSettings = false },
+        )
     }
     if (showArchive) {
         ModalBottomSheet(onDismissRequest = { showArchive = false }) {
