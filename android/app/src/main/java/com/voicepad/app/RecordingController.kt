@@ -1,6 +1,9 @@
 package com.voicepad.app
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.widget.Toast
 import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
@@ -90,6 +93,8 @@ class RecordingController(
         val engineChoice: EngineChoice = EngineChoice.PARAKEET_V3,
         /** Background voices (announcements, TV): room microphone, louder speech, Whisper turbo. */
         val backgroundVoices: Boolean = false,
+        /** After Stop, copy the finished transcript to the clipboard (with a toast). */
+        val copyWhenDone: Boolean = true,
         /** Start a new note automatically after a silence or every few minutes. */
         val autoSplit: AutoSplit = AutoSplit.OFF,
         /** Models already on the phone, for the quick switcher. */
@@ -147,6 +152,7 @@ class RecordingController(
             autoRecordOnOpen = prefs.getBoolean("autoRecord", true),
             autoTranslate = prefs.getBoolean("autoTranslate", true),
             backgroundVoices = prefs.getBoolean("backgroundVoices", false),
+            copyWhenDone = prefs.getBoolean("copyWhenDone", true),
             autoSplit = prefs.getString("autoSplit", null)
                 ?.let { runCatching { AutoSplit.valueOf(it) }.getOrNull() } ?: AutoSplit.OFF,
             inputDevices = inputs.devices.value,
@@ -199,6 +205,8 @@ class RecordingController(
         var end: Int? = null
         /** Last moment speech was heard in this note (null: nothing said yet). */
         var lastVoiceAt: Int? = null
+        /** Ended with Stop (not a split): its transcript is copied when done. */
+        var stoppedByUser = false
     }
 
     private var session: LiveSession? = null
@@ -439,6 +447,7 @@ class RecordingController(
         recorder.stop()
         inputs.endRecording()
         current.end = recorder.sampleCount
+        current.stoppedByUser = true
         markFinishing(current)
         session = null
         tailTranslateJob?.cancel()
@@ -495,6 +504,7 @@ class RecordingController(
                     it.copy(status = TranscriptionStatus.FAILED, lastError = error, partialText = text.ifBlank { null })
                 }
             }
+            if (error == null && s.stoppedByUser) copyWhenDone(noteId)
         } finally {
             s.detector?.release()
             unmarkFinishing(s)
@@ -577,6 +587,20 @@ class RecordingController(
                 s.pending += Span(s.committedUpTo, now)
             }
         }
+    }
+
+    fun setCopyWhenDone(enabled: Boolean) {
+        prefs.edit { putBoolean("copyWhenDone", enabled) }
+        _state.update { it.copy(copyWhenDone = enabled) }
+    }
+
+    /** Puts a just-finished recording's transcript on the clipboard and says so with a toast. */
+    private fun copyWhenDone(noteId: String) {
+        if (!_state.value.copyWhenDone) return
+        val text = store.note(noteId)?.currentText?.takeIf { it.isNotBlank() } ?: return
+        val clipboard = context.getSystemService(ClipboardManager::class.java)
+        clipboard.setPrimaryClip(ClipData.newPlainText("VoicePad transcript", text))
+        Toast.makeText(context, "Transcript copied to clipboard", Toast.LENGTH_SHORT).show()
     }
 
     fun setAutoSplit(mode: AutoSplit) {

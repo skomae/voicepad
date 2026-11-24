@@ -187,6 +187,18 @@ fun SettingsSheet(controller: RecordingController, state: RecordingController.Ui
                 Text("Record when app opens", Modifier.weight(1f))
                 Switch(checked = state.autoRecordOnOpen, onCheckedChange = controller::setAutoRecord)
             }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Copy transcript when done")
+                    Text(
+                        "After you stop recording and the transcript is finished, it's copied to the clipboard.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = state.copyWhenDone, onCheckedChange = controller::setCopyWhenDone)
+            }
             Spacer(Modifier.height(16.dp))
             MicrophoneSection(state, onSelect = controller::setInputDevice)
             Spacer(Modifier.height(12.dp))

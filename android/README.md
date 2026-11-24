@@ -43,6 +43,9 @@ copied, edited, re-transcribed and rolled back through its revision history.
   ends the current note and starts a new one at that instant without
   stopping the microphone, so nothing is lost between them. The finished
   part transcribes in the background while you keep talking.
+- **Copy when done** (Settings, on by default): after you press Stop and the
+  transcript is finished, it's copied to the clipboard with a toast. Split
+  parts aren't copied, so auto-split doesn't keep overwriting the clipboard.
 - **Auto-split**: drag up on the scissors (or long-press) to pick a rule —
   after 10 s / 30 s of silence, or every 5 / 15 / 30 minutes (at the first
   pause after the interval, or a minute later regardless). Release on an
