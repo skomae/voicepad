@@ -20,7 +20,14 @@ data class Transcript(val text: String, val language: String?, val engine: Strin
 interface SpeechEngine {
     /** How long audio should be grouped before it reaches [transcribe]. */
     val grouping: ChunkPlanner.Grouping
-    fun transcribe(samples: FloatArray): Transcript
+
+    /**
+     * Transcribes [samples]. [languageHint] latches the language decision for
+     * one utterance (used by Auto models to stop it flipping mid-sentence);
+     * [preview] requests a fast, lower-cost transcription for the live preview.
+     * Single-model engines ignore both.
+     */
+    fun transcribe(samples: FloatArray, languageHint: String? = null, preview: Boolean = false): Transcript
     fun release()
 }
 
@@ -86,7 +93,7 @@ class SherpaEngine(private val choice: EngineChoice, modelDir: File) : SpeechEng
         )
     }
 
-    override fun transcribe(samples: FloatArray): Transcript {
+    override fun transcribe(samples: FloatArray, languageHint: String?, preview: Boolean): Transcript {
         // Very short clips just produce noise or hallucinations.
         if (samples.size < AudioRecorder.SAMPLE_RATE / 2) return Transcript("", null)
         val stream = recognizer.createStream()

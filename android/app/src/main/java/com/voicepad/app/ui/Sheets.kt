@@ -221,6 +221,35 @@ fun SettingsSheet(
                 Switch(checked = state.copyWhenDone, onCheckedChange = controller::setCopyWhenDone)
             }
             Spacer(Modifier.height(16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Stable language detection")
+                    Text(
+                        "Hold the detected language for the whole sentence instead of re-deciding as you speak. " +
+                            "Stops a single English-sounding word from flipping a Mandarin sentence to the English model. " +
+                            "Auto models only.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = state.stableLanguage, onCheckedChange = controller::setStableLanguage)
+            }
+            Spacer(Modifier.height(16.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Fast live preview")
+                    Text(
+                        "Show a quicker preview while speaking and refine it once you pause. " +
+                            "Uses less power during long recordings. Auto models only.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = state.quickPreview, onCheckedChange = controller::setQuickPreview)
+            }
+            Spacer(Modifier.height(16.dp))
             MicrophoneSection(state, onSelect = controller::setInputDevice)
             Spacer(Modifier.height(12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
