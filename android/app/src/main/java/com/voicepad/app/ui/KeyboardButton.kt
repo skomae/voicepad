@@ -106,7 +106,7 @@ fun KeyboardButton(
                     pickAfterStart = false
                     // A remembered host is being reconnected automatically;
                     // only ask when there's nothing to reconnect to.
-                    if (controller.keyboardHosts().none { it.isLast }) showHosts = true
+                    if (controller.keyboardHosts().none { it.isKnown && it.isBonded }) showHosts = true
                 }
             }
             SinkStatus.CONNECTED -> {
@@ -124,20 +124,12 @@ fun KeyboardButton(
     }
 
     if (showHosts) {
-        HostPicker(
-            hosts = controller.keyboardHosts(),
-            onPick = { host ->
+        HostSheet(
+            controller = controller,
+            state = state,
+            onMakeDiscoverable = {
                 showHosts = false
-                if (controller.connectKeyboard(host.address)) {
-                    toast("Connecting to ${host.name}\u2026")
-                } else {
-                    toast("Couldn't connect to ${host.name}.", long = true)
-                }
-            },
-            onPairNew = {
-                showHosts = false
-                // Only a brand-new host needs to find the phone; already
-                // paired ones are connected from the list instead.
+                // Fallback: let the computer find the phone (some phones ignore this prompt).
                 val intent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE)
                     .putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 120)
                 runCatching { discoverable.launch(intent) }
@@ -149,10 +141,6 @@ fun KeyboardButton(
                 // Bluetooth settings open, and no discoverable prompt is needed.
                 runCatching { context.startActivity(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
                 toast("Pair your computer here, then come back and pick it from the list.", long = true)
-            },
-            onStop = {
-                showHosts = false
-                controller.stopKeyboard()
             },
             onDismiss = { showHosts = false },
         )
@@ -255,61 +243,4 @@ fun KeyboardButton(
             )
         }
     }
-}
-
-/** Paired devices to connect the keyboard to, plus "pair new" and "stop". */
-@Composable
-private fun HostPicker(
-    hosts: List<KeyboardHost>,
-    onPick: (KeyboardHost) -> Unit,
-    onPairNew: () -> Unit,
-    onOpenSettings: () -> Unit,
-    onStop: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Type on which device?") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    if (hosts.isEmpty()) {
-                        "No paired devices yet. Pair your computer from this phone's Bluetooth settings " +
-                            "(with the computer's Bluetooth settings open), then pick it here."
-                    } else {
-                        "Pick a paired device. Not listed? Pair it from this phone's Bluetooth settings first."
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                TextButton(onClick = onOpenSettings) { Text("Open phone Bluetooth settings") }
-                hosts.forEach { host ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onPick(host) }
-                            .padding(vertical = 10.dp),
-                    ) {
-                        Icon(
-                            if (host.isComputer) Icons.Default.Computer else Icons.Default.Bluetooth,
-                            contentDescription = null,
-                        )
-                        Spacer(Modifier.width(12.dp))
-                        Column {
-                            Text(host.name)
-                            if (host.isLast) {
-                                Text(
-                                    "Last used",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.primary,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onPairNew) { Text("Pair new device") } },
-        dismissButton = { TextButton(onClick = onStop) { Text("Stop keyboard") } },
-    )
 }

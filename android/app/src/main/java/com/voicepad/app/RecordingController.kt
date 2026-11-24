@@ -47,6 +47,7 @@ import com.voicepad.app.transcription.SpeechDetector
 import com.voicepad.app.transcription.SpeechEngine
 import com.voicepad.app.transcription.Transcript
 import com.voicepad.app.transmit.KeyboardHost
+import com.voicepad.app.transmit.ScanState
 import com.voicepad.app.transmit.SinkStatus
 import com.voicepad.app.transmit.createKeyboardSink
 import com.voicepad.app.ui.NoteTapAction
@@ -1185,6 +1186,19 @@ class RecordingController(
 
     /** Connects the (registered) keyboard to an already-paired host. */
     fun connectKeyboard(address: String): Boolean = keyboard.connect(address)
+
+    /** Nearby computers found by [startKeyboardScan]. */
+    val keyboardScan: StateFlow<ScanState> get() = keyboard.scan
+
+    fun startKeyboardScan(): Boolean = keyboard.startScan()
+
+    fun stopKeyboardScan() = keyboard.stopScan()
+
+    /** Pairs with a newly found computer, then connects to it as a keyboard. */
+    fun pairKeyboardHost(address: String): Boolean = keyboard.pair(address)
+
+    /** Removes a computer from the remembered list (it stays paired with the phone). */
+    fun forgetKeyboardHost(address: String) = keyboard.forget(address)
 
     fun stopKeyboard() {
         typingJob?.cancel()

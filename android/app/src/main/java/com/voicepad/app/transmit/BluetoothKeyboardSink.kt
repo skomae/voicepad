@@ -8,7 +8,10 @@ import android.bluetooth.BluetoothHidDevice
 import android.bluetooth.BluetoothHidDeviceAppSdpSettings
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Handler
@@ -64,6 +67,33 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
     private val prefs = this.context.getSharedPreferences("keyboard", Context.MODE_PRIVATE)
     private val main = Handler(Looper.getMainLooper())
 
+    /** Computers keyboard mode has connected to, most recent first. */
+    @Volatile
+    private var known: List<KnownHost> = KnownHosts.decode(prefs.getString(KNOWN_HOSTS, null)).ifEmpty {
+        // Earlier builds remembered only the last host's address.
+        listOfNotNull(prefs.getString("lastHost", null)?.let { KnownHost(it, it, 0) })
+    }
+
+    private val _scan = MutableStateFlow(ScanState())
+    override val scan: StateFlow<ScanState> = _scan.asStateFlow()
+
+    /** The host [connect] is waiting on, for [connectTimeout]'s message. */
+    @Volatile
+    private var connectingTo: String? = null
+
+    private val connectTimeout = Runnable {
+        val name = connectingTo?.let(::nameOf) ?: return@Runnable
+        connectingTo = null
+        _scan.value = _scan.value.copy(pairing = null)
+        if (_state.value.status == SinkStatus.ADVERTISING) {
+            _state.value = SinkState(
+                SinkStatus.ADVERTISING,
+                "Couldn't connect to $name. Make sure its Bluetooth is on and it's nearby; " +
+                    "if it was reset, forget it and pair again.",
+            )
+        }
+    }
+
     /**
      * Some manufacturers ship with the HID Device profile disabled: the proxy
      * request "succeeds" but nothing ever answers. Fail with a clear message
@@ -98,13 +128,12 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
             when (state) {
                 BluetoothProfile.STATE_CONNECTED -> {
                     connected = device
-                    prefs.edit { putString(LAST_HOST, device.address) }
-                    val name = try {
-                        device.name
-                    } catch (_: SecurityException) {
-                        null
-                    }
-                    _state.value = SinkState(SinkStatus.CONNECTED, host = name ?: device.address)
+                    main.removeCallbacks(connectTimeout)
+                    connectingTo = null
+                    val name = nameOf(device.address)
+                    remember(KnownHost(device.address, name, System.currentTimeMillis()))
+                    if (_scan.value.pairing == device.address) _scan.value = _scan.value.copy(pairing = null)
+                    _state.value = SinkState(SinkStatus.CONNECTED, host = name)
                 }
                 BluetoothProfile.STATE_DISCONNECTED -> {
                     if (connected == device) connected = null
@@ -191,6 +220,11 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
 
     override fun stop() {
         main.removeCallbacks(registrationTimeout)
+        main.removeCallbacks(connectTimeout)
+        connectingTo = null
+        stopScan()
+        unregisterBondReceiver()
+        _scan.value = ScanState()
         wanted = false
         profile?.let { hid ->
             try {
@@ -214,10 +248,41 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
         }
     }
 
-    /** Reconnects to the host used last time, if it's still paired. */
+    private fun remember(host: KnownHost) {
+        known = KnownHosts.upsert(known, host)
+        prefs.edit { putString(KNOWN_HOSTS, KnownHosts.encode(known)) }
+    }
+
+    override fun forget(address: String) {
+        known = KnownHosts.forget(known, address)
+        prefs.edit { putString(KNOWN_HOSTS, KnownHosts.encode(known)) }
+    }
+
+    /** The device's Bluetooth name, else the name we remembered, else its address. */
+    private fun nameOf(address: String): String {
+        val device = try {
+            adapter?.getRemoteDevice(address)
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+        val name = try {
+            device?.name
+        } catch (_: SecurityException) {
+            null
+        }
+        return name?.takeIf { it.isNotBlank() } ?: known.firstOrNull { it.address == address }?.name ?: address
+    }
+
+    private fun bondedAddresses(): Set<String> = try {
+        adapter?.bondedDevices.orEmpty().map { it.address }.toSet()
+    } catch (_: SecurityException) {
+        emptySet()
+    }
+
+    /** Reconnects to the most recently used computer that's still paired. */
     private fun reconnectLastHost() {
-        val last = prefs.getString(LAST_HOST, null) ?: return
-        if (hosts().any { it.address == last }) connect(last)
+        val bonded = bondedAddresses()
+        known.firstOrNull { it.address in bonded }?.let { connect(it.address) }
     }
 
     override fun hosts(): List<KeyboardHost> {
@@ -227,20 +292,28 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
         } catch (_: SecurityException) {
             return emptyList()
         }
-        val last = prefs.getString(LAST_HOST, null)
-        return bonded.map { d ->
-            val name = try {
-                d.name
-            } catch (_: SecurityException) {
-                null
-            } ?: d.address
+        val knownByAddress = known.associateBy { it.address }
+        val last = known.firstOrNull()?.address
+        val paired = bonded.map { d ->
             KeyboardHost(
                 address = d.address,
-                name = name,
+                name = nameOf(d.address),
                 isComputer = d.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.COMPUTER,
                 isLast = d.address == last,
+                isKnown = d.address in knownByAddress,
             )
-        }.sortedWith(compareByDescending<KeyboardHost> { it.isLast }.thenByDescending { it.isComputer }.thenBy { it.name })
+        }
+        // Remembered computers the phone has since unpaired: shown so they can be paired again.
+        val unpaired = known.filter { k -> bonded.none { it.address == k.address } }.map { k ->
+            KeyboardHost(k.address, k.name, isComputer = true, isLast = k.address == last, isKnown = true, isBonded = false)
+        }
+        val recency = known.withIndex().associate { (i, k) -> k.address to i }
+        return (paired + unpaired).sortedWith(
+            compareByDescending<KeyboardHost> { it.isKnown }
+                .thenBy { recency[it.address] ?: Int.MAX_VALUE }
+                .thenByDescending { it.isComputer }
+                .thenBy { it.name.lowercase() },
+        )
     }
 
     override fun connect(address: String): Boolean {
@@ -251,12 +324,160 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
         } catch (_: IllegalArgumentException) {
             null
         } ?: return false
-        return try {
+        val ok = try {
             hid.connect(device)
         } catch (_: SecurityException) {
             false
         }
+        if (ok) {
+            connectingTo = address
+            main.removeCallbacks(connectTimeout)
+            main.postDelayed(connectTimeout, CONNECT_TIMEOUT_MS)
+        }
+        return ok
     }
+
+    // region Finding and pairing new computers
+
+    private fun hasScanPermission(): Boolean {
+        val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            Manifest.permission.BLUETOOTH_SCAN
+        } else {
+            Manifest.permission.ACCESS_FINE_LOCATION // discovery on Android 11
+        }
+        return ContextCompat.checkSelfPermission(context, needed) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private var scanReceiver: BroadcastReceiver? = null
+
+    override fun startScan(): Boolean {
+        val a = adapter ?: return false
+        if (!hasPermission() || !hasScanPermission()) return false
+        if (scanReceiver == null) {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(c: Context, intent: Intent) {
+                    when (intent.action) {
+                        BluetoothDevice.ACTION_FOUND -> onFound(intent)
+                        BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> _scan.value = _scan.value.copy(scanning = false)
+                    }
+                }
+            }
+            val filter = IntentFilter().apply {
+                addAction(BluetoothDevice.ACTION_FOUND)
+                addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
+            }
+            ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
+            scanReceiver = receiver
+        }
+        _scan.value = _scan.value.copy(scanning = true, found = emptyList())
+        val started = try {
+            if (a.isDiscovering) a.cancelDiscovery()
+            a.startDiscovery()
+        } catch (_: SecurityException) {
+            false
+        }
+        if (!started) _scan.value = _scan.value.copy(scanning = false)
+        return started
+    }
+
+    private fun onFound(intent: Intent) {
+        @Suppress("DEPRECATION")
+        val device: BluetoothDevice = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE) ?: return
+        val name = intent.getStringExtra(BluetoothDevice.EXTRA_NAME) ?: try {
+            device.name
+        } catch (_: SecurityException) {
+            null
+        }
+        // Nameless results are mostly BLE beacons; nobody can pick those anyway.
+        if (name.isNullOrBlank()) return
+        if (device.address in bondedAddresses()) return
+        @Suppress("DEPRECATION")
+        val major = intent.getParcelableExtra<BluetoothClass>(BluetoothDevice.EXTRA_CLASS)?.majorDeviceClass
+            ?: device.bluetoothClass?.majorDeviceClass
+        val host = KeyboardHost(
+            address = device.address,
+            name = name,
+            isComputer = major == BluetoothClass.Device.Major.COMPUTER,
+            isLast = false,
+            isKnown = known.any { it.address == device.address },
+            isBonded = false,
+        )
+        val found = (_scan.value.found.filter { it.address != host.address } + host)
+            .sortedWith(compareByDescending<KeyboardHost> { it.isComputer }.thenBy { it.name.lowercase() })
+        _scan.value = _scan.value.copy(found = found)
+    }
+
+    override fun stopScan() {
+        try {
+            if (adapter?.isDiscovering == true) adapter.cancelDiscovery()
+        } catch (_: SecurityException) {
+        }
+        scanReceiver?.let { runCatching { context.unregisterReceiver(it) } }
+        scanReceiver = null
+        _scan.value = _scan.value.copy(scanning = false)
+    }
+
+    private var bondReceiver: BroadcastReceiver? = null
+
+    private fun unregisterBondReceiver() {
+        bondReceiver?.let { runCatching { context.unregisterReceiver(it) } }
+        bondReceiver = null
+    }
+
+    override fun pair(address: String): Boolean {
+        val a = adapter ?: return false
+        val device = try {
+            a.getRemoteDevice(address)
+        } catch (_: IllegalArgumentException) {
+            return false
+        }
+        // Discovery slows pairing down a lot (and some stacks fail outright).
+        stopScan()
+        if (address in bondedAddresses()) return connect(address)
+
+        unregisterBondReceiver()
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, intent: Intent) {
+                @Suppress("DEPRECATION")
+                val changed: BluetoothDevice = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE) ?: return
+                if (changed.address != address) return
+                val bond = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
+                val previous = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, BluetoothDevice.BOND_NONE)
+                when {
+                    bond == BluetoothDevice.BOND_BONDED -> {
+                        unregisterBondReceiver()
+                        // Keep "pairing" until the keyboard connection lands (or times out).
+                        if (!connect(address)) _scan.value = _scan.value.copy(pairing = null)
+                    }
+                    bond == BluetoothDevice.BOND_NONE && previous == BluetoothDevice.BOND_BONDING -> {
+                        unregisterBondReceiver()
+                        _scan.value = _scan.value.copy(pairing = null)
+                        _state.value = _state.value.copy(
+                            error = "Pairing with ${nameOf(address)} failed or was declined. Try again with " +
+                                "its Bluetooth settings open.",
+                        )
+                    }
+                }
+            }
+        }
+        ContextCompat.registerReceiver(
+            context, receiver, IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        bondReceiver = receiver
+        val started = try {
+            device.createBond()
+        } catch (_: SecurityException) {
+            false
+        }
+        if (started) {
+            _scan.value = _scan.value.copy(pairing = address)
+        } else {
+            unregisterBondReceiver()
+        }
+        return started
+    }
+
+    // endregion
 
     override suspend fun type(text: String) {
         val strokes = HidKeyMap.strokes(text)
@@ -298,7 +519,8 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
         private const val DOWN_UP_MS = 5L
         private const val KEY_MS = 8L
         private const val REGISTRATION_TIMEOUT_MS = 10_000L
-        private const val LAST_HOST = "lastHost"
+        private const val KNOWN_HOSTS = "knownHosts"
+        private const val CONNECT_TIMEOUT_MS = 15_000L
 
         /**
          * Standard boot-keyboard HID report descriptor: 8-byte input report
