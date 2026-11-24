@@ -1,6 +1,7 @@
 package com.voicepad.app.speech
 
 import android.content.Context
+import com.voicepad.app.CrashGuard
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.speech.tts.TextToSpeech
@@ -177,10 +178,12 @@ class SpeechOutput(private val context: Context) {
             if (file.exists()) return file.also { it.setLastModified(System.currentTimeMillis()) }
             val made = synthMutex.withLock {
                 withContext(Dispatchers.Default) {
-                    val synth = loaded.getOrPut(local) { LocalSynthesizer(local, files.directory(local)) }
+                    val synth = loaded.getOrPut(local) {
+                        CrashGuard.during(CrashGuard.Risky.LOCAL_VOICE) { LocalSynthesizer(local, files.directory(local)) }
+                    }
                     // Kitten would skip words missing from its dictionary; the phone's voice says them.
                     val unknown = synth.knownWords?.let { SpeechText.unknownWords(prepared, it) }.orEmpty()
-                    if (unknown.isNotEmpty()) null else synth.generate(prepared)?.let { audio ->
+                    if (unknown.isNotEmpty()) null else CrashGuard.during(CrashGuard.Risky.LOCAL_VOICE) { synth.generate(prepared) }?.let { audio ->
                         val tmp = File(file.path + ".part")
                         check(audio.save(tmp.path)) { "Couldn't save speech." }
                         tmp.renameTo(file)

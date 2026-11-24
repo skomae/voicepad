@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -37,8 +38,16 @@ import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.ViewAgenda
+import androidx.compose.material.icons.filled.VerticalSplit
+import androidx.compose.material.icons.filled.ViewColumn
+import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import com.voicepad.app.speech.LocalVoice
@@ -110,6 +119,7 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
     val speechState by conversation.speech.state.collectAsStateWithLifecycle()
     var showSettings by remember { mutableStateOf(false) }
     var picking by remember { mutableStateOf<Side?>(null) }
+    val context = LocalContext.current
 
     BackHandler { conversation.close() }
     // Nobody should have to tap the screen to keep it awake mid-conversation.
@@ -142,6 +152,15 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
             onPick = { picking = it },
             onSwap = conversation::swapLanguages,
             onSettings = { showSettings = true },
+            onToggleSpeak = {
+                val on = !state.settings.autoSpeak
+                conversation.setAutoSpeak(on)
+                Toast.makeText(context, if (on) "Reading translations aloud" else "Not reading aloud", Toast.LENGTH_SHORT).show()
+            },
+            onCycleLayout = {
+                val layout = conversation.cycleLayout()
+                Toast.makeText(context, layout.label, Toast.LENGTH_SHORT).show()
+            },
             onDismissMessage = conversation::dismissMessage,
             onRetryModels = { conversation.retryModels(); if (notesState.engineStatus is EngineStatus.Failed) notes.loadEngine() },
             onUseEngine = notes::selectModel,
@@ -405,35 +424,70 @@ internal fun ControlStrip(
     onDismissMessage: () -> Unit,
     onRetryModels: () -> Unit,
     onUseEngine: (EngineChoice) -> Unit,
+    onCycleLayout: () -> Unit = {},
+    onToggleSpeak: () -> Unit = {},
 ) {
     val settings = state.settings
     Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(vertical = 6.dp)) {
             StatusLines(state, notesState, onDismissMessage, onRetryModels, onUseEngine)
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
-                IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Leave conversation mode") }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.weight(1f),
-                    horizontalArrangement = Arrangement.Center,
-                ) {
+            val languages = @Composable { modifier: Modifier ->
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier, horizontalArrangement = Arrangement.Center) {
                     LanguageButton(settings.myLanguage) { onPick(Side.MINE) }
                     IconButton(onClick = onSwap, modifier = Modifier.size(36.dp)) {
                         Icon(Icons.Default.SwapHoriz, contentDescription = "Swap languages")
                     }
                     LanguageButton(settings.theirLanguage) { onPick(Side.THEIRS) }
                 }
+            }
+            // On a phone-width screen the languages get a row of their own above the buttons.
+            BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val narrow = maxWidth < 440.dp
+            Column {
+            if (narrow) languages(Modifier.fillMaxWidth())
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
+                IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Leave conversation mode") }
+                val layoutButton = @Composable {
+                    // Tap to cycle through the layouts; the icon shows the current one.
+                    IconButton(onClick = onCycleLayout, modifier = Modifier.size(40.dp)) {
+                        Icon(layoutIcon(state.layout), contentDescription = "Layout: ${state.layout.label}. Tap for the next one.")
+                    }
+                }
+                if (narrow) {
+                    layoutButton()
+                    Spacer(Modifier.weight(1f))
+                } else {
+                    languages(Modifier.weight(1f))
+                }
                 MicButton(
                     state.listening, levels.maxOrNull() ?: 0f, onToggle,
                     hold = state.hold, refilled = state.hearing || state.live != null,
                     holdColor = stageColor(state.stage.turn, settings.myLanguage),
                 )
-                Spacer(Modifier.width(6.dp))
+                // Read translations aloud: on (speaker) or off (crossed out).
+                IconButton(onClick = onToggleSpeak, modifier = Modifier.size(44.dp)) {
+                    Icon(
+                        if (settings.autoSpeak) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
+                        contentDescription = if (settings.autoSpeak) "Reading translations aloud. Tap to stop." else "Not reading aloud. Tap to read translations aloud.",
+                        tint = if (settings.autoSpeak) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(2.dp))
                 if (state.listening && state.recordingChannels > 1) ChannelMeters(levels)
-                IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, contentDescription = "Conversation settings") }
+                if (narrow) Spacer(Modifier.weight(1f)) else layoutButton()
+                IconButton(onClick = onSettings, modifier = Modifier.size(40.dp)) { Icon(Icons.Default.Settings, contentDescription = "Conversation settings") }
+            }
+            }
             }
         }
     }
+}
+
+private fun layoutIcon(layout: ConversationLayout): ImageVector = when (layout) {
+    ConversationLayout.FACE_TO_FACE -> Icons.Default.ViewAgenda
+    ConversationLayout.FACE_TO_FACE_SIDEWAYS -> Icons.Default.VerticalSplit
+    ConversationLayout.SIDE_BY_SIDE -> Icons.Default.ViewColumn
+    ConversationLayout.TRANSCRIPT -> Icons.AutoMirrored.Filled.ViewList
 }
 
 @Composable
@@ -444,7 +498,7 @@ private fun LanguageButton(code: String, onClick: () -> Unit) {
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier
-            .widthIn(max = 110.dp)
+            .widthIn(max = 140.dp)
             .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 10.dp),
@@ -523,9 +577,10 @@ private fun StatusLines(
             val recommended = EngineChoice.recommendedFor(settings.myLanguage, settings.theirLanguage, notesState.installedEngines)
             add {
                 StatusText(
-                    "${engine.shortName} doesn't understand ${missing.joinToString(" or ") { LanguageNames.english(it) }}.",
+                    "${engine.shortName} doesn't understand ${missing.joinToString(" or ") { LanguageNames.english(it) }}." +
+                        if (recommended in notesState.installedEngines) "" else " ${recommended.shortName} is a ${recommended.approximateSize.removeSuffix(" download")} download.",
                     error = true,
-                    action = "Use ${recommended.shortName}" + if (recommended in notesState.installedEngines) "" else " (download)",
+                    action = "Use ${recommended.shortName}",
                     onAction = { onUseEngine(recommended) },
                 )
             }
@@ -631,11 +686,11 @@ private fun ConversationSettingsSheet(
             SectionTitle("Layout")
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ConversationLayout.entries.forEach { layout ->
-                    FilterChip(selected = settings.layout == layout, onClick = { conversation.setLayout(layout) }, label = { Text(layout.label) })
+                    FilterChip(selected = state.layout == layout, onClick = { conversation.setLayout(layout) }, label = { Text(layout.label) })
                 }
             }
             Text(
-                when (settings.layout) {
+                when (state.layout) {
                     ConversationLayout.FACE_TO_FACE -> "Lay the phone between you: the far half is upside down, in their language."
                     ConversationLayout.FACE_TO_FACE_SIDEWAYS ->
                         "Lay a wide or unfolded screen between you, one at each end: their half is turned round to face them."

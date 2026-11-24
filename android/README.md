@@ -123,8 +123,17 @@ copied, edited, re-transcribed and rolled back through its revision history.
   - **Open when unfolded** (Settings, or the conversation settings): on a
     foldable, unfolding the phone opens conversation mode and folding it
     goes back to notes.
+  - **Layout button** next to the microphone: each tap moves to the next
+    layout; its icon shows the current one.
+  - **Crash guard**: before each risky native step (several mic channels,
+    telling voices apart, the cover screen, on-device voices) VoicePad notes
+    it on disk and clears the note afterwards. If the app closed with a note
+    left, the next launch says what it was doing and offers to turn that
+    off, holding it back until you answer. Crash reports include Android's
+    native backtrace where available, with Copy and Share.
   - **Read aloud**: a speaker icon on every turn says it in that half's
-    language (tap again to stop); *Read translations aloud* says each
+    language (tap again to stop); *Read translations aloud* (the speaker
+    button next to the microphone, or settings) says each
     translation automatically once its speaker pauses. While the phone is
     talking, the microphone ignores what it hears (its own voice), so the
     reply starts after it. Voices run on the phone: **Kitten** nano v0.8

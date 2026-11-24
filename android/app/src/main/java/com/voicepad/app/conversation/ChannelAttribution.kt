@@ -43,9 +43,9 @@ object ChannelAttribution {
         var won = 0
         for (f in 0 until frames) {
             val loudest = levels.maxOf { it[f] }
-            if (loudest < SILENCE_DB) continue
+            if (loudest.isNaN() || loudest < SILENCE_DB) continue
             active++
-            val winner = levels.indices.first { levels[it][f] >= loudest - tieDb }
+            val winner = levels.indices.firstOrNull { levels[it][f] >= loudest - tieDb } ?: continue
             if (winner == channel) won++
         }
         if (active == 0) return channel == 0

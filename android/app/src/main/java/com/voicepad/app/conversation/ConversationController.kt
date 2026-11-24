@@ -7,6 +7,7 @@ import android.media.MediaRecorder
 import android.os.SystemClock
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
+import com.voicepad.app.CrashGuard
 import com.voicepad.app.RecordingController
 import com.voicepad.app.audio.AudioRecorder
 import com.voicepad.app.data.Note
@@ -141,7 +142,15 @@ class ConversationController(
         val translation: Readiness = Readiness.Off,
         val voiceModel: Readiness = Readiness.Off,
         val message: String? = null,
+        /**
+         * Features that were running when the app last closed unexpectedly
+         * (a native crash, most likely): each is held back until the user
+         * says whether to turn it off. See [CrashGuard].
+         */
+        val crashedDuring: List<CrashGuard.Risky> = emptyList(),
     ) {
+        val layout: ConversationLayout get() = settings.layout
+
         /** How speakers are being told apart right now. */
         val speakerSource: SpeakerSource
             get() = when {
@@ -183,7 +192,12 @@ class ConversationController(
     private val translator by lazy { EnglishTranslator() }
     private val store: NoteStore get() = notes.store
 
-    private val _state = MutableStateFlow(UiState(settings = loadSettings()))
+    private val _state = MutableStateFlow(
+        UiState(
+            settings = loadSettings(),
+            crashedDuring = CrashGuard.crashedDuring,
+        )
+    )
     val state: StateFlow<UiState> = _state.asStateFlow()
     private val settings get() = _state.value.settings
 
@@ -245,6 +259,13 @@ class ConversationController(
             stopListening()
             startListening()
         }
+    }
+
+    /** Switches to the next layout (the control strip's layout button); returns it. */
+    fun cycleLayout(): ConversationLayout {
+        val next = _state.value.layout.next()
+        setLayout(next)
+        return next
     }
 
     fun setLayout(layout: ConversationLayout) { changeSettings { it.copy(layout = layout) } }
@@ -367,7 +388,10 @@ class ConversationController(
     }
 
     /** One listening session: one recording, one saved note. */
-    private inner class Session(val number: Int, val noteId: String, val lanes: List<Lane>)
+    private inner class Session(val number: Int, val noteId: String, val lanes: List<Lane>) {
+        val startedAt = System.currentTimeMillis()
+        var silenceReported = false
+    }
 
     private var session: Session? = null
     private var sessionCount = 0
@@ -414,8 +438,33 @@ class ConversationController(
 
     fun toggleListening() = if (_state.value.listening) stopListening() else startListening()
 
+    /**
+     * Answer to "VoicePad closed while [risky] — turn it off?". Either way
+     * the feature is no longer held back.
+     */
+    fun answerCrashPrompt(risky: CrashGuard.Risky, turnOff: Boolean) {
+        CrashGuard.resolved(risky)
+        _state.update { it.copy(crashedDuring = it.crashedDuring - risky) }
+        if (turnOff) when (risky) {
+            CrashGuard.Risky.MULTI_CHANNEL -> changeSettings { it.copy(channels = 1) }
+            CrashGuard.Risky.VOICE_ID -> changeSettings { it.copy(identifyVoices = false) }
+            CrashGuard.Risky.OUTER_SCREEN -> changeSettings { it.copy(coverScreen = false) }
+            CrashGuard.Risky.LOCAL_VOICE -> speech.setUseLocalVoices(false)
+        }
+        if (!_state.value.visible) return
+        if (risky == CrashGuard.Risky.VOICE_ID && settings.identifyVoices) ensureVoiceModel()
+        startListening()
+    }
+
+    private fun heldBack(risky: CrashGuard.Risky) = risky in _state.value.crashedDuring
+
+
+    private var multiChannelMarked = false
+
     fun startListening() {
         if (_state.value.listening || !_state.value.visible) return
+        // Don't risk the same crash again before the user has decided.
+        if (heldBack(CrashGuard.Risky.MULTI_CHANNEL) && settings.channels > 1) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             showMessage("Microphone access is needed for conversation mode.")
             return
@@ -449,6 +498,10 @@ class ConversationController(
             return
         }
         val got = recorder.channelCount
+        if (got > 1 && !multiChannelMarked) {
+            multiChannelMarked = true
+            CrashGuard.enter(CrashGuard.Risky.MULTI_CHANNEL)
+        }
         if (got < wanted && _state.value.message == null) {
             showMessage("The microphone gave $got channel${if (got == 1) "" else "s"} instead of $wanted.")
         }
@@ -493,6 +546,10 @@ class ConversationController(
         }
         session = null
         recorder.stop()
+        if (multiChannelMarked) {
+            multiChannelMarked = false
+            CrashGuard.exit(CrashGuard.Risky.MULTI_CHANNEL) // stopped cleanly
+        }
         notes.endConversationInput()
         val job = loopJob
         loopJob = null
@@ -518,7 +575,18 @@ class ConversationController(
      * turns, oldest first; then previews speech still in progress.
      */
     private suspend fun step(s: Session, final: Boolean) {
+        recorder.captureError?.let { error ->
+            if (_state.value.message != error) showMessage(error)
+        }
         val now = recorder.sampleCount
+        // Some phones accept a stereo recording and then deliver nothing.
+        if (!final && now == 0 && !s.silenceReported && System.currentTimeMillis() - s.startedAt > 3000) {
+            s.silenceReported = true
+            showMessage(
+                if (_state.value.recordingChannels > 1) "No sound is coming from the microphone in ${_state.value.recordingChannels} channels — switch to 1 channel in settings."
+                else "No sound is coming from the microphone."
+            )
+        }
         for (lane in s.lanes) feed(lane, now, final)
         val hearing = !final && s.lanes.any { it.detector?.inSpeech == true }
         if (_state.value.hearing != hearing) _state.update { it.copy(hearing = hearing) }
@@ -546,7 +614,9 @@ class ConversationController(
         // (A channel nobody speaks on needs nothing, so it doesn't hold memory.)
         val keep = s.lanes.minOf { lane ->
             lane.pending.firstOrNull()?.start
-                ?: if (lane.detector?.inSpeech == true) lane.quietAt - SR else lane.detectedUpTo
+                // Speech in progress, but never more than the live preview reads: a noisy mic
+                // can keep its detector "in speech" for good, which would hold all audio in memory.
+                ?: if (lane.detector?.inSpeech == true) maxOf(lane.quietAt - SR, now - MAX_LIVE - SR) else lane.detectedUpTo
         }
         recorder.discardBefore(keep - PAD - SR)
     }
@@ -666,7 +736,7 @@ class ConversationController(
         val model = embedder
         if (!settings.identifyVoices || model == null) return byLanguage
         val embedding = runCatching {
-            embedMutex.withLock { withContext(Dispatchers.Default) { model.embed(audio) } }
+            embedMutex.withLock { withContext(Dispatchers.Default) { CrashGuard.during(CrashGuard.Risky.VOICE_ID) { model.embed(audio) } } }
         }.getOrNull()
         if (embedding == null) return lastVoiceFor[language] ?: byLanguage
         return SpeakerRef(SpeakerSource.VOICE, voices.assign(embedding, language)).also { lastVoiceFor[language] = it }
@@ -832,6 +902,7 @@ class ConversationController(
 
     private fun ensureVoiceModel() {
         if (embedder != null || embedderJob?.isActive == true) return
+        if (heldBack(CrashGuard.Risky.VOICE_ID)) return
         embedderJob = scope.launch {
             val downloading = !SpeakerEmbedder.isInstalled(context)
             _state.update { it.copy(voiceModel = Readiness.Preparing(if (downloading) 0.0 else null)) }

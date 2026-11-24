@@ -15,6 +15,8 @@ class VoicePadApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        CrashLog.install(this)
+        CrashGuard.init(this)
         controller = RecordingController(this, NoteStore(filesDir))
         speech = SpeechOutput(this)
         conversation = ConversationController(this, controller, speech)
