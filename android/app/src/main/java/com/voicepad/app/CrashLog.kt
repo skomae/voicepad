@@ -53,10 +53,12 @@ object CrashLog {
             }
             // A Java crash already wrote its own, fuller report.
             if (last.reason == ApplicationExitInfo.REASON_CRASH && file(context).exists()) return
-            val trace = if (last.reason == ApplicationExitInfo.REASON_ANR) {
-                last.traceInputStream?.bufferedReader()?.use { it.readText().take(20_000) }
-            } else {
-                null
+            val trace = when (last.reason) {
+                ApplicationExitInfo.REASON_ANR -> last.traceInputStream?.bufferedReader()?.use { it.readText().take(20_000) }
+                // Android 12+ keeps the native crash's tombstone (a protobuf): its readable parts
+                // name the signal, the abort message and the libraries and functions on the stack.
+                ApplicationExitInfo.REASON_CRASH_NATIVE -> last.traceInputStream?.use { tombstoneText(it.readBytes()) }
+                else -> null
             }
             file(context).writeText(
                 header(last.timestamp) + "$kind\n${last.description.orEmpty()}\n" +
@@ -69,6 +71,30 @@ object CrashLog {
         "VoicePad $version · Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT}) · " +
             "${Build.MANUFACTURER} ${Build.MODEL}\n" +
             SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(time)) + "\n"
+
+    /**
+     * Readable lines from a binary tombstone: runs of printable text, keeping
+     * the ones that say what crashed (signal, abort message, stack frames).
+     */
+    fun tombstoneText(bytes: ByteArray): String {
+        val runs = mutableListOf<String>()
+        val current = StringBuilder()
+        fun flush() {
+            if (current.length >= 4) runs += current.toString()
+            current.clear()
+        }
+        for (b in bytes) {
+            val c = b.toInt() and 0xff
+            if (c in 0x20..0x7e) current.append(c.toChar()) else flush()
+        }
+        flush()
+        val interesting = runs.filter { r ->
+            r.contains(".so") || r.contains("SIG") || r.contains("SEGV") || r.startsWith("BUS_") || r.startsWith("ILL_") || r.startsWith("FPE_") || r.contains("abort", ignoreCase = true) ||
+                r.contains("::") || r.contains("Java_") || r.contains("fault") || r.startsWith("_Z") ||
+                r.contains("com.voicepad") || r.contains("Thread") || r.contains("VoicePad")
+        }.distinct()
+        return interesting.joinToString("\n").take(8000).ifBlank { "(no readable details)" }
+    }
 
     /** The report from the last unexpected close, if it hasn't been dismissed. */
     fun pending(context: Context): String? = file(context).takeIf { it.exists() }?.readText()

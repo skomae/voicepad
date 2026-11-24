@@ -1,7 +1,9 @@
 package com.voicepad.app.ui
 
 import android.content.Intent
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -58,6 +60,50 @@ fun CrashReportDialog() {
                 context.startActivity(Intent.createChooser(share, "Share crash report"))
                 dismiss()
             }) { Text("Share") }
+        },
+    )
+}
+
+/**
+ * After VoicePad closed while recording several microphone channels (most
+ * likely a crash, since a clean stop clears the mark): offer to go back to
+ * one channel before the microphone is opened again.
+ */
+@Composable
+fun ChannelCrashDialog(channels: Int, onAnswer: (useOneChannel: Boolean) -> Unit) {
+    val context = LocalContext.current
+    val report = remember { CrashLog.pending(context) }
+    AlertDialog(
+        onDismissRequest = {}, // needs an answer: the microphone waits for it
+        title = { Text("VoicePad closed while recording $channels channels") },
+        text = {
+            Column {
+                Text(
+                    "It looks like recording $channels microphone channels made the app crash. Switch back to " +
+                        "1 channel? You can try more channels again in conversation settings.",
+                )
+                if (report != null) {
+                    Text(
+                        "Crash details were saved — copying them helps get this fixed.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
+                    TextButton(onClick = { copyToClipboard(context, report) }) { Text("Copy crash details") }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                CrashLog.clear(context)
+                onAnswer(true)
+            }) { Text("Use 1 channel") }
+        },
+        dismissButton = {
+            TextButton(onClick = {
+                CrashLog.clear(context)
+                onAnswer(false)
+            }) { Text("Keep $channels") }
         },
     )
 }
