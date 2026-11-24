@@ -19,9 +19,9 @@ final class AudioRecorder: @unchecked Sendable {
 
     static let sampleRate: Double = 16_000
 
-    /// Made fresh for every recording: an engine created before microphone
-    /// permission was granted can keep delivering silence.
-    private var engine = AVAudioEngine()
+    /// One engine for the recorder's lifetime. (Making a fresh engine for each
+    /// recording made iPhones deliver nothing but digital silence.)
+    private let engine = AVAudioEngine()
     private let targetFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: AudioRecorder.sampleRate,
@@ -39,6 +39,7 @@ final class AudioRecorder: @unchecked Sendable {
     private var offset = 0
     private var currentLevel: Float = 0
     private var currentWriteError: String?
+    private var signalSeen = false
 
     private(set) var isRunning = false
 
@@ -110,7 +111,6 @@ final class AudioRecorder: @unchecked Sendable {
 
     func start(writingTo url: URL, roomCapture: Bool = false) throws {
         guard !isRunning else { return }
-        engine = AVAudioEngine()
         self.roomCapture = roomCapture
 
         let session = AVAudioSession.sharedInstance()
@@ -123,6 +123,7 @@ final class AudioRecorder: @unchecked Sendable {
         lock.lock()
         samples.removeAll(keepingCapacity: true)
         offset = 0
+        signalSeen = false
         currentLevel = 0
         currentWriteError = nil
         self.writer = writer
@@ -160,14 +161,23 @@ final class AudioRecorder: @unchecked Sendable {
     }
 
     /// Reopens the microphone without ending the recording (its file and
-    /// positions carry on), e.g. when no audio is arriving.
+    /// positions carry on), e.g. when it delivers only silence.
     func restartCapture() throws {
         guard isRunning else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        engine = AVAudioEngine()
+        engine.reset()
         try AVAudioSession.sharedInstance().setActive(true)
+        lock.lock(); signalSeen = false; lock.unlock()
         try startCapture()
+    }
+
+    /// Whether anything but exact digital silence has arrived since the
+    /// recording (or the last restart) began. A real microphone is never
+    /// perfectly silent; all zeros means the input isn't really connected.
+    var hasSignal: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return signalSeen
     }
 
     /// Switches between close-speech and room capture mid-recording (e.g.
@@ -230,7 +240,9 @@ final class AudioRecorder: @unchecked Sendable {
         let normalised = max(0, min(1, (db + 50) / 50))
         let pcm = WavFile.pcm16(chunk)
 
+        let silent = chunk.allSatisfy { $0 == 0 }
         lock.lock()
+        if !silent { signalSeen = true }
         samples.append(contentsOf: chunk)
         currentLevel = normalised
         if currentWriteError == nil, let writer {

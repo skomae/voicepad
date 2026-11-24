@@ -413,14 +413,14 @@ final class RecordingController {
         beginNote(fileName: fileName, origin: 0, part: 1)
         isRecording = true
 
-        // If no audio arrives at all, reopen the microphone once.
+        // If the microphone delivers nothing, or only digital silence, reopen it once.
         let startedNote = recordingNoteID
         Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
-            guard let self, self.isRecording, self.recordingNoteID == startedNote, self.recorder.sampleCount == 0 else { return }
+            try? await Task.sleep(for: .seconds(2.5))
+            guard let self, self.isRecording, self.recordingNoteID == startedNote, !self.recorder.hasSignal else { return }
             try? self.recorder.restartCapture()
             try? await Task.sleep(for: .seconds(3))
-            if self.isRecording, self.recorder.sampleCount == 0 {
+            if self.isRecording, self.recordingNoteID == startedNote, !self.recorder.hasSignal {
                 self.errorMessage = "No sound is coming from the microphone. Try stopping and starting again."
             }
         }
