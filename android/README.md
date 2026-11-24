@@ -43,6 +43,12 @@ copied, edited, re-transcribed and rolled back through its revision history.
   ends the current note and starts a new one at that instant without
   stopping the microphone, so nothing is lost between them. The finished
   part transcribes in the background while you keep talking.
+- **Auto-split**: drag up on the scissors (or long-press) to pick a rule —
+  after 10 s / 30 s of silence, or every 5 / 15 / 30 minutes (at the first
+  pause after the interval, or a minute later regardless). Release on an
+  option to choose it; drag back to the button to cancel. A badge on the
+  scissors shows the active rule. A note with nothing said in it is never
+  split off. Tap still splits immediately.
 - **Clear recording state**: while recording, the top bar turns red with a
   pulsing REC, elapsed time and part number, the screen gets a red frame,
   and the bar under the button says "Recording — tap ■ to stop". When idle

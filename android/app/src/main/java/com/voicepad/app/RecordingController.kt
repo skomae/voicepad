@@ -11,6 +11,7 @@ import com.voicepad.app.audio.AudioRecorder
 import com.voicepad.app.audio.InputDevice
 import com.voicepad.app.audio.RecordingService
 import com.voicepad.app.audio.WavFile
+import com.voicepad.app.data.AutoSplit
 import com.voicepad.app.data.Note
 import com.voicepad.app.data.NoteCleanup
 import com.voicepad.app.data.NoteStore
@@ -89,6 +90,8 @@ class RecordingController(
         val engineChoice: EngineChoice = EngineChoice.PARAKEET_V3,
         /** Background voices (announcements, TV): room microphone, louder speech, Whisper turbo. */
         val backgroundVoices: Boolean = false,
+        /** Start a new note automatically after a silence or every few minutes. */
+        val autoSplit: AutoSplit = AutoSplit.OFF,
         /** Models already on the phone, for the quick switcher. */
         val installedEngines: Set<EngineChoice> = emptySet(),
         val autoRecordOnOpen: Boolean = true,
@@ -144,6 +147,8 @@ class RecordingController(
             autoRecordOnOpen = prefs.getBoolean("autoRecord", true),
             autoTranslate = prefs.getBoolean("autoTranslate", true),
             backgroundVoices = prefs.getBoolean("backgroundVoices", false),
+            autoSplit = prefs.getString("autoSplit", null)
+                ?.let { runCatching { AutoSplit.valueOf(it) }.getOrNull() } ?: AutoSplit.OFF,
             inputDevices = inputs.devices.value,
             selectedInputKey = prefs.getString("inputDevice", null),
         )
@@ -192,6 +197,8 @@ class RecordingController(
         var tail = LiveSegment("", null)
         /** Where this note's audio ends; null while it is still being recorded. */
         var end: Int? = null
+        /** Last moment speech was heard in this note (null: nothing said yet). */
+        var lastVoiceAt: Int? = null
     }
 
     private var session: LiveSession? = null
@@ -378,7 +385,8 @@ class RecordingController(
             while (isActive) {
                 delay(TICK_MS)
                 val current = session ?: continue
-                if (engineReady) processLive(current)
+                if (engineReady) processLive(current) else feedDetector(current, recorder.sampleCount, final = false)
+                maybeAutoSplit(current)
             }
         }
     }
@@ -505,19 +513,7 @@ class RecordingController(
         return try {
             val now = s.end ?: recorder.sampleCount
             val vad = s.detector
-            if (vad != null) {
-                if (now > s.detectedUpTo) {
-                    // The detector counts from the first sample it was given: this note's origin.
-                    s.pending += vad.feed(recorder.samples(s.detectedUpTo, now)).map { Span(it.start + s.origin, it.end + s.origin) }
-                    s.detectedUpTo = now
-                    if (!vad.inSpeech) s.quietAt = now
-                }
-                if (final) s.pending += vad.flush().map { Span(it.start + s.origin, minOf(it.end + s.origin, now)) }
-            } else if (final || now - s.committedUpTo >= MAX_CHUNK) {
-                // No detector: treat everything as speech; the planner cuts at quiet points.
-                s.pending.clear()
-                s.pending += Span(s.committedUpTo, now)
-            }
+            feedDetector(s, now, final)
 
             val batchReady = when {
                 final -> true
@@ -553,6 +549,47 @@ class RecordingController(
             val message = e.message ?: e.toString()
             if (final) showError("Transcription failed — the recording is saved and can be retried.")
             message
+        }
+    }
+
+    /**
+     * Passes new audio of [s] to its speech detector, collecting finished
+     * utterances and noting when speech was last heard (for auto-split).
+     * Runs even while no model is loaded, so nothing is missed.
+     */
+    private fun feedDetector(s: LiveSession, now: Int, final: Boolean) {
+        val vad = s.detector
+        if (vad != null) {
+            if (now > s.detectedUpTo) {
+                // The detector counts from the first sample it was given: this note's origin.
+                val found = vad.feed(recorder.samples(s.detectedUpTo, now)).map { Span(it.start + s.origin, it.end + s.origin) }
+                s.pending += found
+                found.lastOrNull()?.let { s.lastVoiceAt = maxOf(s.lastVoiceAt ?: 0, it.end) }
+                s.detectedUpTo = now
+                if (vad.inSpeech) s.lastVoiceAt = now else s.quietAt = now
+            }
+            if (final) s.pending += vad.flush().map { Span(it.start + s.origin, minOf(it.end + s.origin, now)) }
+        } else {
+            s.lastVoiceAt = now // no detector: can't tell silence apart, so assume speech
+            if (final || now - s.committedUpTo >= MAX_CHUNK) {
+                // Treat everything as speech; the planner cuts at quiet points.
+                s.pending.clear()
+                s.pending += Span(s.committedUpTo, now)
+            }
+        }
+    }
+
+    fun setAutoSplit(mode: AutoSplit) {
+        prefs.edit { putString("autoSplit", mode.name) }
+        _state.update { it.copy(autoSplit = mode) }
+    }
+
+    /** Splits the note being recorded when the auto-split rule says so. */
+    private fun maybeAutoSplit(s: LiveSession) {
+        if (s !== session || !_state.value.isRecording) return
+        val speaking = s.detector?.inSpeech ?: true
+        if (_state.value.autoSplit.shouldSplit(s.origin, recorder.sampleCount, speaking, s.lastVoiceAt, AudioRecorder.SAMPLE_RATE)) {
+            split()
         }
     }
 
