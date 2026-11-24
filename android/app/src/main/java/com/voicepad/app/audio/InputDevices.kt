@@ -18,6 +18,8 @@ data class InputDevice(
     val name: String,
     val kind: String,
     val isBluetooth: Boolean,
+    /** Most channels it reports it can record at once (Bluetooth call audio is always 1). */
+    val maxChannels: Int = 1,
 )
 
 /** Pure helpers for naming and identifying input devices (unit-tested). */
@@ -45,6 +47,21 @@ object InputDeviceNaming {
     fun isBluetooth(type: Int) = type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO || type == TYPE_BLE_HEADSET
 
     fun key(type: Int, address: String): String = "$type:$address"
+
+    /**
+     * Channels a mic can record, from what Android reports: channel counts,
+     * index masks (numbered channels) and position masks (bit counts). Mics
+     * that report nothing are assumed to manage stereo, as most phones do.
+     */
+    fun maxChannels(type: Int, counts: IntArray, indexMasks: IntArray, positionMasks: IntArray): Int {
+        if (isBluetooth(type)) return 1
+        val reported = listOf(
+            counts.maxOrNull() ?: 0,
+            indexMasks.maxOfOrNull(Integer::bitCount) ?: 0,
+            positionMasks.maxOfOrNull(Integer::bitCount) ?: 0,
+        ).max()
+        return if (reported == 0) 2 else reported.coerceIn(1, 8)
+    }
 
     /**
      * What to show the user. Phones often report their own model name for the
@@ -99,6 +116,7 @@ class AudioInputs(context: Context) {
                 name = InputDeviceNaming.name(it.type, it.productName?.toString().orEmpty(), it.address),
                 kind = InputDeviceNaming.kind(it.type)!!,
                 isBluetooth = InputDeviceNaming.isBluetooth(it.type),
+                maxChannels = InputDeviceNaming.maxChannels(it.type, it.channelCounts, it.channelIndexMasks, it.channelMasks),
             )
         }
         .distinctBy { it.key }

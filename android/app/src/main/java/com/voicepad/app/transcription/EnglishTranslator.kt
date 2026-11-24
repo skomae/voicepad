@@ -14,7 +14,8 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * On-device translation to English with Google ML Kit, plus romanisation.
+ * On-device translation to English with Google ML Kit, plus romanisation;
+ * conversation mode also uses it between any two languages.
  * Each language pair's model (~30 MB) downloads the first time it's needed;
  * after that, translation works offline.
  */
@@ -57,6 +58,43 @@ class EnglishTranslator {
         val english = translator.translate(text).await()
         return Result(language, english, romanization)
     }
+
+    // Conversation mode translates both ways between any two languages.
+
+    private val pairTranslators = mutableMapOf<String, Translator>()
+
+    private fun pairClient(from: String, to: String): Translator {
+        fun mlKit(code: String) = TranslateLanguage.fromLanguageTag(if (code == "yue") "zh" else code)
+            ?: throw UnsupportedOperationException("Translation for ${LanguageTags.displayName(code)} isn't supported on-device.")
+        val source = mlKit(from)
+        val target = mlKit(to)
+        return pairTranslators.getOrPut("$source>$target") {
+            Translation.getClient(TranslatorOptions.Builder().setSourceLanguage(source).setTargetLanguage(target).build())
+        }
+    }
+
+    /** Downloads what translating between [a] and [b] needs (both directions), so the first turn isn't slow. */
+    suspend fun prepare(a: String, b: String) {
+        pairClient(a, b).downloadModelIfNeeded(DownloadConditions.Builder().build()).await()
+        pairClient(b, a).downloadModelIfNeeded(DownloadConditions.Builder().build()).await()
+    }
+
+    /** Translates [text] from [from] to [to]. Throws if it can't. */
+    suspend fun translate(text: String, from: String, to: String): String {
+        if (from == to || (from == "yue" && to == "zh") || (from == "zh" && to == "yue")) return text
+        val client = pairClient(from, to)
+        client.downloadModelIfNeeded(DownloadConditions.Builder().build()).await()
+        return client.translate(text).await()
+    }
+
+    /** The text detector's guesses for [text], with confidence (0..1). */
+    suspend fun languageCandidates(text: String): List<Pair<String, Float>> =
+        runCatching { languageId.identifyPossibleLanguages(text).await() }.getOrNull()
+            ?.map { it.languageTag to it.confidence }
+            .orEmpty()
+
+    /** Pinyin or other Latin letters for [text] in [language], or null. */
+    fun romanize(language: String, text: String): String? = romanizer.romanize(language, text)
 }
 
 private suspend fun <T> Task<T>.await(): T = suspendCancellableCoroutine { cont ->
