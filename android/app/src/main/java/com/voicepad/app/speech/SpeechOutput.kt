@@ -60,6 +60,8 @@ class SpeechOutput(private val context: Context) {
     companion object {
         /** The cache is trimmed to this size, oldest clips first. */
         private const val CACHE_BYTES = 150L * 1024 * 1024
+        /** 2: clips are peak-normalised before they're written (see [saveNormalized]). */
+        private const val CACHE_VERSION = 2
     }
 
     private val prefs = context.getSharedPreferences("speech", Context.MODE_PRIVATE)
@@ -193,7 +195,7 @@ class SpeechOutput(private val context: Context) {
                     val unknown = synth.knownWords?.let { SpeechText.unknownWords(prepared, it) }.orEmpty()
                     if (unknown.isNotEmpty()) null else CrashGuard.during(CrashGuard.Risky.LOCAL_VOICE) { synth.generate(prepared) }?.let { audio ->
                         val tmp = File(file.path + ".part")
-                        check(audio.save(tmp.path)) { "Couldn't save speech." }
+                        check(audio.saveNormalized(tmp)) { "Couldn't save speech." }
                         tmp.renameTo(file)
                         file
                     }
@@ -244,7 +246,9 @@ class SpeechOutput(private val context: Context) {
         _state.update { it.copy(voices = it.voices + (voice to status)) }
 
     private fun cacheFile(engine: String, language: String, text: String): File {
-        val digest = MessageDigest.getInstance("SHA-256").digest("$engine|$language|$text".toByteArray())
+        // Bump CACHE_VERSION whenever how a clip is rendered changes: a cached
+        // wav keyed on the old pipeline would otherwise be replayed forever.
+        val digest = MessageDigest.getInstance("SHA-256").digest("$CACHE_VERSION|$engine|$language|$text".toByteArray())
         return File(cacheDir, digest.joinToString("") { "%02x".format(it) }.take(32) + ".wav")
     }
 

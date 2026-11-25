@@ -11,6 +11,7 @@ enum class NoteTapAction(val label: String) {
     TYPE("Type on paired device"),
     COPY_TRANSLATION("Copy translation"),
     TRANSLATE("Translate to English"),
+    WORD_BREAKDOWN("Word breakdown"),
     PIN("Pin / unpin"),
     HISTORY("Revision history"),
     PLAY("Play / stop recording"),

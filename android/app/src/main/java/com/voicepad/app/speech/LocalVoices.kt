@@ -184,3 +184,41 @@ class LocalSynthesizer(val voice: LocalVoice, dir: File) {
 
     fun release() = tts.release()
 }
+
+/**
+ * Writes [this] as a 16-bit mono WAV, scaled so the loudest sample sits near
+ * full scale.
+ *
+ * MeloTTS comes back quiet. Measured with this model, same config: a sentence
+ * peaks at -18.8 dBFS, a two-character word at -25.5, a single hanzi at -32 to
+ * -38 — so 没 played as a click ("blep") on the phone speaker while the same
+ * clip is perfectly good speech (periodicity 0.8-0.9, low zero-crossing rate).
+ * Normalising brings all of them to about -0.5 dBFS. Only ever boosts, and the
+ * library's own save() does no scaling at all.
+ */
+fun GeneratedAudio.saveNormalized(file: File): Boolean = runCatching {
+    if (samples.isEmpty() || sampleRate <= 0) return@runCatching false
+    var peak = 0f
+    for (sample in samples) {
+        val level = kotlin.math.abs(sample)
+        if (level > peak) peak = level
+    }
+    // A single hanzi needs about +32 dB; the cap stops a near-silent clip's dither
+    // being amplified into noise.
+    val gain = if (peak > 1e-4f) (0.95f / peak).coerceAtMost(64f) else 1f
+    file.outputStream().buffered().use { out ->
+        val dataBytes = samples.size * 2
+        val header = java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        header.put("RIFF".toByteArray()).putInt(36 + dataBytes).put("WAVE".toByteArray())
+        header.put("fmt ".toByteArray()).putInt(16).putShort(1).putShort(1)
+        header.putInt(sampleRate).putInt(sampleRate * 2).putShort(2).putShort(16)
+        header.put("data".toByteArray()).putInt(dataBytes)
+        out.write(header.array())
+        val pcm = java.nio.ByteBuffer.allocate(dataBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        for (sample in samples) {
+            pcm.putShort((sample * gain * 32767f).toInt().coerceIn(-32768, 32767).toShort())
+        }
+        out.write(pcm.array())
+    }
+    true
+}.getOrDefault(false)

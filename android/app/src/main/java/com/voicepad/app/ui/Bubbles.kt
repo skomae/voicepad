@@ -124,6 +124,11 @@ fun NoteBubble(
         { onCopyText(listOfNotNull(t.romanization, t.english).joinToString("\n")) }
     }
     val copyRewrite = rewrite?.let { rw -> { onCopyText(rw.text) } }
+    // Opens the word breakdown sheet; only for notes with Chinese in them.
+    val openBreakdown: (() -> Unit)? =
+        if (hasText && isMandarin(bodyText, note.currentTranslation?.language)) {
+            { breakdown = BreakdownRequest(bodyText, translated?.english, "en") }
+        } else null
     // Same actions as the long-press menu; null where the action doesn't apply.
     val onTap: (() -> Unit)? = when (tapAction) {
         NoteTapAction.EDIT -> onEdit
@@ -131,6 +136,7 @@ fun NoteBubble(
         NoteTapAction.TYPE -> onType?.takeIf { hasText }
         NoteTapAction.COPY_TRANSLATION -> copyTranslation
         NoteTapAction.TRANSLATE -> onTranslate.takeIf { hasText && translated == null }
+        NoteTapAction.WORD_BREAKDOWN -> openBreakdown
         NoteTapAction.PIN -> onTogglePin
         NoteTapAction.HISTORY -> onHistory
         NoteTapAction.PLAY -> onPlay

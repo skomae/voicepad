@@ -99,7 +99,7 @@ class WordBreakdownTest {
         // liǎo has more meanings, so without a hint it would win…
         assertEquals("liǎo", breakdown.analyse("了").cards.single().pinyin)
         // …but ICU's usual reading for 了 is le, the particle.
-        val withHint = WordBreakdown(dictionary) { if (it == "了") "le" else null }
+        val withHint = WordBreakdown(dictionary, usualReading = { if (it == "了") "le" else null })
         assertEquals("le", withHint.analyse("了").cards.single().pinyin)
     }
 
