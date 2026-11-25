@@ -105,6 +105,9 @@ object NoteExport {
                 t.romanization?.let { append("\n> ").append(it.replace("\n", "\n> ")).append("\n") }
                 t.english?.let { append("\n**English:** ").append(it.trim()).append("\n") }
             }
+            note.currentRewrite?.let { rw ->
+                append("\n**").append(rw.prompt ?: "Rewritten").append(":** ").append(rw.text.trim()).append("\n")
+            }
             if (note.revisions.size > 1) {
                 append("\n<details><summary>Earlier versions (${note.revisions.size - 1})</summary>\n\n")
                 note.revisions.dropLast(1).asReversed().forEach { r ->

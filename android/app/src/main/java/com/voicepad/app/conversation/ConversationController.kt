@@ -554,6 +554,13 @@ class ConversationController(
         val fileName = "${UUID.randomUUID()}.wav"
         val file = File(store.recordingsDir, fileName)
         val device = notes.beginConversationInput()
+        // Mark the risky step before it runs, so a native crash while the
+        // recorder opens several channels is caught too — not only one while
+        // recording. It's cleared below once we're sure we're on one channel.
+        if (wanted > 1 && !multiChannelMarked) {
+            multiChannelMarked = true
+            CrashGuard.enter(CrashGuard.Risky.MULTI_CHANNEL)
+        }
         try {
             try {
                 recorder.start(file, device, sourceFor(wanted), wanted)
@@ -563,6 +570,10 @@ class ConversationController(
                 recorder.start(file, device, sourceFor(1), 1)
             }
         } catch (e: Throwable) {
+            if (multiChannelMarked) {
+                multiChannelMarked = false
+                CrashGuard.exit(CrashGuard.Risky.MULTI_CHANNEL)
+            }
             notes.endConversationInput()
             _state.update { it.copy(listening = false) }
             stopBackgroundService()
@@ -570,9 +581,10 @@ class ConversationController(
             return
         }
         val got = recorder.channelCount
-        if (got > 1 && !multiChannelMarked) {
-            multiChannelMarked = true
-            CrashGuard.enter(CrashGuard.Risky.MULTI_CHANNEL)
+        if (got == 1 && multiChannelMarked) {
+            // The mic (or the 1-channel fallback) gave one channel after all.
+            multiChannelMarked = false
+            CrashGuard.exit(CrashGuard.Risky.MULTI_CHANNEL)
         }
         if (got < wanted && _state.value.message == null) {
             showMessage("The microphone gave $got channel${if (got == 1) "" else "s"} instead of $wanted.")

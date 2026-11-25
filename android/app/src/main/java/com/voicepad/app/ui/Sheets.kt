@@ -596,7 +596,7 @@ private fun MicOption(
  * model, so reinstalling VoicePad restores them instead of downloading again.
  */
 @Composable
-private fun ModelFolderSection() {
+internal fun ModelFolderSection() {
     val context = LocalContext.current
     val folder = remember { com.voicepad.app.transcription.ModelFolder.get(context) }
     val state by folder.state.collectAsStateWithLifecycle()

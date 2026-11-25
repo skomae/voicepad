@@ -6,56 +6,71 @@ enum class EngineChoice(
     val archive: String,
     val displayName: String,
     val shortName: String,
-    val approximateSize: String,
+    /** Approximate download size in megabytes. */
+    val sizeMb: Int,
     val kind: Kind,
     /** Which spoken languages the model understands (shown in Settings). */
     val languages: String,
+    /** What the model is for, in one line (shown when pre-downloading models). */
+    val description: String,
 ) {
     PARAKEET_V3(
         "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
-        "Auto: Western (Parakeet v3)", "Parakeet v3", "~490 MB download", Kind.TRANSDUCER,
+        "Auto: Western (Parakeet v3)", "Parakeet v3", 490, Kind.TRANSDUCER,
         "English, French, Spanish, German and 21 more European languages, switching per sentence — not Chinese",
+        "Default. Chooses the right European language per sentence — English, French, Spanish, German and 21 more.",
     ),
     AUTO_ASIAN(
         "",
-        "Auto: Asian + English (SenseVoice + Parakeet)", "Auto Asian", "~655 MB download", Kind.AUTO,
+        "Auto: Asian + English (SenseVoice + Parakeet)", "Auto Asian", 655, Kind.AUTO,
         "Mandarin, Cantonese, Japanese, Korean via SenseVoice and English via Parakeet, picked per sentence",
+        "Mandarin, Cantonese, Japanese and Korean via SenseVoice, English via Parakeet — picked per sentence.",
     ),
     PARAKEET_V2(
         "sherpa-onnx-nemo-parakeet-tdt-0.6b-v2-int8",
-        "Parakeet TDT v2 (English)", "Parakeet v2", "~480 MB download", Kind.TRANSDUCER,
+        "Parakeet TDT v2 (English)", "Parakeet v2", 480, Kind.TRANSDUCER,
         "English only",
+        "English only; an older Parakeet, a little smaller than v3.",
     ),
     SENSE_VOICE(
         "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17",
-        "SenseVoice (Chinese & East Asian)", "SenseVoice", "~165 MB download", Kind.SENSE_VOICE,
+        "SenseVoice (Chinese & East Asian)", "SenseVoice", 165, Kind.SENSE_VOICE,
         "Mandarin, Cantonese, English, Japanese, Korean",
+        "Mandarin, Cantonese, English, Japanese and Korean in one fast model.",
     ),
     WHISPER_TINY_EN(
         "sherpa-onnx-whisper-tiny.en",
-        "Whisper Tiny (English)", "Whisper tiny", "~120 MB download", Kind.WHISPER,
+        "Whisper Tiny (English)", "Whisper tiny", 120, Kind.WHISPER,
         "English only",
+        "Smallest English Whisper — fastest, least accurate.",
     ),
     WHISPER_BASE_EN(
         "sherpa-onnx-whisper-base.en",
-        "Whisper Base (English)", "Whisper base", "~210 MB download", Kind.WHISPER,
+        "Whisper Base (English)", "Whisper base", 210, Kind.WHISPER,
         "English only",
+        "Small English Whisper — a step up in accuracy.",
     ),
     WHISPER_SMALL_EN(
         "sherpa-onnx-whisper-small.en",
-        "Whisper Small (English)", "Whisper small", "~640 MB download", Kind.WHISPER,
+        "Whisper Small (English)", "Whisper small", 640, Kind.WHISPER,
         "English only",
+        "English Whisper — more accurate, slower.",
     ),
     WHISPER_SMALL(
         "sherpa-onnx-whisper-small",
-        "Whisper Small (multilingual)", "Whisper small ML", "~640 MB download", Kind.WHISPER,
+        "Whisper Small (multilingual)", "Whisper small ML", 640, Kind.WHISPER,
         "~100 languages incl. Mandarin, French, Spanish",
+        "Multilingual Whisper for ~100 languages — more accurate, slower.",
     ),
     WHISPER_TURBO(
         "sherpa-onnx-whisper-turbo",
-        "Whisper Large v3 Turbo", "Whisper turbo", "~560 MB download", Kind.WHISPER,
+        "Whisper Large v3 Turbo", "Whisper turbo", 560, Kind.WHISPER,
         "~100 languages incl. Mandarin, French, Spanish (best accuracy, slowest)",
+        "Most accurate multilingual model; used for background voices and conversation mode.",
     );
+
+    /** For Settings and download prompts, e.g. "~490 MB download". */
+    val approximateSize: String get() = "~$sizeMb MB download"
 
     enum class Kind { TRANSDUCER, WHISPER, SENSE_VOICE, AUTO }
 

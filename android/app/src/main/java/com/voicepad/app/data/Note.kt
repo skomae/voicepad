@@ -46,6 +46,16 @@ data class Revision(
 @Serializable
 enum class TranslationStatus { PENDING, DONE, FAILED, NOT_NEEDED }
 
+/** The on-device LLM's rewrite of one revision of a note (from "type as keyboard"). */
+@Serializable
+data class NoteRewrite(
+    /** The revision this was made from; a newer revision makes it stale. */
+    val revisionId: String,
+    val text: String,
+    /** Prompt that produced it, for the label (e.g. "Clean up"). */
+    val prompt: String? = null,
+)
+
 /** English translation (and romanisation) of one revision of a note. */
 @Serializable
 data class NoteTranslation(
@@ -86,8 +96,14 @@ data class Note(
     /** Moved out of the main list, with its audio compressed (see AudioArchive). */
     val archived: Boolean = false,
     val archivedAt: Long? = null,
+    /** The LLM rewrite of the current text (from "type as keyboard"), when there is one. */
+    val rewrite: NoteRewrite? = null,
 ) {
     val currentText: String get() = revisions.lastOrNull()?.text ?: ""
+
+    /** The rewrite, if it matches the current text. */
+    val currentRewrite: NoteRewrite?
+        get() = rewrite?.takeIf { it.revisionId == revisions.lastOrNull()?.id }
 
     /** The translation, if it matches the current text. */
     val currentTranslation: NoteTranslation?

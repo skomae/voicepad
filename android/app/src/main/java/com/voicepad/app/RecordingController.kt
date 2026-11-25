@@ -17,6 +17,7 @@ import com.voicepad.app.audio.WavFile
 import com.voicepad.app.data.AutoSplit
 import com.voicepad.app.data.Note
 import com.voicepad.app.data.NoteCleanup
+import com.voicepad.app.data.NoteRewrite
 import com.voicepad.app.data.NoteStore
 import com.voicepad.app.data.NoteTranslation
 import com.voicepad.app.data.RevisionSource
@@ -109,6 +110,12 @@ class RecordingController(
         data class Failed(val message: String) : LlmStatus
     }
 
+    /** Progress of the first-run "pre-download models" flow. */
+    sealed interface PreloadStatus {
+        data object Idle : PreloadStatus
+        data class Running(val progress: Double, val label: String) : PreloadStatus
+    }
+
     data class UiState(
         val isRecording: Boolean = false,
         val startedAt: Long? = null,
@@ -140,6 +147,10 @@ class RecordingController(
         val stableLanguage: Boolean = true,
         /** Preview with the fast SenseVoice-only pass; route fully at commit. */
         val quickPreview: Boolean = true,
+        /** First launch with no models yet: offer to pre-download them now. */
+        val showSetup: Boolean = false,
+        /** Progress of the first-run pre-download (see [PreloadStatus]). */
+        val preload: PreloadStatus = PreloadStatus.Idle,
         val errorMessage: String? = null,
         /** Microphones currently connected. */
         val inputDevices: List<InputDevice> = emptyList(),
@@ -254,6 +265,7 @@ class RecordingController(
 
     private var engine: SpeechEngine? = null
     private var loadJob: Job? = null
+    private var preloadJob: Job? = null
     private var liveJob: Job? = null
     private var queueJob: Job? = null
     private var translateJob: Job? = null
@@ -318,6 +330,11 @@ class RecordingController(
         // Before anything records: repair what a crash or kill left behind.
         store.recoverAfterRestart()
         refreshInstalled()
+        // First launch with nothing downloaded: offer to pre-download before
+        // the app quietly starts fetching the active model.
+        _state.update {
+            it.copy(showSetup = !prefs.getBoolean("setupOffered", false) && it.installedEngines.isEmpty())
+        }
 
         inputs.onDevicesChanged = {
             val before = _state.value.inputDevices.map { it.key }.toSet()
@@ -416,6 +433,57 @@ class RecordingController(
         _state.update { it.copy(quickPreview = enabled) }
     }
 
+    /** Closes the first-run setup and continues with the normal start-up. */
+    fun dismissSetup() {
+        preloadJob?.cancel()
+        prefs.edit { putBoolean("setupOffered", true) }
+        _state.update { it.copy(showSetup = false, preload = PreloadStatus.Idle) }
+        appBecameActive()
+    }
+
+    /**
+     * First-run setup: downloads every model in [choices] (skipping ones
+     * already on the phone) so they work offline. Reports progress through
+     * [UiState.preload] and resumes the normal start-up when done.
+     */
+    fun preloadModels(choices: Collection<EngineChoice>) {
+        if (_state.value.preload is PreloadStatus.Running) return
+        val targets = choices.distinct().filterNot(models::isInstalled)
+        preloadJob?.cancel()
+        if (targets.isEmpty()) {
+            prefs.edit { putBoolean("setupOffered", true) }
+            _state.update { it.copy(showSetup = false, preload = PreloadStatus.Idle) }
+            appBecameActive()
+            return
+        }
+        preloadJob = scope.launch {
+            val failures = mutableListOf<String>()
+            var done = 0
+            for (choice in targets) {
+                _state.update { it.copy(preload = PreloadStatus.Running(done.toDouble() / targets.size, choice.displayName)) }
+                try {
+                    models.install(choice) { p ->
+                        _state.update { it.copy(preload = PreloadStatus.Running((done + p) / targets.size, choice.displayName)) }
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    failures += "${choice.displayName}: ${e.message ?: e}"
+                }
+                done++
+            }
+            refreshInstalled()
+            prefs.edit { putBoolean("setupOffered", true) }
+            _state.update { it.copy(showSetup = false, preload = PreloadStatus.Idle) }
+            if (failures.isEmpty()) {
+                Toast.makeText(context, "Models are ready to use offline.", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(context, "Some models couldn't be downloaded.", Toast.LENGTH_LONG).show()
+            }
+            appBecameActive()
+        }
+    }
+
     fun loadEngine() {
         val choice = _state.value.activeEngine
         loadJob?.cancel()
@@ -485,9 +553,14 @@ class RecordingController(
     fun appBecameActive() {
         translationTried.clear()
         processTranslations()
+        // First launch with no models: the setup sheet takes over. Don't
+        // quietly start downloading the active model or recording under it.
+        if (_state.value.showSetup) return
         if (engine == null && loadJob?.isActive != true) loadEngine() else processQueue()
         val s = _state.value
-        if (s.autoRecordOnOpen && !s.isRecording && !conversationActive) start()
+        val canRecord = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        if (s.autoRecordOnOpen && !s.isRecording && !conversationActive && canRecord) start()
     }
 
     fun toggle() {
@@ -757,7 +830,7 @@ class RecordingController(
                 .setPrimaryClip(ClipData.newPlainText("VoicePad transcript", text))
         }
         // Auto-send applies to every finished recording, copied or not.
-        val typing = sendToKeyboardIfConnected(text)
+        val typing = sendToKeyboardIfConnected(text, noteId)
         if (copy || typing) {
             Toast.makeText(
                 context,
@@ -1380,23 +1453,24 @@ class RecordingController(
      */
     fun sendText(text: String, prompt: String?) = send(text, prompt, copyIfDisconnected = true)
 
-    private fun send(text: String, prompt: String?, copyIfDisconnected: Boolean) {
-        if (text.isBlank()) return
+    private fun send(text: String, prompt: String?, copyIfDisconnected: Boolean, noteId: String? = null): Boolean {
+        if (text.isBlank()) return false
         val connected = _state.value.transmitStatus == SinkStatus.CONNECTED
-        if (!connected && !copyIfDisconnected) return
+        if (!connected && !copyIfDisconnected) return false
         if (typingJob?.isActive == true) {
             toast("Still typing the previous text.")
-            return
+            return false
         }
         if (prompt != null && interpretationCache[prompt to text] == null && llm == null) {
             ensureLlm()
             toast("Loading the LLM model; try again when it's ready.")
-            return
+            return false
         }
         typingJob = scope.launch {
             _state.update { it.copy(isTyping = true) }
             try {
                 val final = if (prompt != null) interpret(text, prompt) ?: text else text
+                if (noteId != null && prompt != null && final != text) saveRewrite(noteId, final, prompt)
                 if (connected) {
                     keyboard.type(final)
                 } else {
@@ -1408,13 +1482,24 @@ class RecordingController(
                 _state.update { it.copy(isTyping = false) }
             }
         }
+        return true
     }
 
     private fun toast(message: String) = Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
 
-    /** Types a note's current text. */
-    fun typeNote(noteId: String) {
-        typeText(store.note(noteId)?.currentText.orEmpty())
+    /** Types a note's current text, saving the LLM rewrite so it can be shown with the note. */
+    fun typeNote(noteId: String): Boolean {
+        val note = store.note(noteId) ?: return false
+        val prompt = if (_state.value.autoSend == AutoSend.AFTER_LLM) _state.value.typePrompt else null
+        return send(note.currentText, prompt, copyIfDisconnected = false, noteId = noteId)
+    }
+
+    private fun saveRewrite(noteId: String, text: String, instruction: String) {
+        val prompt = LlmPrompt.presetFor(instruction)?.label
+        store.update(noteId) { note ->
+            val revisionId = note.revisions.lastOrNull()?.id ?: return@update note
+            note.copy(rewrite = NoteRewrite(revisionId, text, prompt))
+        }
     }
 
     /**
@@ -1422,15 +1507,14 @@ class RecordingController(
      * auto-copy when a recording finishes). Per the auto-send mode it also
      * types the original or prompt 1's rewrite. Returns whether typing started.
      */
-    fun sendToKeyboardIfConnected(text: String): Boolean {
+    fun sendToKeyboardIfConnected(text: String, noteId: String? = null): Boolean {
         if (_state.value.transmitStatus != SinkStatus.CONNECTED || text.isBlank()) return false
         if (typingJob?.isActive == true) return false
-        when (_state.value.autoSend) {
-            AutoSend.OFF -> return false
-            AutoSend.ON_COPY -> send(text, prompt = null, copyIfDisconnected = false)
-            AutoSend.AFTER_LLM -> send(text, _state.value.typePrompt, copyIfDisconnected = false)
+        return when (_state.value.autoSend) {
+            AutoSend.OFF -> false
+            AutoSend.ON_COPY -> send(text, prompt = null, copyIfDisconnected = false, noteId = noteId)
+            AutoSend.AFTER_LLM -> send(text, _state.value.typePrompt, copyIfDisconnected = false, noteId = noteId)
         }
-        return true
     }
 
     fun setAutoSend(mode: AutoSend) {
