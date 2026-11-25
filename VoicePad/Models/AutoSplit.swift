@@ -62,6 +62,9 @@ enum AutoSplit: String, CaseIterable, Identifiable, Codable {
     static let pauseSeconds = 0.7
     static let graceSeconds = 60
 
+    /// Until the user picks one: a new note after each 3-second pause.
+    static let `default`: AutoSplit = .silence3s
+
     /// Whether to split now. Positions are in samples at `rate`.
     /// - Parameters:
     ///   - noteStart: where the current note began.

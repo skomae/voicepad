@@ -199,7 +199,7 @@ final class RecordingController {
         backgroundVoices = UserDefaults.standard.bool(forKey: Self.backgroundVoicesKey)
         themeMode = UserDefaults.standard.string(forKey: Self.themeKey).flatMap(ThemeMode.init(rawValue:)) ?? .system
         copyWhenDone = UserDefaults.standard.object(forKey: Self.copyWhenDoneKey) as? Bool ?? true
-        autoSplit = UserDefaults.standard.string(forKey: Self.autoSplitKey).flatMap(AutoSplit.init(rawValue:)) ?? .off
+        autoSplit = UserDefaults.standard.string(forKey: Self.autoSplitKey).flatMap(AutoSplit.init(rawValue:)) ?? .default
         // People already using the app (mic allowed, notes saved) skip the walkthrough.
         onboardingDone = UserDefaults.standard.object(forKey: Self.onboardingKey) as? Bool
             ?? (AVAudioApplication.shared.recordPermission == .granted && !store.notes.isEmpty)
