@@ -72,7 +72,7 @@ struct CleanupView: View {
         let candidates = controller.cleanupCandidates(action, days: days)
         let count = candidates.count
         let notes = count == 1 ? "1 note" : "\(count) notes"
-        let deleting = action == .delete || action == .deleteEmpty
+        let deleting = action == .delete || action == .deleteEmpty || action == .deleteAudio
         NavigationStack {
             Form {
                 Section {
@@ -92,7 +92,7 @@ struct CleanupView: View {
                 Section {
                     Text(summary(count: count, notes: notes, candidates: candidates))
                         .foregroundStyle(deleting && count > 0 ? .red : .primary)
-                    Button("\(action.label) \(count)", role: deleting ? .destructive : nil) {
+                    Button(actionTitle(count: count, notes: notes), role: deleting ? .destructive : nil) {
                         if deleting {
                             confirmDelete = true
                         } else {
@@ -102,9 +102,7 @@ struct CleanupView: View {
                     }
                     .disabled(count == 0)
                 } footer: {
-                    Text(action == .compress
-                         ? "Compress keeps notes in the list, pinned ones included, just smaller."
-                         : "Pinned notes, and notes being recorded or transcribed, are never touched.")
+                    Text(footer)
                 }
             }
             .navigationTitle("Clean up notes")
@@ -112,14 +110,36 @@ struct CleanupView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
-            .confirmationDialog("Delete \(notes)?", isPresented: $confirmDelete, titleVisibility: .visible) {
-                Button("Delete \(count)", role: .destructive) {
+            .confirmationDialog(confirmTitle(count: count, notes: notes), isPresented: $confirmDelete, titleVisibility: .visible) {
+                Button(actionTitle(count: count, notes: notes), role: .destructive) {
                     controller.cleanUp(action, days: days)
                     dismiss()
                 }
             } message: {
-                Text("This permanently deletes their audio and every revision. It can't be undone.")
+                Text(confirmMessage)
             }
+        }
+    }
+
+    private func actionTitle(count: Int, notes: String) -> String {
+        action == .deleteAudio ? "Delete audio of \(notes)" : "\(action.label) \(count)"
+    }
+
+    private func confirmTitle(count: Int, notes: String) -> String {
+        action == .deleteAudio ? "Delete the audio of \(notes)?" : "Delete \(notes)?"
+    }
+
+    private var confirmMessage: String {
+        action == .deleteAudio
+            ? "The recordings are permanently deleted. The notes, their text and translations stay."
+            : "This permanently deletes their audio and every revision. It can't be undone."
+    }
+
+    private var footer: String {
+        switch action {
+        case .compress: return "Compress keeps notes in the list, pinned ones included, just smaller."
+        case .deleteAudio: return "Keeps every note and its text; only the recordings go. Pinned notes keep their audio."
+        default: return "Pinned notes, and notes being recorded or transcribed, are never touched."
         }
     }
 
@@ -132,6 +152,8 @@ struct CleanupView: View {
             let sizes = controller.audioSizes(candidates)
             let fmt = ByteCountFormatter()
             return "\(notes): audio goes from \(fmt.string(fromByteCount: Int64(sizes.now))) to about \(fmt.string(fromByteCount: Int64(sizes.after)))."
+        case .deleteAudio:
+            return "\(notes) will lose their recordings (the notes and their text stay)."
         case .deleteEmpty:
             return "\(notes) with no speech, and their audio, will be permanently deleted."
         case .delete:

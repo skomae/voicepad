@@ -21,6 +21,25 @@ struct SettingsView: View {
                 DictionariesSection()
 
                 Section {
+                    Picker("Delete audio after", selection: $controller.autoDeleteAudio) {
+                        ForEach(NoteCleanup.AutoAge.allCases) { Text($0.label).tag($0) }
+                    }
+                    Picker("Compress audio after", selection: $controller.autoCompress) {
+                        ForEach(NoteCleanup.AutoAge.allCases) { Text($0.label).tag($0) }
+                    }
+                    Picker("Delete notes with no speech after", selection: $controller.autoDeleteEmpty) {
+                        ForEach(NoteCleanup.AutoAge.allCases) { Text($0.label).tag($0) }
+                    }
+                } header: {
+                    Text("Automatic clean-up")
+                } footer: {
+                    Text("Runs quietly in the background, never on the note being recorded or one "
+                         + "still being transcribed. \"Delete audio\" keeps every note and its text and "
+                         + "removes only the recording: “Immediately” does that as soon as a note has its "
+                         + "text, and pinned notes keep their audio either way.")
+                }
+
+                Section {
                     Toggle("Translate to English automatically", isOn: $controller.autoTranslate)
                 } footer: {
                     Text("Detects the spoken language (e.g. Mandarin, French, Spanish) and shows the English translation, plus pinyin for Mandarin. Runs on the device; iOS asks before downloading each language's translation pack once. Needs iOS 18.")

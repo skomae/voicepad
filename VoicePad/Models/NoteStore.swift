@@ -92,6 +92,22 @@ final class NoteStore {
         mutate { $0.removeAll { $0.id == id } }
     }
 
+    /// Deletes the audio of these notes and keeps their text: the recording is
+    /// gone, the words aren't (Android #26).
+    func deleteAudio(_ ids: some Collection<Note.ID>) {
+        let set = Set(ids)
+        let withAudio = notes.filter { set.contains($0.id) && $0.audioFileName != nil }
+        guard !withAudio.isEmpty else { return }
+        for note in withAudio {
+            if let url = audioURL(for: note) { try? FileManager.default.removeItem(at: url) }
+        }
+        mutate { list in
+            for index in list.indices where set.contains(list[index].id) {
+                list[index].audioFileName = nil
+            }
+        }
+    }
+
     /// Run once at startup, before anything records or transcribes. Repairs
     /// whatever an unexpected exit left behind:
     /// - a note still `.recording`: the app died mid-recording, so fix the WAV

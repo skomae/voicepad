@@ -82,6 +82,32 @@ final class RecordingController {
         didSet { UserDefaults.standard.set(autoSplit.rawValue, forKey: Self.autoSplitKey) }
     }
 
+    /// Automatic clean-up (Android #19): delete notes with no speech once they
+    /// are this old.
+    var autoDeleteEmpty: NoteCleanup.AutoAge {
+        didSet {
+            UserDefaults.standard.set(autoDeleteEmpty.rawValue, forKey: Self.autoDeleteEmptyKey)
+            runAutoCleanup()
+        }
+    }
+
+    /// Delete only the recordings of notes that have their text, once they are
+    /// this old (Android #26). "Immediately" acts when a note gets its text.
+    var autoDeleteAudio: NoteCleanup.AutoAge {
+        didSet {
+            UserDefaults.standard.set(autoDeleteAudio.rawValue, forKey: Self.autoDeleteAudioKey)
+            runAutoCleanup()
+        }
+    }
+
+    /// Shrink the recordings of notes this old (Android #19).
+    var autoCompress: NoteCleanup.AutoAge {
+        didSet {
+            UserDefaults.standard.set(autoCompress.rawValue, forKey: Self.autoCompressKey)
+            runAutoCleanup()
+        }
+    }
+
     /// Models that have loaded on this device, for the quick switcher.
     private(set) var installedEngines: Set<EngineChoice>
 
@@ -149,6 +175,9 @@ final class RecordingController {
     private static let themeKey = "theme"
     private static let copyWhenDoneKey = "copyWhenDone"
     private static let autoSplitKey = "autoSplit"
+    private static let autoDeleteEmptyKey = "autoDeleteEmpty"
+    private static let autoDeleteAudioKey = "autoDeleteAudio"
+    private static let autoCompressKey = "autoCompress"
     private static let onboardingKey = "onboardingDone"
     private static let rate = AudioRecorder.sampleRate
     /// Longest audio one model call gets (Whisper's window is 30 s).
@@ -169,6 +198,12 @@ final class RecordingController {
     @ObservationIgnored private var liveTask: Task<Void, Never>?
     @ObservationIgnored private var meterTask: Task<Void, Never>?
     @ObservationIgnored private var queueTask: Task<Void, Never>?
+    @ObservationIgnored private var autoCleanupTask: Task<Void, Never>?
+
+    /// Notes automatic compression already failed on, so it isn't retried forever.
+    @ObservationIgnored private var autoCompressFailed = Set<Note.ID>()
+    /// Notes already given their "no speech" second opinion in this process.
+    @ObservationIgnored private var settledEmpty = Set<Note.ID>()
     @ObservationIgnored private var serialTail: Task<Void, Never>?
     @ObservationIgnored private var queueRunning = false
 
@@ -200,6 +235,9 @@ final class RecordingController {
         themeMode = UserDefaults.standard.string(forKey: Self.themeKey).flatMap(ThemeMode.init(rawValue:)) ?? .system
         copyWhenDone = UserDefaults.standard.object(forKey: Self.copyWhenDoneKey) as? Bool ?? true
         autoSplit = UserDefaults.standard.string(forKey: Self.autoSplitKey).flatMap(AutoSplit.init(rawValue:)) ?? .default
+        autoDeleteEmpty = UserDefaults.standard.string(forKey: Self.autoDeleteEmptyKey).flatMap(NoteCleanup.AutoAge.init(rawValue:)) ?? .off
+        autoDeleteAudio = UserDefaults.standard.string(forKey: Self.autoDeleteAudioKey).flatMap(NoteCleanup.AutoAge.init(rawValue:)) ?? .off
+        autoCompress = UserDefaults.standard.string(forKey: Self.autoCompressKey).flatMap(NoteCleanup.AutoAge.init(rawValue:)) ?? .off
         // People already using the app (mic allowed, notes saved) skip the walkthrough.
         onboardingDone = UserDefaults.standard.object(forKey: Self.onboardingKey) as? Bool
             ?? (AVAudioApplication.shared.recordPermission == .granted && !store.notes.isEmpty)
@@ -258,6 +296,16 @@ final class RecordingController {
             Diagnostics.log("audio reconfigured (new engine: \(newEngine)); reopening the microphone")
             try? self.recorder.restartCapture(newEngine: newEngine)
         }
+
+        // Automatic clean-up at launch and every 15 minutes, as Android sweeps.
+        autoCleanupTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: RecordingController.autoCleanupInterval)
+                guard let self, !Task.isCancelled else { return }
+                self.runAutoCleanup()
+            }
+        }
+        Task { [weak self] in self?.runAutoCleanup() }
     }
 
     // MARK: Engine
@@ -686,6 +734,7 @@ final class RecordingController {
         }
         // Every finished part is copied: after Stop, a manual split or an auto-split.
         if error == nil { copyWhenDone(noteID) }
+        dropAudioIfImmediate(noteID)
     }
 
     /// One live step for `s`: finds newly finished utterances, commits them,
@@ -953,6 +1002,9 @@ final class RecordingController {
                 tried.insert(next.id)
                 await transcribeSaved(next.id)
             }
+            // Notes left at "No speech detected" get their second opinion while
+            // the app is idle: a few per pass, never while anything is recorded.
+            await sweepEmptyNotes()
         }
     }
 
@@ -1034,6 +1086,7 @@ final class RecordingController {
                 $0.partialText = nil
                 if $0.duration <= 0 { $0.duration = Double(total) / Self.rate }
             }
+            dropAudioIfImmediate(noteID)
         } catch {
             let message = error is CancellationError ? "Transcription was interrupted." : error.localizedDescription
             // A failed re-transcription keeps the existing text as current.
@@ -1253,7 +1306,125 @@ extension RecordingController {
         switch action {
         case .archive: archive(ids)
         case .compress: compress(ids)
+        case .deleteAudio: deleteAudio(ids)
         case .deleteEmpty, .delete: delete(ids)
+        }
+    }
+
+    /// Deletes the audio of `ids` and keeps the notes and their text. Notes
+    /// being recorded or transcribed are never touched here (Android #26).
+    func deleteAudio(_ ids: [Note.ID]) {
+        let keep = ids.filter { !busyIDs.contains($0) }
+        if !keep.isEmpty { store.deleteAudio(keep) }
+    }
+
+    /// "Delete audio: immediately" — a note that just got its text loses its
+    /// recording now, rather than at the next sweep. Pinned notes keep theirs.
+    private func dropAudioIfImmediate(_ noteID: Note.ID) {
+        guard autoDeleteAudio == .now, let note = store.note(id: noteID) else { return }
+        // Only once there are words to keep. A note with no text keeps its audio
+        // so the second opinion can still be given, and so "no speech" stays
+        // explainable.
+        guard !note.pinned, note.status == .done, note.audioFileName != nil,
+              !note.currentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        store.deleteAudio([noteID])
+    }
+
+    // MARK: Automatic clean-up
+
+    /// Deletes notes with no speech, deletes audio and compresses audio older
+    /// than the chosen ages (Android #19/#26). Runs quietly: a note that can't
+    /// be compressed is left as it was, and not retried until the next launch.
+    func runAutoCleanup() {
+        guard autoDeleteEmpty != .off || autoDeleteAudio != .off || autoCompress != .off else { return }
+        Task {
+            let empty = NoteCleanup.autoSelect(store.notes, action: .deleteEmpty, age: autoDeleteEmpty, busy: busyIDs)
+            if !empty.isEmpty { delete(empty.map(\.id)) }
+            // Age-based only: "Immediately" is handled the moment a note gets its
+            // text, so turning it on doesn't wipe the whole library in one sweep.
+            if autoDeleteAudio != .off, autoDeleteAudio != .now {
+                let silent = NoteCleanup.autoSelect(store.notes, action: .deleteAudio, age: autoDeleteAudio, busy: busyIDs)
+                if !silent.isEmpty { deleteAudio(silent.map(\.id)) }
+            }
+            guard !isRecording else { return }
+            let toCompress = NoteCleanup.autoSelect(store.notes, action: .compress, age: autoCompress, busy: busyIDs)
+                .map(\.id).filter { !autoCompressFailed.contains($0) }
+            if !toCompress.isEmpty { compress(toCompress) }
+        }
+    }
+
+    private static let autoCleanupInterval: Duration = .seconds(15 * 60)
+
+    // MARK: Settling "No speech detected" (Android #26)
+
+    /// Below this peak the microphone was hearing a room, not a voice: -40 dBFS.
+    private static let silentPeak: Float = 0.01
+
+    /// A note the detector heard nothing in gets the loudest parts of its audio
+    /// sent straight to the model, without the detector in the way. If words
+    /// come back the note gets them; if they don't, nothing in the audio was
+    /// worth keeping and the note goes, audio included. Two independent
+    /// opinions, then gone.
+    private func settleEmptyNote(_ note: Note) async -> Bool {
+        guard let file = store.audioURL(for: note), FileManager.default.fileExists(atPath: file.path) else { return false }
+        let total = WavFile.sampleCount(file)
+        guard total > 0 else { return false }
+        let block = 20 * Int(Self.rate)
+        let blocks = (total + block - 1) / block
+        // Loudest few blocks: a bang at the start shouldn't hide speech later on.
+        var energies: [(index: Int, energy: Double)] = []
+        for i in 0..<blocks {
+            let from = i * block
+            let samples = (try? WavFile.readRange(file, from: from, to: min(total, from + block))) ?? []
+            let energy = samples.isEmpty ? 0 : samples.reduce(0.0) { $0 + Double($1 * $1) } / Double(samples.count)
+            energies.append((i, energy))
+        }
+        let loudest = energies.sorted { $0.energy > $1.energy }.prefix(3).map(\.index)
+        var peak: Float = 0
+        for i in loudest {
+            let from = i * block
+            let samples = (try? WavFile.readRange(file, from: from, to: min(total, from + block))) ?? []
+            peak = max(peak, samples.reduce(0) { max($0, abs($1)) })
+        }
+        // Below this the microphone was hearing the room, not a voice: measured
+        // on Android's phone, clean speech stops being detected around -46 dBFS
+        // peak, and the model asked to transcribe silence answers with "." or
+        // "Yeah." rather than nothing.
+        guard peak >= Self.silentPeak else { return false }
+        var text = ""
+        for i in loudest {
+            let from = i * block
+            let samples = (try? WavFile.readRange(file, from: from, to: min(total, from + block))) ?? []
+            if samples.isEmpty { continue }
+            guard let result = try? await transcribeSerially(samples) else { continue }
+            text = Self.join(text, result.text)
+        }
+        // Silence makes the model answer with fillers; only words count as proof.
+        guard NoSpeechText.isSubstantive(text) else { return false }
+        store.update(note.id) {
+            $0 = $0.withTranscription(text, source: .transcription, engine: engineLabel([]), language: nil)
+        }
+        return true
+    }
+
+    /// Settles "No speech detected" notes while the app is idle, a few at a
+    /// time, and deletes the ones whose audio held nothing at all.
+    private func sweepEmptyNotes(limit: Int = 6) async {
+        guard isEngineReady, !isRecording, !conversationActive else { return }
+        var tried = Set<Note.ID>()
+        while true {
+            let candidates = Array(store.notes.filter { note in
+                !tried.contains(note.id) && !settledEmpty.contains(note.id) && !note.pinned &&
+                    note.audioFileName != nil && note.status == .done &&
+                    (NoteCleanup.isEmpty(note) || !note.currentText.contains(where: \.isLetter))
+            }.prefix(limit))
+            if candidates.isEmpty { break }
+            for note in candidates {
+                guard isEngineReady, !isRecording, !conversationActive else { return }
+                tried.insert(note.id)
+                settledEmpty.insert(note.id)
+                if !(await settleEmptyNote(note)) { delete([note.id]) }
+            }
         }
     }
 
