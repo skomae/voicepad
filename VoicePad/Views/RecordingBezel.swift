@@ -35,18 +35,18 @@ struct RecordingBezel: View {
         return ZStack {
             // The bloom: wide, soft, most of the light.
             shape
-                .strokeBorder(Color.recordingRed.opacity(0.9), lineWidth: 12)
-                .blur(radius: 18)
+                .strokeBorder(Color.recordingRed.opacity(0.9), lineWidth: 16)
+                .blur(radius: 20)
                 .opacity(0.6 * intensity)
             // The tube.
             shape
-                .strokeBorder(Color.recordingRed, lineWidth: 3)
-                .blur(radius: 1.2)
+                .strokeBorder(Color.recordingRed, lineWidth: 5)
+                .blur(radius: 1.6)
                 .opacity(intensity)
             // The white-hot line inside the tube, which is what makes it read as
             // neon rather than as a red rounded rectangle.
             shape
-                .strokeBorder(Color(red: 1, green: 0.66, blue: 0.62), lineWidth: 1.3)
+                .strokeBorder(Color(red: 1, green: 0.66, blue: 0.62), lineWidth: 2)
                 .blur(radius: 0.4)
                 .opacity(0.45 + 0.5 * intensity)
         }
