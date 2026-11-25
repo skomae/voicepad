@@ -3,6 +3,12 @@ package com.voicepad.app.ui
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -269,19 +275,57 @@ internal class SpeakActions(
 
 internal val LocalSpeak = staticCompositionLocalOf<SpeakActions?> { null }
 
-/** Speaker icon: says the turn in [language]; while it's being said, a stop icon. */
+/** Speaker icon: says the turn in [language]; while it's being said, a stop icon; while the voice
+ * is still being generated, bars that move so it's clear something is happening. */
 @Composable
 internal fun SpeakButton(turn: Turn, language: String, tint: Color) {
     val speak = LocalSpeak.current ?: return
     if (turn.id < 0 || turn.textIn(language) == null) return
     val active = speak.state.activeId == ConversationController.speechId(turn.id, language)
+    val generating = active && speak.state.generating
     IconButton(onClick = { speak.onSpeak(turn, language) }, modifier = Modifier.size(32.dp)) {
-        Icon(
-            if (active) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
-            contentDescription = if (active) "Stop" else "Say it",
-            tint = tint,
-            modifier = Modifier.size(20.dp),
-        )
+        if (generating) {
+            MakingVoiceBars(tint)
+        } else {
+            Icon(
+                if (active) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
+                contentDescription = if (active) "Stop" else "Say it",
+                tint = tint,
+                modifier = Modifier.size(20.dp),
+            )
+        }
+    }
+}
+
+/** Three bars breathing while the voice is made: nothing is audible yet, and it takes a moment. */
+@Composable
+private fun MakingVoiceBars(tint: Color) {
+    val transition = rememberInfiniteTransition(label = "making-voice")
+    Row(
+        modifier = Modifier
+            .height(14.dp)
+            .semantics { contentDescription = "Generating the voice" },
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.Bottom,
+    ) {
+        repeat(3) { index ->
+            val height by transition.animateFloat(
+                initialValue = 0.2f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(durationMillis = 380, delayMillis = index * 110, easing = FastOutSlowInEasing),
+                    repeatMode = RepeatMode.Reverse,
+                ),
+                label = "bar-$index",
+            )
+            Box(
+                Modifier
+                    .width(3.dp)
+                    .height(14.dp * height)
+                    .clip(RoundedCornerShape(1.5.dp))
+                    .background(tint),
+            )
+        }
     }
 }
 

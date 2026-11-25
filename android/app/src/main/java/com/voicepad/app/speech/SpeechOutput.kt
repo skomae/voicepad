@@ -48,6 +48,8 @@ class SpeechOutput(private val context: Context) {
     data class State(
         /** Id of the request being prepared or played, for the UI's speaker icons. */
         val activeId: String? = null,
+        /** True while the voice is being made — nothing audible yet, so the UI shows it's working. */
+        val generating: Boolean = false,
         /** True while sound is coming out (the microphone should ignore it). */
         val playing: Boolean = false,
         val useLocalVoices: Boolean = true,
@@ -110,24 +112,25 @@ class SpeechOutput(private val context: Context) {
         current?.cancel()
         current = null
         releasePlayer()
-        _state.update { it.copy(activeId = null, playing = false) }
+        _state.update { it.copy(activeId = null, generating = false, playing = false) }
     }
 
     private fun next() {
         val request = queue.removeFirstOrNull()
         if (request == null) {
-            _state.update { it.copy(activeId = null, playing = false) }
+            _state.update { it.copy(activeId = null, generating = false, playing = false) }
             return
         }
         _state.update { it.copy(activeId = request.id) }
         current = scope.launch {
             try {
-                val clip = clipFor(request.text, request.language)
+                val clip = clipFor(request.text, request.language) { _state.update { it.copy(generating = true) } }
+                _state.update { it.copy(generating = false) }
                 play(clip)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                _state.update { it.copy(error = e.message ?: "Couldn't speak that.") }
+                _state.update { it.copy(generating = false, error = e.message ?: "Couldn't speak that.") }
             }
             current = null
             next()
@@ -169,13 +172,18 @@ class SpeechOutput(private val context: Context) {
 
     // region Synthesis and cache
 
-    /** The cached clip for [text], synthesising it first if needed. */
-    private suspend fun clipFor(text: String, language: String): File {
+    /**
+     * The cached clip for [text], synthesising it first if needed. [onSynthesize] runs
+     * when there's no cached clip and the voice is about to be made — the UI shows
+     * that it's working until the first sound comes out.
+     */
+    private suspend fun clipFor(text: String, language: String, onSynthesize: () -> Unit = {}): File {
         val local = localVoiceFor(language)
         if (local != null) {
             val prepared = if (local == LocalVoice.KITTEN_EN) SpeechText.spellNumbers(text) else text
             val file = cacheFile(local.name, language, prepared)
             if (file.exists()) return file.also { it.setLastModified(System.currentTimeMillis()) }
+            onSynthesize()
             val made = synthMutex.withLock {
                 withContext(Dispatchers.Default) {
                     val synth = loaded.getOrPut(local) {
@@ -196,7 +204,7 @@ class SpeechOutput(private val context: Context) {
                 return made
             }
         }
-        return systemClip(text, language)
+        return systemClip(text, language, onSynthesize)
     }
 
     /** The local voice to use for [language], downloading it in the background the first time. */
@@ -253,9 +261,10 @@ class SpeechOutput(private val context: Context) {
     private var systemReady: CompletableDeferred<Boolean>? = null
 
     /** A clip from the phone's own text-to-speech, cached the same way. */
-    private suspend fun systemClip(text: String, language: String): File {
+    private suspend fun systemClip(text: String, language: String, onSynthesize: () -> Unit = {}): File {
         val file = cacheFile("system", language, text)
         if (file.exists()) return file.also { it.setLastModified(System.currentTimeMillis()) }
+        onSynthesize()
         val tts = systemTts()
         val result = tts.setLanguage(Locale.forLanguageTag(if (language == "yue") "zh-HK" else language))
         check(result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED) {
