@@ -39,6 +39,9 @@ struct RecordingLiveActivity: Widget {
                         Text(state.latest.isEmpty ? "Listening…" : state.latest)
                             .font(.callout)
                             .lineLimit(2)
+                        if let other = state.other, !other.isEmpty {
+                            Text(other).font(.caption).lineLimit(2).opacity(0.8)
+                        }
                         if state.isRecording { Buttons() }
                     }
                 }
@@ -94,6 +97,23 @@ private struct LockScreenView: View {
             Text(state.latest.isEmpty ? (state.isRecording ? "Listening…" : "Transcribing your recording…") : state.latest)
                 .font(.callout)
                 .lineLimit(3)
+            // The person opposite reads their own language: the phone on the table is
+            // their script, the job a foldable's cover screen did.
+            if let other = state.other, !other.isEmpty {
+                HStack(alignment: .top, spacing: 6) {
+                    if let language = state.otherLanguage {
+                        Text(language)
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(.white.opacity(0.18), in: RoundedRectangle(cornerRadius: 4))
+                    }
+                    Text(other)
+                        .font(.callout)
+                        .lineLimit(3)
+                        .opacity(0.9)
+                }
+            }
             if state.isRecording { Buttons() }
         }
         .foregroundStyle(state.isRecording ? .white : .primary)

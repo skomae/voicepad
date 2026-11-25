@@ -13,6 +13,11 @@ struct RecordingActivityAttributes: ActivityAttributes {
         var backgroundVoices: Bool
         /// The latest transcript words.
         var latest: String
+        /// The same line translated into English, for the person opposite: the phone
+        /// lying on the table is their script, the way a foldable's cover screen was.
+        var other: String?
+        /// Detected language of the source line ("zh", "ja"…), for the label.
+        var otherLanguage: String?
         /// Stopped or split-off notes still being transcribed.
         var finishing: Int
 

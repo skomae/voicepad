@@ -153,15 +153,46 @@ final class RecordingController {
 
     /// What the Live Activity shows; nil when there's nothing to show.
     var liveActivityState: RecordingActivityAttributes.ContentState? {
+        #if DEBUG
+        // `-DuoPreview live` puts a fixed Chinese line and its translation into the
+        // activity, so the Lock Screen can be screenshotted without speaking at a
+        // simulator microphone that mostly hears nothing.
+        if let preview = UserDefaults.standard.string(forKey: "DuoPreview"), preview == "live" {
+            return .init(
+                startedAt: Date().addingTimeInterval(-42), part: 3, backgroundVoices: false,
+                latest: "我们需要在明天下午三点之前把合同发给采购部",
+                other: "We need to send the contract to procurement before 3 p.m. tomorrow.",
+                otherLanguage: "zh", finishing: 0,
+            )
+        }
+        #endif
         if isRecording {
             let words = liveText.count > 120 ? "…" + liveText.suffix(120) : liveText
             return .init(startedAt: startedAt, part: partNumber, backgroundVoices: backgroundVoices,
-                         latest: words, finishing: finishingCount)
+                         latest: words, other: otherLanguageLine(words), otherLanguage: translationLanguage,
+                         finishing: finishingCount)
         }
         if finishingCount > 0 {
-            return .init(startedAt: nil, part: 1, backgroundVoices: false, latest: "", finishing: finishingCount)
+            return .init(startedAt: nil, part: 1, backgroundVoices: false, latest: "",
+                         other: nil, otherLanguage: nil, finishing: finishingCount)
         }
         return nil
+    }
+
+    /// The current line in English, when it was spoken in something else: what the
+    /// person opposite needs to read. Nil when there is nothing to add — English
+    /// source, no translation yet, or a translation identical to the source.
+    private func otherLanguageLine(_ source: String) -> String? {
+        guard let translation = liveTranslation, translation.language != "en",
+              let english = translation.english?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !english.isEmpty, english != source.trimmingCharacters(in: .whitespacesAndNewlines)
+        else { return nil }
+        return english.count > 160 ? "…" + english.suffix(160) : english
+    }
+
+    private var translationLanguage: String? {
+        guard let language = liveTranslation?.language, language != "en" else { return nil }
+        return language.uppercased()
     }
 
     // MARK: Private

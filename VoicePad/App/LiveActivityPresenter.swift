@@ -73,7 +73,7 @@ final class LiveActivityPresenter {
             send(state)
             return
         }
-        Diagnostics.log("live activity: starting a new one (none up)")
+        Diagnostics.log("live activity: starting a new one (none up) latest=\(state.latest.count) other=\(state.other?.count ?? 0) lang=\(state.otherLanguage ?? "-")")
         activity = try? Activity.request(
             attributes: RecordingActivityAttributes(),
             content: ActivityContent(state: state, staleDate: nil)
