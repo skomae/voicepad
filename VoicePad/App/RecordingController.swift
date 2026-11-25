@@ -120,6 +120,9 @@ final class RecordingController {
 
     let inputs = AudioInputs()
     let translator = EnglishTranslator()
+    /// The user's dictionaries; the enabled ones correct every transcript.
+    let dictionaries: DictionaryStore
+    @ObservationIgnored private var vocabulary: VocabularyCorrector
     @ObservationIgnored private let liveActivity = LiveActivityPresenter()
 
     /// What the Live Activity shows; nil when there's nothing to show.
@@ -185,6 +188,9 @@ final class RecordingController {
 
     init(store: NoteStore) {
         self.store = store
+        let dictionaries = DictionaryStore(baseURL: NoteStore.defaultBaseURL)
+        self.dictionaries = dictionaries
+        vocabulary = VocabularyCorrector(entries: dictionaries.activeWords())
         let saved = UserDefaults.standard.string(forKey: Self.engineKey).flatMap(EngineChoice.init(rawValue:))
         engineChoice = saved ?? .parakeetV3
         autoRecordOnOpen = UserDefaults.standard.object(forKey: Self.autoRecordKey) as? Bool ?? true
@@ -204,6 +210,11 @@ final class RecordingController {
         store.recoverAfterRestart()
         // Translate whenever a note gets new text (transcription, edit, restore).
         store.onChange = { [weak self] in self?.processTranslations() }
+        // The user's dictionary words, spelled their way in every transcript.
+        dictionaries.onChange = { [weak self] in
+            guard let self else { return }
+            self.vocabulary = VocabularyCorrector(entries: self.dictionaries.activeWords())
+        }
 
         inputs.onDevicesChanged = { [weak self] before in
             // The chosen mic was just plugged back in: switch to it.
@@ -379,7 +390,9 @@ final class RecordingController {
         let audio = normalize ?? backgroundVoices ? AudioLevel.normalize(samples) : samples
         let task = Task { @MainActor () async throws -> Transcript in
             await previous?.value
-            return try await engine.transcribe(audio)
+            let result = try await engine.transcribe(audio)
+            // The user's dictionary words, spelled their way.
+            return Transcript(text: vocabulary.correct(result.text), language: result.language, engine: result.engine)
         }
         serialTail = Task { _ = try? await task.value }
         return try await task.value

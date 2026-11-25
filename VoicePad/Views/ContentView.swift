@@ -6,6 +6,8 @@ struct ContentView: View {
     @Environment(ConversationController.self) private var conversation
 
     @State private var editingNoteID: Note.ID?
+    @State private var editedNote: (id: Note.ID, before: String)?
+    @State private var wordsToSave: PendingWords?
     @State private var historyNoteID: Note.ID?
     @State private var confirmDeleteID: Note.ID?
     @State private var shareItem: ShareItem?
@@ -66,7 +68,10 @@ struct ContentView: View {
                     .accessibilityLabel("More")
                 }
             }
-            .sheet(item: $editingNoteID) { id in EditNoteView(noteID: id) }
+            .sheet(item: $editingNoteID, onDismiss: offerNewWords) { id in
+                EditNoteView(noteID: id) { previous in editedNote = (id, previous) }
+            }
+            .sheet(item: $wordsToSave) { pending in SaveWordsSheet(words: pending.words) }
             .sheet(item: $historyNoteID) { id in HistoryView(noteID: id, onCopy: copy) }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showArchive) { ArchivedNotesView(actions: bubbleActions, player: player) }
@@ -133,6 +138,15 @@ struct ContentView: View {
         show("Copied")
     }
 
+    /// After an edit: offer the words it introduced for a dictionary.
+    private func offerNewWords() {
+        guard let editedNote, let note = store.note(id: editedNote.id) else { return }
+        self.editedNote = nil
+        let words = DictionaryWords.newWords(before: editedNote.before, after: note.currentText,
+                                             known: controller.dictionaries.allWords())
+        if !words.isEmpty { wordsToSave = PendingWords(words: words) }
+    }
+
     private func show(_ message: String) {
         withAnimation { toast = message }
         Task {
@@ -140,6 +154,12 @@ struct ContentView: View {
             withAnimation { if toast == message { toast = nil } }
         }
     }
+}
+
+/// Words an edit introduced, waiting to be offered for a dictionary.
+struct PendingWords: Identifiable {
+    let id = UUID()
+    let words: [String]
 }
 
 struct BubbleActions {

@@ -18,6 +18,8 @@ struct SettingsView: View {
                     Text("Copy when done puts each finished recording (and each split-off part) on the clipboard.")
                 }
 
+                DictionariesSection()
+
                 Section {
                     Toggle("Translate to English automatically", isOn: $controller.autoTranslate)
                 } footer: {
