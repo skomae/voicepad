@@ -518,6 +518,8 @@ class RecordingController(
                 // A broken download should not stick around.
                 models.discard(choice)
                 setStatus(EngineStatus.Failed(e.message ?: e.toString()))
+                // No queue pass is coming: don't leave auto-record waiting on one.
+                startDeferredRecording(engineFailed = true)
             }
         }
     }
@@ -577,19 +579,35 @@ class RecordingController(
             // recording, so opening the app into an instant recording — which is what
             // auto-record does — starves it: the notes wait for the next stop, and if
             // the app is killed mid-recording, for the stop after that.
-            if (backlog() > 0) autoRecordDeferred = true else start()
+            if (backlog() > 0) {
+                autoRecordDeferred = true
+                // The scope is Main.immediate, so the pass started above may already have
+                // finished (every pick returned without suspending) before the flag was
+                // set; without this nothing would come back for the recording.
+                if (queueJob?.isActive != true) startDeferredRecording()
+            } else {
+                start()
+            }
         }
     }
 
     /** Notes the queue would take (a note out of attempts waits for a manual retry). */
     private fun backlog(): Int = store.notes.value.count { it.needsTranscription && it.attempts < MAX_AUTO_ATTEMPTS }
 
-    /** Starts the recording that auto-record put off while saved audio was transcribed. */
-    private fun startDeferredRecording() {
+    /**
+     * Starts the recording that auto-record put off while saved audio was transcribed.
+     * Called after a queue pass that actually ran (the engine was ready), or with
+     * [engineFailed] when the model couldn't load and no pass is coming. It doesn't wait
+     * for the backlog to reach zero: a note whose attempt failed still counts towards it
+     * until its retries run out, and holding the recording back for it would mean
+     * auto-record silently never starting.
+     */
+    private fun startDeferredRecording(engineFailed: Boolean = false) {
         if (!autoRecordDeferred) return
+        if (!engineFailed && !engineReady) return // the pass didn't run; the load will run it
         val canRecord = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
-        if (!canRecord || _state.value.isRecording || conversationActive || backlog() > 0) return
+        if (!canRecord || _state.value.isRecording || conversationActive) return
         autoRecordDeferred = false
         start()
     }
