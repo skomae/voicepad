@@ -10,4 +10,4 @@ app/.cxx/
 *.keystore
 app/src/main/assets/silero_vad.onnx
 .kotlin/
-app/src/main/assets/zh_dict.txt.gz
+app/src/main/assets/zh_dict.dat

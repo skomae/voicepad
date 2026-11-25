@@ -1,6 +1,7 @@
 import java.net.URI
 import java.util.zip.GZIPInputStream
 import java.util.zip.GZIPOutputStream
+import java.util.zip.ZipFile
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -78,11 +79,16 @@ val downloadLlamaCpp by tasks.registering {
 // - jieba's word list (MIT, https://github.com/fxsjy/jieba): word frequencies,
 //   used to split sentences into words and rank meanings.
 //
-// Output: assets/zh_dict.txt.gz, CC-CEDICT's lines each prefixed with the
+// Output: assets/zh_dict.dat, CC-CEDICT's lines each prefixed with the
 // word's jieba frequency and a tab (see ZhDictionary). Being derived from
 // CC-CEDICT, the file is under CC BY-SA 4.0 too; its header says so.
+//
+// It is gzipped but deliberately not named *.gz: the asset merger gunzips
+// assets by that extension and ships them under the stripped name, so
+// `assets/zh_dict.txt.gz` arrived in the APK as `assets/zh_dict.txt` and the
+// app (which opens the .gz) reported the dictionary as missing.
 
-val zhDictionary = layout.projectDirectory.file("src/main/assets/zh_dict.txt.gz")
+val zhDictionary = layout.projectDirectory.file("src/main/assets/zh_dict.dat")
 val downloadChineseDictionary by tasks.registering {
     description = "Downloads CC-CEDICT and jieba's word frequencies and merges them into the dictionary asset."
     val target = zhDictionary.asFile
@@ -132,6 +138,30 @@ val downloadChineseDictionary by tasks.registering {
 }
 
 tasks.named("preBuild") { dependsOn(downloadSherpaOnnx, downloadSileroVad, downloadLlamaCpp, downloadChineseDictionary) }
+
+// A missing or renamed asset silently disables the word breakdown (the sheet says
+// "the Chinese dictionary isn't included in this build"), so check the packaged APK
+// itself rather than the source file.
+val verifyZhDictionary by tasks.registering {
+    description = "Fails when a built APK is missing the Chinese dictionary asset."
+    val apkDir = layout.buildDirectory.dir("outputs/apk")
+    doLast {
+        val apks = apkDir.get().asFile.walkTopDown().filter { it.isFile && it.extension == "apk" }.toList()
+        check(apks.isNotEmpty()) { "No APK was packaged, so the dictionary can't be checked." }
+        apks.forEach { apk ->
+            ZipFile(apk).use { zip ->
+                val entry = zip.getEntry("assets/zh_dict.dat")
+                check(entry != null && entry.size > 1_000_000) {
+                    "${apk.name} is missing the Chinese dictionary: expected assets/zh_dict.dat (> 1 MB), found ${entry?.size ?: 0} bytes."
+                }
+            }
+        }
+    }
+}
+
+tasks.matching { it.name == "assembleDebug" || it.name == "assembleRelease" }.configureEach {
+    finalizedBy(verifyZhDictionary)
+}
 
 // Release signing comes from environment variables (set by CI from repo
 // secrets). Without them the release build falls back to the debug key.
@@ -247,6 +277,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("org.apache.commons:commons-compress:1.28.0")
+    // Chinese word segmentation and pinyin for the word breakdown, offline: the
+    // portable jar carries its dictionary and pinyin table (~16 MB of assets).
+    implementation("com.hankcs:hanlp:portable-1.8.4")
     implementation("com.google.mlkit:translate:17.0.3")
     implementation("com.google.mlkit:language-id:17.0.6")
 
