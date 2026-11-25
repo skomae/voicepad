@@ -217,6 +217,9 @@ private struct NotesList: View {
         let pinned = visible.filter(\.pinned).sorted { ($0.pinnedAt ?? .distantPast) > ($1.pinnedAt ?? .distantPast) }
         let others = visible.filter { !$0.pinned }
         let needingText = visible.filter(\.needsTranscription).count
+        // One label per break in the conversation, not one per note.
+        let pinnedLabels = NoteTime.labels(for: pinned)
+        let otherLabels = NoteTime.labels(for: others)
 
         ScrollViewReader { proxy in
             ScrollView {
@@ -233,10 +236,10 @@ private struct NotesList: View {
                         }
                         if !pinned.isEmpty {
                             SectionHeader(title: "Pinned", systemImage: "pin.fill")
-                            ForEach(pinned) { bubble($0) }
+                            ForEach(pinned) { bubble($0, timeLabel: pinnedLabels[$0.id]) }
                             if !others.isEmpty || showLive { SectionHeader(title: "All notes") }
                         }
-                        ForEach(others) { bubble($0) }
+                        ForEach(others) { bubble($0, timeLabel: otherLabels[$0.id]) }
                         if showLive { LiveBubble() }
                     }
                     Color.clear.frame(height: 1).id(bottomID)
@@ -268,13 +271,16 @@ private struct NotesList: View {
                 .padding(.top, 80)
         } else {
             SectionHeader(title: results.count == 1 ? "1 result" : "\(results.count) results")
+            let labels = NoteTime.labels(for: results.map(\.note))
             ForEach(results) { result in
-                bubble(result.note, highlight: terms, matchedEarlier: result.matchedIn == .earlierRevision)
+                bubble(result.note, timeLabel: labels[result.note.id],
+                       highlight: terms, matchedEarlier: result.matchedIn == .earlierRevision)
             }
         }
     }
 
-    private func bubble(_ note: Note, highlight: [String] = [], matchedEarlier: Bool = false) -> some View {
+    private func bubble(_ note: Note, timeLabel: String? = nil,
+                        highlight: [String] = [], matchedEarlier: Bool = false) -> some View {
         let a = bubbleActions
         return NoteBubble(
             note: note,
@@ -282,6 +288,7 @@ private struct NotesList: View {
             isPlaying: player.playingID == note.id,
             highlightTerms: highlight,
             matchedInEarlierRevision: matchedEarlier,
+            timeLabel: timeLabel,
             onCopy: { a.copy(note) },
             onEdit: { a.edit(note) },
             onHistory: { a.history(note) },

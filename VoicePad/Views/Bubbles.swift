@@ -11,6 +11,9 @@ struct NoteBubble: View {
     var highlightTerms: [String] = []
     /// The search matched an earlier version, not the current text.
     var matchedInEarlierRevision = false
+    /// The break label above the bubble ("Yesterday, 9:41 AM"), or nil when the
+    /// note before this one is close enough that a divider would be noise.
+    var timeLabel: String? = nil
     let onCopy: () -> Void
     let onEdit: () -> Void
     let onHistory: () -> Void
@@ -34,6 +37,14 @@ struct NoteBubble: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 6) {
+            if let timeLabel {
+                Text(timeLabel)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.bottom, 2)
+                    .accessibilityAddTraits(.isHeader)
+            }
             bubble
             actionRow
         }
@@ -152,8 +163,10 @@ struct NoteBubble: View {
         return attributed
     }
 
+    /// When this note was made lives in the break label above it; only the
+    /// parts that aren't in it stay here.
     private var metadata: String {
-        var parts = [note.createdAt.formatted(date: .abbreviated, time: .shortened)]
+        var parts: [String] = []
         if note.duration > 0 { parts.append(Duration.seconds(note.duration).formatted(.time(pattern: .minuteSecond))) }
         if let last = note.revisions.last, last.source != .transcription { parts.append(last.source.label.lowercased()) }
         if note.archived { parts.append("archived") }
