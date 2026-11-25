@@ -130,7 +130,14 @@ class NoteStore(baseDir: File) {
             out.write(json.encodeToString(notes).toByteArray())
             out.fd.sync()
         }
-        if (indexFile.exists()) indexFile.copyTo(File(indexFile.path + ".bak"), overwrite = true)
+        // Keep the previous file as the backup by renaming it, not copying it: the
+        // copy cost a full extra write of the whole history on every edit, and the
+        // rename is just as crash-safe (a missing notes.json falls back to .bak).
+        val bak = File(indexFile.path + ".bak")
+        if (indexFile.exists()) {
+            bak.delete()
+            indexFile.renameTo(bak)
+        }
         check(tmp.renameTo(indexFile)) { "Could not save notes." }
     }
 

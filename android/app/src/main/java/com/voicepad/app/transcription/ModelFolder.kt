@@ -1,5 +1,6 @@
 package com.voicepad.app.transcription
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -87,6 +88,8 @@ class ModelFolder private constructor(private val context: Context) {
     }
 
     companion object {
+        // Holds the application context, which lives as long as the process does.
+        @SuppressLint("StaticFieldLeak")
         @Volatile private var instance: ModelFolder? = null
         fun get(context: Context): ModelFolder =
             instance ?: synchronized(this) { instance ?: ModelFolder(context.applicationContext).also { instance = it } }
@@ -269,7 +272,13 @@ class ModelFolder private constructor(private val context: Context) {
     /** Copies a freshly installed model into the folder, in the background. */
     fun saveLater(relPath: String, source: File) {
         if (uri == null) return
-        scope.launch { mutex.withLock { save(relPath, source) } }
+        scope.launch {
+            mutex.withLock {
+                val index = readIndex() ?: Index()
+                // Only pay for a write when the pass actually recorded something.
+                if (save(relPath, source, index)) writeIndexReporting(index)
+            }
+        }
     }
 
     /** Copies a small text file (e.g. the list of ML Kit model hashes) into the folder, in the background. */
@@ -330,36 +339,44 @@ class ModelFolder private constructor(private val context: Context) {
     /** Every installed model: model and voice directories with their marker, and single-file models. */
     private suspend fun saveAllInstalled() = mutex.withLock {
         val files = context.filesDir
+        // One read and one write of the index for the whole pass: each of those is a
+        // round trip to the provider, and a folder watching app start can have dozens
+        // of models to check.
+        val index = readIndex() ?: Index()
+        var changed = false
         for (top in listOf("models", "voices")) {
             File(files, top).listFiles()?.forEach { entry ->
                 when {
-                    entry.isDirectory && File(entry, MARKER).exists() -> save("$top/${entry.name}", entry)
+                    entry.isDirectory && File(entry, MARKER).exists() -> { changed = save("$top/${entry.name}", entry, index) || changed }
                     entry.isDirectory && entry.name == "speaker" -> entry.listFiles()?.filter { it.isFile && !it.name.endsWith(".part") }
-                        ?.forEach { save("$top/${entry.name}/${it.name}", it) } // e.g. models/speaker/*.onnx
+                        ?.forEach { changed = save("$top/${entry.name}/${it.name}", it, index) || changed } // e.g. models/speaker/*.onnx
                 }
             }
         }
         // LLM: one .gguf per choice, with a .complete file beside it.
         File(files, "llm").listFiles()
             ?.filter { it.isFile && File(it.path + ".complete").exists() }
-            ?.forEach { save("llm/${it.name}", it) }
+            ?.forEach { changed = save("llm/${it.name}", it, index) || changed }
+        // Nothing new: leave the index alone (and never overwrite it with an empty
+        // one because a read happened to fail).
+        if (changed) writeIndexReporting(index)
     }
 
-    private fun save(relPath: String, source: File) {
-        val root = root() ?: return
-        if (!source.exists()) return
+    /** Copies [relPath] into the folder, recording what landed in [index]. Returns true if it changed the index. */
+    private fun save(relPath: String, source: File, index: Index): Boolean {
+        val root = root() ?: return false
+        if (!source.exists()) return false
         try {
             _state.update { it.copy(busy = "Copying ${source.name} to the folder…") }
             val parentPath = relPath.substringBeforeLast('/', "")
-            val index = readIndex() ?: Index()
             // Already copied in full (possibly by an older version): only the index needs filling in.
             if (source.isDirectory && document("$relPath/$MARKER") != null || !source.isDirectory && document(relPath)?.length() == source.length()) {
                 if (!index.knows(relPath)) {
                     if (source.isDirectory) index.dirs += relPath else index.files[relPath] = source.length()
                     recordFiles(relPath, source, index)
-                    writeIndex(index)
+                    return true
                 }
-                return
+                return false
             }
             val parent = if (parentPath.isEmpty()) root else mkdirs(parentPath)
             val name = relPath.substringAfterLast('/')
@@ -378,9 +395,10 @@ class ModelFolder private constructor(private val context: Context) {
                 index.files[relPath] = source.length()
             }
             recordFiles(relPath, source, index)
-            writeIndex(index)
+            return true
         } catch (e: Throwable) {
             _state.update { it.copy(error = "Couldn't copy ${source.name} to the folder: ${e.message}") }
+            return false
         } finally {
             _state.update { it.copy(busy = null) }
         }
@@ -406,6 +424,19 @@ class ModelFolder private constructor(private val context: Context) {
     }
 
     private fun writeIndex(index: Index) = writeText(INDEX, index.serialize())
+
+    /**
+     * [writeIndex] for the batched passes, where it runs outside [save]'s own
+     * try: a provider error lands in the state instead of escaping the scope
+     * (which has no handler, so it would take the app down).
+     */
+    private fun writeIndexReporting(index: Index) {
+        try {
+            writeIndex(index)
+        } catch (e: Throwable) {
+            _state.update { it.copy(error = "Couldn't update the folder's index: ${e.message}") }
+        }
+    }
 
     /** Creates or replaces the file at [relPath] with [text]. */
     private fun writeText(relPath: String, text: String) {

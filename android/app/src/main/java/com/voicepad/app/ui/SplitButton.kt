@@ -36,8 +36,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -78,7 +78,8 @@ fun <T> DragUpMenu(
 ) {
     val view = LocalView.current
     // Fit the whole list in about 60 % of the window, so it works in small pop-up windows too.
-    val windowHeight = LocalConfiguration.current.screenHeightDp
+    // The window's own size, not the screen's: the menu also runs in freeform windows.
+    val windowHeight = with(LocalDensity.current) { LocalWindowInfo.current.containerSize.height.toDp().value }
     val step = (windowHeight * 0.6f / (options.size + 2)).coerceIn(30f, 44f).dp
     val stepPx = with(LocalDensity.current) { step.toPx() }
     var dragging by remember { mutableStateOf(false) }

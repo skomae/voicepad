@@ -191,6 +191,7 @@ class RecordingController(
     }
 
     companion object {
+        private const val TAG = "RecordingController"
         /** Longest audio one model call gets (Whisper's window is 30 s). */
         private const val MAX_CHUNK_SECONDS = 25.0
         /** With Whisper, utterances are batched until about this long before committing. */
@@ -562,16 +563,19 @@ class RecordingController(
 
     /** Called whenever the app comes to the foreground. */
     fun appBecameActive() {
-        translationTried.clear()
-        processTranslations()
         // First launch with no models: the setup sheet takes over. Don't
         // quietly start downloading the active model or recording under it.
         if (_state.value.showSetup) return
-        if (engine == null && loadJob?.isActive != true) loadEngine() else processQueue()
+        // Recording first: opening the app to record is the latency that matters, so
+        // nothing below runs until the microphone is live. Everything else here —
+        // translations, the model, the queue for saved audio — can wait for it.
         val s = _state.value
         val canRecord = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
         if (s.autoRecordOnOpen && !s.isRecording && !conversationActive && canRecord) start()
+        translationTried.clear()
+        processTranslations()
+        if (engine == null && loadJob?.isActive != true) loadEngine() else processQueue()
     }
 
     fun toggle() {
@@ -598,6 +602,7 @@ class RecordingController(
         RecordingService.start(context)
         beginNote(fileName, origin = 0, part = 1)
         _state.update { it.copy(isRecording = true, errorMessage = null) }
+        android.util.Log.i(TAG, "start: recording from ${s.selectedInputKey ?: "default input"}")
         liveJob = scope.launch {
             while (isActive) {
                 delay(TICK_MS)
@@ -1081,6 +1086,10 @@ class RecordingController(
      */
     private fun processQueue() {
         if (queueJob?.isActive == true) return
+        val ready = engineReady
+        val recording = _state.value.isRecording
+        val conversing = conversationActive
+        android.util.Log.i(TAG, "processQueue: engineReady=$ready isRecording=$recording conversation=$conversing pending=${store.notes.value.count { it.needsTranscription }}")
         queueJob = scope.launch {
             // Each note gets at most one attempt per pass; the next pass comes
             // with the next app launch, model load or finished recording.
@@ -1091,8 +1100,10 @@ class RecordingController(
                         it.id != _state.value.recordingNoteId && it.id !in tried
                 } ?: break
                 tried += next.id
+                android.util.Log.i(TAG, "processQueue: transcribing ${next.id} (attempt ${next.attempts + 1})")
                 transcribeSaved(next.id)
             }
+            android.util.Log.i(TAG, "processQueue: done (engineReady=${engineReady} isRecording=${_state.value.isRecording} conversation=$conversationActive)")
         }
     }
 

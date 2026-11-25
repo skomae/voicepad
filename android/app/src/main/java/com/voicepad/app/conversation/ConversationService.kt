@@ -185,7 +185,9 @@ class ConversationService : Service() {
     )
 
     private fun goForeground(notification: android.app.Notification) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        // The typed call and the MICROPHONE type both need API 30; on Android 10 the
+        // untyped call is what the platform expects.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
         } else {
             startForeground(NOTIFICATION_ID, notification)

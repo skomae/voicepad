@@ -31,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -270,7 +271,7 @@ fun promptLabel(prompt: String): String =
 /** The two active prompts (the laptop pad's two rewrite buttons); pick one to change it. */
 @Composable
 fun PromptSlots(controller: RecordingController, state: RecordingController.UiState) {
-    var slot by remember { mutableStateOf(0) }
+    var slot by remember { mutableIntStateOf(0) }
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 6.dp)) {
         listOf(state.typePrompt, state.typePrompt2).forEachIndexed { i, prompt ->
             FilterChip(

@@ -263,7 +263,9 @@ private fun CardDetail(card: WordBreakdown.Card, color: Color?, matchedWords: Li
     val saying = speechState.activeId == speechId
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(card.text, fontSize = 40.sp, lineHeight = 46.sp)
-        IconButton(onClick = { speech.say(speechId, card.text, "zh") }, modifier = Modifier.size(36.dp)) {
+        // No size modifier: IconButton keeps Material's 48 dp touch target, which a
+        // 36 dp box would shrink below the minimum. The icon inside stays 18 dp.
+        IconButton(onClick = { speech.say(speechId, card.text, "zh") }) {
             if (saying && speechState.generating) {
                 MakingVoiceBars(accent)
             } else {
@@ -313,8 +315,8 @@ private fun CardDetail(card: WordBreakdown.Card, color: Color?, matchedWords: Li
         Label("Characters")
         card.characters.forEach { c ->
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
-                Text(c.char, fontSize = 24.sp, modifier = Modifier.width(36.dp))
-                Text(tonedPinyin(c.numbered, c.pinyin), style = MaterialTheme.typography.titleSmall, modifier = Modifier.width(64.dp))
+                Text(c.char, fontSize = 24.sp, modifier = Modifier.widthIn(min = 36.dp))
+                Text(tonedPinyin(c.numbered, c.pinyin), style = MaterialTheme.typography.titleSmall, modifier = Modifier.widthIn(min = 64.dp))
                 Text(
                     c.gloss?.let(::shortGloss) ?: "—",
                     style = MaterialTheme.typography.bodyMedium,
@@ -353,7 +355,7 @@ private fun EnglishCandidates(engine: WordBreakdown, word: String) {
 
 @Composable
 private fun ScoreRow(title: String, detail: String?, score: Double, color: Color, matched: Boolean) =
-    ScoreRow(AnnotatedString(title), detail, score, color, matched)
+    ScoreRow(AnnotatedString(Pinyin.marksInBrackets(title)), detail, score, color, matched)
 
 /** A ranked option: what it is, a bar for its likelihood, and the percentage. */
 @Composable
@@ -380,7 +382,7 @@ private fun ScoreRow(title: AnnotatedString, detail: String?, score: Double, col
             )
         }
         detail?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(Pinyin.marksInBrackets(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         Box(
             Modifier.padding(top = 3.dp).fillMaxWidth().height(6.dp)
