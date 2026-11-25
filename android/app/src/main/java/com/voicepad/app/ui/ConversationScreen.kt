@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -85,6 +86,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
@@ -565,6 +568,7 @@ internal fun ControlStrip(
                 }
                 MicButton(
                     state.listening, levels.maxOrNull() ?: 0f, onToggle,
+                    motion = rememberMotionEnabled(settings.forceAnimations),
                     hold = state.hold, refilled = state.hearing || state.live != null,
                     holdColor = stageColor(state.stage.turn, settings.myLanguage),
                 )
@@ -628,24 +632,75 @@ private fun LanguageButton(code: String, onClick: () -> Unit) {
 @Composable
 private fun MicButton(
     listening: Boolean, level: Float, onClick: () -> Unit,
+    motion: Boolean,
     hold: ConversationController.Hold?, refilled: Boolean, holdColor: Color,
 ) {
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(60.dp)
-            .clip(CircleShape)
-            .clickable(onClick = onClick)
-            .semantics { contentDescription = if (listening) "Pause listening" else "Start listening" },
-    ) {
-        if (listening) {
-            Box(Modifier.size(60.dp).scale(0.8f + level * 0.4f).background(RecordingRed.copy(alpha = 0.22f), CircleShape))
-            Box(Modifier.size(48.dp).background(RecordingRed, CircleShape))
-            Icon(Icons.Default.Mic, contentDescription = null, tint = Color.White)
-            HoldRing(hold, refilled, holdColor, Modifier.size(60.dp))
-        } else {
-            Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape))
-            Icon(Icons.Default.MicOff, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(60.dp)
+                // Listening is hands-free: rings keep spreading from the button even in
+                // silence, so it reads as "on and listening", not "press to talk".
+                .then(if (listening) Modifier.listeningRings(RecordingRed, motion) else Modifier)
+                .clip(CircleShape)
+                .clickable(onClick = onClick)
+                .semantics {
+                    contentDescription = if (listening) {
+                        "Listening hands-free: just talk. Tap to pause listening."
+                    } else {
+                        "Paused. Tap to start listening."
+                    }
+                },
+        ) {
+            if (listening) {
+                Box(Modifier.size(60.dp).scale(0.8f + level * 0.4f).background(RecordingRed.copy(alpha = 0.22f), CircleShape))
+                Box(Modifier.size(48.dp).background(RecordingRed, CircleShape))
+                Icon(Icons.Default.Mic, contentDescription = null, tint = Color.White)
+                HoldRing(hold, refilled, holdColor, Modifier.size(60.dp))
+            } else {
+                Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape))
+                Icon(Icons.Default.MicOff, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        Text(
+            if (listening) "Just talk" else "Tap to listen",
+            style = MaterialTheme.typography.labelSmall,
+            color = if (listening) RecordingRed else MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            // Clear of the rings, which spread a little past the button.
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+}
+
+/**
+ * Two rings that keep spreading out from a listening mic and fading, drawn
+ * just outside its bounds. With animations off, one steady ring instead.
+ */
+@Composable
+private fun Modifier.listeningRings(color: Color, motion: Boolean): Modifier {
+    if (!motion) {
+        return drawBehind {
+            drawCircle(color.copy(alpha = 0.45f), radius = size.minDimension / 2 - 1.dp.toPx(), style = Stroke(2.dp.toPx()))
+        }
+    }
+    val phase by rememberInfiniteTransition(label = "listening").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(durationMillis = 2000, easing = LinearEasing)),
+        label = "listening-rings",
+    )
+    return drawBehind {
+        val from = 24.dp.toPx() // the red disc's edge
+        val to = size.minDimension / 2 + 5.dp.toPx() // a little past the button
+        for (offset in listOf(0f, 0.5f)) {
+            val t = (phase + offset) % 1f
+            drawCircle(
+                color.copy(alpha = 0.6f * (1f - t)),
+                radius = from + (to - from) * t,
+                style = Stroke(2.dp.toPx()),
+            )
         }
     }
 }
