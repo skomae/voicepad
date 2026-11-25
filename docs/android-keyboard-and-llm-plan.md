@@ -388,3 +388,22 @@ Style presets only change the system instruction (e.g. *Formal email* adds
   presets above.
 - **Icon colours:** tertiary while waiting for a host, primary (with a dot)
   when connected, filled while typing. Never red, which is the recording colour.
+
+### Laptop mode (half-folded)
+
+- Half-folded with a horizontal hinge shows the laptop layout: transcript on
+  the top half next to the LLM's interpretation (prompt 1 or 2, switchable),
+  a control pad on the bottom half. Half-folded the other way round (hinge
+  running up the screen) rotates the app so the hinge runs across it.
+- Not recording reads as **paused** here: the top half turns amber with a big
+  PAUSED. There is no separate pause feature; Record / Stop (bright red)
+  covers it.
+- Pad: Previous / Next note, Auto (cycles no auto send → on copy → after
+  LLM), Split, Send original, Send with prompt 1, Send with prompt 2.
+- **Auto send:** *off* (only explicit sends), *on copy* (copying or a
+  finished recording also types the original), *after LLM prompt* (they type
+  prompt 1's rewrite; double-tap too).
+- **Two active prompts** (default Clean up and Polish), set in the keyboard
+  menu or Settings. "Keep the on-device LLM loaded" keeps the model in
+  memory; otherwise it loads when a rewrite is asked for.
+

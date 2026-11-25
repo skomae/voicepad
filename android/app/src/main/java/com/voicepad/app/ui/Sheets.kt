@@ -384,11 +384,11 @@ fun SettingsSheet(
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Clean up with a small LLM")
+                    Text("Keep the on-device LLM loaded")
                     Text(
-                        "Optionally run a tiny on-device model over the text before it's typed as a keyboard. " +
-                            "Runs alongside the speech model; the picker recommends a size for this phone. " +
-                            "Also in the keyboard icon's menu (long-press the icon).",
+                        "A tiny on-device model rewrites text with your two prompts: the laptop-mode buttons " +
+                            "and \"Auto send after LLM prompt\". Off, it loads only when a rewrite is asked for. " +
+                            "Runs alongside the speech model; the picker recommends a size for this phone.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -396,14 +396,11 @@ fun SettingsSheet(
                 Spacer(Modifier.width(12.dp))
                 Switch(checked = state.llmEnabled, onCheckedChange = controller::setLlmEnabled)
             }
+            Text("Auto send", style = MaterialTheme.typography.titleSmall)
+            AutoSendChooser(state.autoSend, onSelect = controller::setAutoSend)
             if (state.llmEnabled) {
-                Text("Prompt", style = MaterialTheme.typography.titleSmall)
-                PromptChooser(
-                    current = state.typePrompt,
-                    recent = state.recentPrompts,
-                    onUse = controller::setTypePrompt,
-                    onForget = controller::forgetPrompt,
-                )
+                Text("Prompts", style = MaterialTheme.typography.titleSmall)
+                PromptSlots(controller, state)
                 Text("Model", style = MaterialTheme.typography.titleSmall)
                 LlmChoice.entries.forEach { choice ->
                     val advice = controller.llmAdvice(choice)
