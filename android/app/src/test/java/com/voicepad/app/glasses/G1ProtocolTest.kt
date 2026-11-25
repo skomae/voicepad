@@ -50,6 +50,39 @@ class G1ProtocolTest {
     }
 
     @Test
+    fun everyPacketDecodesOnItsOwn() {
+        // Re-joining the packets and decoding hides the problem: a page of Han
+        // characters is ~300 UTF-8 bytes, so a 191-byte boundary falls inside one of
+        // them. The glasses decode the bytes of each packet, not the whole page, so
+        // each one has to be valid UTF-8 by itself.
+        val page = List(GlassesScreen.LINES) { "你".repeat(20) }.joinToString("\n")
+        val packets = G1Protocol.text(page, seq = 0)
+        assertEquals(2, packets.size)
+        packets.forEachIndexed { index, packet ->
+            val payload = packet.drop(9).toByteArray()
+            assertTrue("packet $index is ${payload.size} bytes", payload.size <= G1Protocol.TEXT_CHUNK)
+            val text = payload.decodeToString()
+            assertFalse("packet $index has a replacement mark", text.contains('\uFFFD'))
+            assertArrayEquals("packet $index does not round-trip", payload, text.encodeToByteArray())
+        }
+    }
+
+    @Test
+    fun astralCharactersAreNotSplitBetweenPackets() {
+        // An emoji is four bytes and two Chars: a cut between the halves of the
+        // surrogate pair breaks the glyph exactly like a split Han character.
+        val page = "😀".repeat(60) // 240 bytes
+        val packets = G1Protocol.text(page, seq = 0)
+        assertTrue(packets.size >= 2)
+        packets.forEachIndexed { index, packet ->
+            val payload = packet.drop(9).toByteArray()
+            assertTrue("packet $index is ${payload.size} bytes", payload.size <= G1Protocol.TEXT_CHUNK)
+            assertEquals("packet $index does not round-trip", payload.toList(), payload.decodeToString().encodeToByteArray().toList())
+        }
+        assertEquals(page, packets.flatMap { it.drop(9) }.toByteArray().decodeToString())
+    }
+
+    @Test
     fun sequenceWrapsAtOneByte() {
         assertEquals(0x01.toByte(), G1Protocol.text("a", seq = 257)[0][1])
     }
