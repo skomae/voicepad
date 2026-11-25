@@ -144,6 +144,7 @@ class G1 {
         private const val TEXT_TIMEOUT_MS = 2_000L
         private const val EXIT_TIMEOUT_MS = 1_500L
 
+        @SuppressLint("MissingPermission")
         fun find(duration: Duration) = callbackFlow<G1?> {
             data class FoundPair(
                 val left: ScanResult? = null,
@@ -153,7 +154,6 @@ class G1 {
             val scanner = BluetoothLeScannerCompat.getScanner()
             val settings = ScanSettings.Builder()
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
-                .setReportDelay(5000)
                 .build()
             // Arms already paired into one G1, so a pair found once isn't announced again.
             val pairedChannels = mutableSetOf<String>()
@@ -161,27 +161,34 @@ class G1 {
             /** The advertised name: newer firmware prefixes it with "Even ". */
             fun nameOf(result: ScanResult): String? = result.scanRecord?.deviceName ?: result.device.name
             val callback = object: ScanCallback() {
-                @SuppressLint("MissingPermission")
-                override fun onBatchScanResults(results: List<ScanResult?>) {
-                    val arms = results.filterNotNull()
-                        .mapNotNull { result -> G1Name.parse(nameOf(result))?.takeIf { it.side != null }?.let { it to result } }
-                        .filterNot { (name, _) -> name.pairKey in pairedChannels }
-                        .groupBy { it.first.pairKey }
-                    arms.forEach { (key, seen) ->
-                        val pair = foundPairs[key] ?: FoundPair()
-                        val left = pair.left ?: seen.firstOrNull { it.first.side == G1Name.Side.LEFT }?.second
-                        val right = pair.right ?: seen.firstOrNull { it.first.side == G1Name.Side.RIGHT }?.second
-                        if (left != null && right != null) {
-                            pairedChannels.add(key)
-                            foundPairs.remove(key)
-                            trySendBlocking(G1(
-                                G1Device(right),
-                                G1Device(left)
-                            ))
-                        } else {
-                            foundPairs[key] = FoundPair(left, right)
-                        }
+                override fun onScanResult(callbackType: Int, result: ScanResult) {
+                    Log.v("G1", "onScanResult: ${result.device.name ?: "(unnamed)"} @ ${result.device.address}")
+                    val name = nameOf(result) ?: return
+                    val parsed = G1Name.parse(name) ?: return
+                    val side = parsed.side ?: return
+                    if (parsed.pairKey in pairedChannels) return
+                    val key = parsed.pairKey
+                    val pair = foundPairs.getOrPut(key) { FoundPair() }
+                    if (side == G1Name.Side.LEFT) {
+                        if (pair.left != null) return
+                        foundPairs[key] = pair.copy(left = result)
+                    } else {
+                        if (pair.right != null) return
+                        foundPairs[key] = pair.copy(right = result)
                     }
+                    val updated = foundPairs.getValue(key)
+                    if (updated.left != null && updated.right != null) {
+                        pairedChannels.add(key)
+                        foundPairs.remove(key)
+                        trySendBlocking(G1(
+                            G1Device(updated.right),
+                            G1Device(updated.left)
+                        ))
+                    }
+                }
+
+                override fun onScanFailed(errorCode: Int) {
+                    Log.w("G1", "BLE scan failed: errorCode=$errorCode")
                 }
             }
             scanner.startScan(listOf(), settings, callback)
