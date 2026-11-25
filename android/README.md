@@ -239,6 +239,18 @@ copied, edited, re-transcribed and rolled back through its revision history.
 - **Your edits are final**: editing or restoring a note marks it done, a
   transcription that finishes afterwards goes into the history behind your
   edit, and an empty result never replaces text.
+- **Dictionaries** (Settings → Dictionaries): your own words — names, jargon,
+  product names — kept in as many dictionaries as you like. Each can be
+  turned on or off; open one to add, edit or delete words, or tick words and
+  *Move to…* another dictionary. Words in enabled dictionaries are spelled
+  your way in every transcript (case fixes like *iphone → iPhone*, split
+  words like *chat GPT → ChatGPT*, and one-letter slips on longer words like
+  *Kubernetis → Kubernetes*), so translations use them too. None of the
+  on-device speech models accepts a word list, so this is applied right
+  after recognition; the on-device LLM rewrite is also given the enabled
+  words, so it spells them your way instead of "fixing" them. When you save an edit, VoicePad lists the words your
+  edit introduced, each with its own checkbox (plus *Check all* / *Uncheck
+  all*), and adds the ticked ones to the dictionary you choose.
 - **Pin** notes to keep them in a *Pinned* section at the top.
 - **Full-text search** across every note — current text, every earlier
   revision and text recovered from unfinished transcriptions. All terms must

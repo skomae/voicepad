@@ -15,6 +15,7 @@ import com.voicepad.app.audio.InputDevice
 import com.voicepad.app.audio.RecordingService
 import com.voicepad.app.audio.WavFile
 import com.voicepad.app.data.AutoSplit
+import com.voicepad.app.data.DictionaryStore
 import com.voicepad.app.data.Note
 import com.voicepad.app.data.NoteCleanup
 import com.voicepad.app.data.NoteRewrite
@@ -25,6 +26,7 @@ import com.voicepad.app.data.TranscriptionStatus
 import com.voicepad.app.data.TextSimilarity
 import com.voicepad.app.data.TranslationJoin
 import com.voicepad.app.data.TranslationStatus
+import com.voicepad.app.data.VocabularyCorrector
 import com.voicepad.app.data.withTranscription
 import com.voicepad.app.llm.DeviceSpecs
 import com.voicepad.app.llm.LlamaEngine
@@ -217,6 +219,10 @@ class RecordingController(
     private val llmModels = LlmModelManager(context)
     private val deviceSpecs = DeviceSpecs.read(context)
 
+    /** The user's dictionaries; the enabled ones correct every transcript. */
+    val dictionaries = DictionaryStore(context.filesDir)
+    @Volatile private var vocabulary = VocabularyCorrector(dictionaries.activeWords())
+
     private val _state = MutableStateFlow(
         UiState(
             engineChoice = prefs.getString("engine", null)
@@ -362,6 +368,9 @@ class RecordingController(
                 runAutoCleanup()
                 delay(AUTO_CLEANUP_INTERVAL_MS)
             }
+        }
+        scope.launch {
+            dictionaries.dictionaries.collect { vocabulary = VocabularyCorrector(dictionaries.activeWords()) }
         }
     }
 
@@ -541,7 +550,9 @@ class RecordingController(
     ): Transcript = engineMutex.withLock {
         val current = engine ?: throw IllegalStateException("The model isn't loaded.")
         withContext(Dispatchers.Default) {
-            current.transcribe(if (normalize) AudioLevel.normalize(samples) else samples, languageHint, preview)
+            val result = current.transcribe(if (normalize) AudioLevel.normalize(samples) else samples, languageHint, preview)
+            // The user's dictionary words, spelled their way.
+            result.copy(text = vocabulary.correct(result.text))
         }
     }
 
@@ -1643,7 +1654,9 @@ class RecordingController(
         val result = llmMutex.withLock {
             val engine = llm ?: return null
             try {
-                withContext(Dispatchers.Default) { engine.transform(text, prompt) }.takeIf { it.isNotBlank() }
+                // The user's dictionary words, so the rewrite spells them their way.
+                val instruction = LlmPrompt.withVocabulary(prompt, dictionaries.activeWords())
+                withContext(Dispatchers.Default) { engine.transform(text, instruction) }.takeIf { it.isNotBlank() }
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Throwable) {

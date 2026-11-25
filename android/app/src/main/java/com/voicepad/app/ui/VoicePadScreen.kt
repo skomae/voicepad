@@ -114,6 +114,8 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
     val context = LocalContext.current
 
     var editingId by remember { mutableStateOf<String?>(null) }
+    /** Words an edit just introduced, offered for a dictionary. */
+    var newWords by remember { mutableStateOf<List<String>?>(null) }
     var historyId by remember { mutableStateOf<String?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     var confirmDeleteId by remember { mutableStateOf<String?>(null) }
@@ -356,11 +358,19 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
                 initialText = note.currentText,
                 onDismiss = { editingId = null },
                 onSave = { text ->
+                    val before = note.currentText
                     controller.store.addRevision(id, text, com.voicepad.app.data.RevisionSource.EDIT)
                     editingId = null
+                    // Offer the words this edit brought in for a dictionary.
+                    newWords = com.voicepad.app.data.DictionaryWords
+                        .newWords(before, text, known = controller.dictionaries.allWords())
+                        .takeIf { it.isNotEmpty() }
                 },
             )
         }
+    }
+    newWords?.let { words ->
+        SaveWordsDialog(words, controller.dictionaries, onDismiss = { newWords = null })
     }
     historyId?.let { id ->
         notes.firstOrNull { it.id == id }?.let { note ->
