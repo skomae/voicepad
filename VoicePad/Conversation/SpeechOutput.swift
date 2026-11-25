@@ -14,6 +14,9 @@ import Observation
 final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
     /// Id of the request being played, for the UI's speaker icons.
     private(set) var activeID: String?
+    /// True while the voice is being prepared: nothing is audible yet, so the
+    /// UI shows that it's working (the tap's speaker icon becomes bars).
+    private(set) var generating = false
     /// True while sound is coming out (the microphone should ignore it).
     private(set) var playing = false {
         didSet { if playing != oldValue { onPlayingChanged?(playing) } }
@@ -44,6 +47,7 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
     func stop() {
         queue.removeAll()
         activeID = nil
+        generating = false
         synthesizer.stopSpeaking(at: .immediate)
         playing = false
     }
@@ -52,12 +56,14 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: Self.voiceLanguage(language))
         activeID = id
+        generating = true
         playing = true
         synthesizer.speak(utterance)
     }
 
     private func next() {
         activeID = nil
+        generating = false
         playing = false
         guard !queue.isEmpty else { return }
         let item = queue.removeFirst()
@@ -71,6 +77,11 @@ final class SpeechOutput: NSObject, AVSpeechSynthesizerDelegate {
         case "yue": return "zh-HK"
         default: return AVSpeechSynthesisVoice.speechVoices().first { $0.language.hasPrefix(code) }?.language ?? code
         }
+    }
+
+    /// First sound out: the bars give way to the stop icon again.
+    nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        Task { @MainActor in self.generating = false }
     }
 
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {

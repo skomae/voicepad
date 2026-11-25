@@ -408,7 +408,8 @@ private struct HistoryTurn: View {
     }
 }
 
-/// Speaker icon: says the turn in `language`; while it's being said, a stop icon.
+/// Speaker icon: says the turn in `language`; while it's being made, three
+/// breathing bars (nothing is audible yet); while it plays, a stop icon.
 private struct SpeakButton: View {
     let turn: Turn
     let language: String
@@ -417,12 +418,17 @@ private struct SpeakButton: View {
 
     var body: some View {
         let speaking = conversation.speech.activeID == ConversationController.speechID(turn.id, language)
+        let preparing = speaking && conversation.speech.generating
         Button { conversation.speak(turn, in: language) } label: {
-            Image(systemName: speaking ? "stop.circle.fill" : "speaker.wave.2")
+            if preparing {
+                MakingVoiceBars(tint: tint)
+            } else {
+                Image(systemName: speaking ? "stop.circle.fill" : "speaker.wave.2")
+            }
         }
         .tint(tint)
         .font(.callout)
-        .accessibilityLabel(speaking ? "Stop reading" : "Read aloud")
+        .accessibilityLabel(speaking ? (preparing ? "Generating the voice, tap to stop" : "Stop reading") : "Read aloud")
     }
 }
 
