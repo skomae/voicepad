@@ -348,7 +348,8 @@ private fun ControlPad(
                         controller.setAutoSend(modes[(state.autoSend.ordinal + 1) % modes.size])
                     },
                 )
-                PadButton(Icons.Default.ContentCut, "Split", enabled = state.isRecording, onClick = controller::split)
+                // Tap to split; drag up for auto-split, as on the main screen.
+                SplitPad(controller, state)
             }
             Row(Modifier.weight(1.2f), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 PadButton(Icons.Default.KeyboardReturn, "$verb original", enabled = canSend) {

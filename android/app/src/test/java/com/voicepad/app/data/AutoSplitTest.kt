@@ -57,4 +57,8 @@ class AutoSplitTest {
         assertTrue(AutoSplit.SILENCE_2S.shouldSplit(0, s(12.0), false, s(10.0), r))
         assertTrue(AutoSplit.SILENCE_5S.shouldSplit(0, s(15.0), false, s(10.0), r))
     }
+
+    @Test fun defaultsToThreeSecondsOfSilence() {
+        org.junit.Assert.assertEquals(AutoSplit.SILENCE_3S, AutoSplit.DEFAULT)
+    }
 }

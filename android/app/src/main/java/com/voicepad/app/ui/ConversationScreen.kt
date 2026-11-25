@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -85,6 +86,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
@@ -111,6 +114,7 @@ import com.voicepad.app.conversation.SpeakerRef
 import com.voicepad.app.conversation.SpeakerSource
 import com.voicepad.app.conversation.Stage
 import com.voicepad.app.conversation.Turn
+import com.voicepad.app.zh.BreakdownRequest
 import com.voicepad.app.glasses.GlassesController
 import com.voicepad.app.glasses.GlassesScope
 import com.voicepad.app.glasses.GlassesScreen
@@ -188,6 +192,7 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
                 val layout = conversation.cycleLayout()
                 Toast.makeText(context, layout.label, Toast.LENGTH_SHORT).show()
             },
+            onSetLayout = conversation::setLayout,
             onDismissMessage = conversation::dismissMessage,
             onRetryModels = { conversation.retryModels(); if (notesState.engineStatus is EngineStatus.Failed) notes.loadEngine() },
             onUseEngine = notes::selectModel,
@@ -197,8 +202,11 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
         )
     }
 
+    // Tapping a word of a Chinese turn opens its breakdown.
+    var breakdown by remember { mutableStateOf<BreakdownRequest?>(null) }
     CompositionLocalProvider(
         LocalSpeak provides SpeakActions(speechState, onSpeak = conversation::speak, onDismissError = conversation.speech::dismissError),
+        LocalWordTap provides { breakdown = it },
     ) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         if (state.fold != null || coverActive) {
@@ -241,6 +249,7 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
     }
     }
 
+    breakdown?.let { WordBreakdownSheet(it, onDismiss = { breakdown = null }) }
     picking?.let { side ->
         LanguagePickerDialog(
             title = if (side == Side.MINE) "You speak" else "They speak",
@@ -292,38 +301,6 @@ internal fun SpeakButton(turn: Turn, language: String, tint: Color) {
                 contentDescription = if (active) "Stop" else "Say it",
                 tint = tint,
                 modifier = Modifier.size(20.dp),
-            )
-        }
-    }
-}
-
-/** Three bars breathing while the voice is made: nothing is audible yet, and it takes a moment. */
-@Composable
-private fun MakingVoiceBars(tint: Color) {
-    val transition = rememberInfiniteTransition(label = "making-voice")
-    Row(
-        modifier = Modifier
-            .height(14.dp)
-            .semantics { contentDescription = "Generating the voice" },
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        repeat(3) { index ->
-            val height by transition.animateFloat(
-                initialValue = 0.2f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 380, delayMillis = index * 110, easing = FastOutSlowInEasing),
-                    repeatMode = RepeatMode.Reverse,
-                ),
-                label = "bar-$index",
-            )
-            Box(
-                Modifier
-                    .width(3.dp)
-                    .height(14.dp * height)
-                    .clip(RoundedCornerShape(1.5.dp))
-                    .background(tint),
             )
         }
     }
@@ -461,21 +438,28 @@ internal fun TranscriptPane(state: ConversationController.UiState, textSize: Int
                         // Says the translation, for the other person.
                         SpeakButton(turn, turn.target, color)
                     }
+                    // Tap a word (when one side is Chinese) for its breakdown.
+                    val spokenLayout = remember { TextLayoutRef() }
                     Text(
                         turn.text,
                         fontSize = (size * 0.8f).sp,
                         lineHeight = (size * 0.95f).sp,
                         fontStyle = if (isLive) FontStyle.Italic else FontStyle.Normal,
+                        onTextLayout = { spokenLayout.value = it },
+                        modifier = Modifier.tapWordsOf(turn, tappedTranslation = false, spokenLayout, typed),
                     )
                     turn.romanization?.let {
                         Text(it, fontSize = (size * 0.45f).sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    val translatedLayout = remember { TextLayoutRef() }
                     Text(
                         "→ " + (turn.translation ?: if (turn.translationFailed) "(not translated)" else "…"),
                         fontSize = size.sp,
                         lineHeight = (size * 1.2f).sp,
                         fontWeight = if (newest) FontWeight.SemiBold else FontWeight.Normal,
                         color = MaterialTheme.colorScheme.primary,
+                        onTextLayout = { translatedLayout.value = it },
+                        modifier = Modifier.tapWordsOf(turn, tappedTranslation = true, translatedLayout, typed, prefix = 2),
                     )
                     turn.translationRomanization?.let {
                         Text(it, fontSize = (size * 0.45f).sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -501,6 +485,7 @@ internal fun ControlStrip(
     onRetryModels: () -> Unit,
     onUseEngine: (EngineChoice) -> Unit,
     onCycleLayout: () -> Unit = {},
+    onSetLayout: (ConversationLayout) -> Unit = {},
     onToggleSpeak: () -> Unit = {},
     glasses: GlassesStatus = GlassesStatus.Off,
     onToggleGlasses: () -> Unit = {},
@@ -527,9 +512,20 @@ internal fun ControlStrip(
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
                 IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Leave conversation mode") }
                 val layoutButton = @Composable {
-                    // Tap to cycle through the layouts; the icon shows the current one.
-                    IconButton(onClick = onCycleLayout, modifier = Modifier.size(40.dp)) {
-                        Icon(layoutIcon(state.layout), contentDescription = "Layout: ${state.layout.label}. Tap for the next one.")
+                    // Tap to cycle through the layouts; drag up (or long-press) to pick one,
+                    // like the split button. The icon shows the current one.
+                    DragUpMenu(
+                        title = "Layout",
+                        options = ConversationLayout.entries,
+                        selected = state.layout,
+                        label = { it.label },
+                        icon = ::layoutIcon,
+                        onSelect = onSetLayout,
+                        onTap = onCycleLayout,
+                        description = "Layout: ${state.layout.label}. Tap for the next one; drag up or long-press to choose.",
+                        modifier = Modifier.size(40.dp).clip(CircleShape),
+                    ) {
+                        Icon(layoutIcon(state.layout), contentDescription = null)
                     }
                 }
                 if (narrow) {
@@ -540,6 +536,7 @@ internal fun ControlStrip(
                 }
                 MicButton(
                     state.listening, levels.maxOrNull() ?: 0f, onToggle,
+                    motion = rememberMotionEnabled(settings.forceAnimations),
                     hold = state.hold, refilled = state.hearing || state.live != null,
                     holdColor = stageColor(state.stage.turn, settings.myLanguage),
                 )
@@ -603,15 +600,25 @@ private fun LanguageButton(code: String, onClick: () -> Unit) {
 @Composable
 private fun MicButton(
     listening: Boolean, level: Float, onClick: () -> Unit,
+    motion: Boolean,
     hold: ConversationController.Hold?, refilled: Boolean, holdColor: Color,
 ) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .size(60.dp)
+            // Listening is hands-free: rings keep spreading from the button even in
+            // silence, so it reads as "on and listening", not "press to talk".
+            .then(if (listening) Modifier.listeningRings(RecordingRed, motion) else Modifier)
             .clip(CircleShape)
             .clickable(onClick = onClick)
-            .semantics { contentDescription = if (listening) "Pause listening" else "Start listening" },
+            .semantics {
+                contentDescription = if (listening) {
+                    "Listening hands-free: just talk. Tap to pause listening."
+                } else {
+                    "Paused. Tap to start listening."
+                }
+            },
     ) {
         if (listening) {
             Box(Modifier.size(60.dp).scale(0.8f + level * 0.4f).background(RecordingRed.copy(alpha = 0.22f), CircleShape))
@@ -621,6 +628,37 @@ private fun MicButton(
         } else {
             Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape))
             Icon(Icons.Default.MicOff, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/**
+ * Two rings that keep spreading out from a listening mic and fading, drawn
+ * just outside its bounds. With animations off, one steady ring instead.
+ */
+@Composable
+private fun Modifier.listeningRings(color: Color, motion: Boolean): Modifier {
+    if (!motion) {
+        return drawBehind {
+            drawCircle(color.copy(alpha = 0.45f), radius = size.minDimension / 2 - 1.dp.toPx(), style = Stroke(2.dp.toPx()))
+        }
+    }
+    val phase by rememberInfiniteTransition(label = "listening").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(durationMillis = 2000, easing = LinearEasing)),
+        label = "listening-rings",
+    )
+    return drawBehind {
+        val from = 24.dp.toPx() // the red disc's edge
+        val to = size.minDimension / 2 + 5.dp.toPx() // a little past the button
+        for (offset in listOf(0f, 0.5f)) {
+            val t = (phase + offset) % 1f
+            drawCircle(
+                color.copy(alpha = 0.6f * (1f - t)),
+                radius = from + (to - from) * t,
+                style = Stroke(2.dp.toPx()),
+            )
         }
     }
 }

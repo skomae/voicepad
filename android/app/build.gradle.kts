@@ -1,4 +1,7 @@
 import java.net.URI
+import java.util.zip.GZIPInputStream
+import java.util.zip.GZIPOutputStream
+import java.util.zip.ZipFile
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -68,7 +71,97 @@ val downloadLlamaCpp by tasks.registering {
         marker.asFile.writeText(llamaCppVersion)
     }
 }
-tasks.named("preBuild") { dependsOn(downloadSherpaOnnx, downloadSileroVad, downloadLlamaCpp) }
+// Chinese–English dictionary for the word breakdown, bundled as an asset so
+// it works offline. Built once from two downloads and kept out of git (like
+// the sherpa-onnx AAR and the Silero VAD model):
+//
+// - CC-CEDICT (CC BY-SA 4.0, https://cc-cedict.org): words, readings, meanings.
+// - jieba's word list (MIT, https://github.com/fxsjy/jieba): word frequencies,
+//   used to split sentences into words and rank meanings.
+//
+// Output: assets/zh_dict.dat, CC-CEDICT's lines each prefixed with the
+// word's jieba frequency and a tab (see ZhDictionary). Being derived from
+// CC-CEDICT, the file is under CC BY-SA 4.0 too; its header says so.
+//
+// It is gzipped but deliberately not named *.gz: the asset merger gunzips
+// assets by that extension and ships them under the stripped name, so
+// `assets/zh_dict.txt.gz` arrived in the APK as `assets/zh_dict.txt` and the
+// app (which opens the .gz) reported the dictionary as missing.
+
+val zhDictionary = layout.projectDirectory.file("src/main/assets/zh_dict.dat")
+val downloadChineseDictionary by tasks.registering {
+    description = "Downloads CC-CEDICT and jieba's word frequencies and merges them into the dictionary asset."
+    val target = zhDictionary.asFile
+    outputs.file(target)
+    onlyIf { !target.exists() }
+    doLast {
+        fun fetch(url: String): ByteArray {
+            logger.lifecycle("Downloading $url")
+            val connection = URI(url).toURL().openConnection()
+            connection.connectTimeout = 30_000
+            connection.readTimeout = 120_000
+            return connection.getInputStream().use { it.readBytes() }
+        }
+        // MDBG hosts CC-CEDICT; the Zhongwen browser extension keeps a current copy on GitHub.
+        val cedict = runCatching {
+            GZIPInputStream(fetch("https://www.mdbg.net/chinese/export/cedict/cedict_1_0_ts_utf-8_mdbg.txt.gz").inputStream())
+                .use { it.readBytes() }
+        }.recoverCatching {
+            logger.warn("MDBG download failed (${it.message}); trying the GitHub copy.")
+            fetch("https://raw.githubusercontent.com/cschiller/zhongwen/master/data/cedict_ts.u8")
+        }.getOrThrow().toString(Charsets.UTF_8)
+        check(cedict.lineSequence().count { !it.startsWith("#") } > 100_000) { "CC-CEDICT download looks incomplete." }
+
+        val jieba = fetch("https://raw.githubusercontent.com/fxsjy/jieba/v0.42.1/jieba/dict.txt").toString(Charsets.UTF_8)
+        val frequency = HashMap<String, Int>(400_000)
+        jieba.lineSequence().forEach { line ->
+            val parts = line.split(' ')
+            if (parts.size >= 2) parts[1].toIntOrNull()?.let { frequency[parts[0]] = it }
+        }
+        check(frequency.size > 100_000) { "jieba word list looks incomplete." }
+
+        target.parentFile.mkdirs()
+        val tmp = File(target.path + ".part")
+        GZIPOutputStream(tmp.outputStream()).bufferedWriter(Charsets.UTF_8).use { out ->
+            out.write("# VoicePad Chinese dictionary: CC-CEDICT with jieba word frequencies.\n")
+            out.write("# CC-CEDICT: https://cc-cedict.org, licensed CC BY-SA 4.0; so is this file.\n")
+            out.write("# jieba word frequencies: https://github.com/fxsjy/jieba (MIT).\n")
+            cedict.lineSequence().forEach { line ->
+                if (line.startsWith("#!")) out.write("$line\n") // version and date
+                if (line.isBlank() || line.startsWith("#")) return@forEach
+                val simplified = line.substringBefore(" [").split(' ').getOrNull(1) ?: return@forEach
+                out.write("${frequency[simplified] ?: 0}\t$line\n")
+            }
+        }
+        tmp.renameTo(target)
+    }
+}
+
+tasks.named("preBuild") { dependsOn(downloadSherpaOnnx, downloadSileroVad, downloadLlamaCpp, downloadChineseDictionary) }
+
+// A missing or renamed asset silently disables the word breakdown (the sheet says
+// "the Chinese dictionary isn't included in this build"), so check the packaged APK
+// itself rather than the source file.
+val verifyZhDictionary by tasks.registering {
+    description = "Fails when a built APK is missing the Chinese dictionary asset."
+    val apkDir = layout.buildDirectory.dir("outputs/apk")
+    doLast {
+        val apks = apkDir.get().asFile.walkTopDown().filter { it.isFile && it.extension == "apk" }.toList()
+        check(apks.isNotEmpty()) { "No APK was packaged, so the dictionary can't be checked." }
+        apks.forEach { apk ->
+            ZipFile(apk).use { zip ->
+                val entry = zip.getEntry("assets/zh_dict.dat")
+                check(entry != null && entry.size > 1_000_000) {
+                    "${apk.name} is missing the Chinese dictionary: expected assets/zh_dict.dat (> 1 MB), found ${entry?.size ?: 0} bytes."
+                }
+            }
+        }
+    }
+}
+
+tasks.matching { it.name == "assembleDebug" || it.name == "assembleRelease" }.configureEach {
+    finalizedBy(verifyZhDictionary)
+}
 
 // Release signing comes from environment variables (set by CI from repo
 // secrets). Without them the release build falls back to the debug key.
@@ -184,6 +277,9 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     implementation("org.apache.commons:commons-compress:1.28.0")
+    // Chinese word segmentation and pinyin for the word breakdown, offline: the
+    // portable jar carries its dictionary and pinyin table (~16 MB of assets).
+    implementation("com.hankcs:hanlp:portable-1.8.4")
     implementation("com.google.mlkit:translate:17.0.3")
     implementation("com.google.mlkit:language-id:17.0.6")
 

@@ -136,7 +136,7 @@ class RecordingController(
         /** When a recording (or split part) finishes transcribing, copy it to the clipboard (with a toast). */
         val copyWhenDone: Boolean = true,
         /** Start a new note automatically after a silence or every few minutes. */
-        val autoSplit: AutoSplit = AutoSplit.OFF,
+        val autoSplit: AutoSplit = AutoSplit.DEFAULT,
         /** Delete "No speech detected" notes and their audio once they are this old. */
         val autoDeleteEmpty: NoteCleanup.AutoAge = NoteCleanup.AutoAge.OFF,
         /** Compress notes' audio (WAV → AAC) once they are this old. */
@@ -238,7 +238,7 @@ class RecordingController(
             noteTapAction = prefs.getString("noteTapAction", null)
                 ?.let { runCatching { NoteTapAction.valueOf(it) }.getOrNull() } ?: NoteTapAction.EDIT,
             autoSplit = prefs.getString("autoSplit", null)
-                ?.let { runCatching { AutoSplit.valueOf(it) }.getOrNull() } ?: AutoSplit.OFF,
+                ?.let { runCatching { AutoSplit.valueOf(it) }.getOrNull() } ?: AutoSplit.DEFAULT,
             autoDeleteEmpty = prefs.getString("autoDeleteEmpty", null)
                 ?.let { runCatching { NoteCleanup.AutoAge.valueOf(it) }.getOrNull() } ?: NoteCleanup.AutoAge.OFF,
             autoCompress = prefs.getString("autoCompress", null)

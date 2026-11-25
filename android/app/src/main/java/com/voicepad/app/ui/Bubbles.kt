@@ -70,6 +70,8 @@ import com.voicepad.app.data.NoteRewrite
 import com.voicepad.app.data.NoteTranslation
 import com.voicepad.app.data.TextSimilarity
 import com.voicepad.app.data.TranslationStatus
+import com.voicepad.app.transcription.DeviceRomanizer
+import com.voicepad.app.zh.BreakdownRequest
 import com.voicepad.app.transcription.LanguageTags
 
 private val BubbleShape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp)
@@ -108,6 +110,7 @@ fun NoteBubble(
     tapAction: NoteTapAction = NoteTapAction.EDIT,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    var breakdown by remember { mutableStateOf<BreakdownRequest?>(null) }
     val colors = MaterialTheme.colorScheme
     val failed = note.status == TranscriptionStatus.FAILED
     val working = note.status == TranscriptionStatus.IN_PROGRESS
@@ -121,6 +124,11 @@ fun NoteBubble(
         { onCopyText(listOfNotNull(t.romanization, t.english).joinToString("\n")) }
     }
     val copyRewrite = rewrite?.let { rw -> { onCopyText(rw.text) } }
+    // Opens the word breakdown sheet; only for notes with Chinese in them.
+    val openBreakdown: (() -> Unit)? =
+        if (hasText && isMandarin(bodyText, note.currentTranslation?.language)) {
+            { breakdown = BreakdownRequest(bodyText, translated?.english, "en") }
+        } else null
     // Same actions as the long-press menu; null where the action doesn't apply.
     val onTap: (() -> Unit)? = when (tapAction) {
         NoteTapAction.EDIT -> onEdit
@@ -128,6 +136,7 @@ fun NoteBubble(
         NoteTapAction.TYPE -> onType?.takeIf { hasText }
         NoteTapAction.COPY_TRANSLATION -> copyTranslation
         NoteTapAction.TRANSLATE -> onTranslate.takeIf { hasText && translated == null }
+        NoteTapAction.WORD_BREAKDOWN -> openBreakdown
         NoteTapAction.PIN -> onTogglePin
         NoteTapAction.HISTORY -> onHistory
         NoteTapAction.PLAY -> onPlay
@@ -138,6 +147,7 @@ fun NoteBubble(
         NoteTapAction.NOTHING -> null
     }
 
+    breakdown?.let { WordBreakdownSheet(it, onDismiss = { breakdown = null }) }
     Column(BubbleStartInset, horizontalAlignment = Alignment.End) {
         Box {
             Column(
@@ -190,6 +200,12 @@ fun NoteBubble(
                     }
                 } else if (hasText) {
                     MenuItem("Translate to English", Icons.Default.Translate) { menuOpen = false; onTranslate() }
+                }
+                if (hasText && isMandarin(bodyText, note.currentTranslation?.language)) {
+                    MenuItem("Word breakdown", Icons.Default.Translate) {
+                        menuOpen = false
+                        breakdown = BreakdownRequest(bodyText, translated?.english, "en")
+                    }
                 }
                 if (copyRewrite != null) {
                     MenuItem("Copy rewrite", Icons.Default.Keyboard) {
@@ -249,6 +265,18 @@ fun NoteBubble(
     }
 }
 
+/** Pinyin under a Mandarin transcript. */
+@Composable
+private fun PinyinLine(pinyin: String, color: Color, highlightTerms: List<String>) {
+    Text(
+        highlighted(pinyin, highlightTerms),
+        color = color.copy(alpha = 0.85f),
+        fontStyle = FontStyle.Italic,
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.padding(top = 2.dp),
+    )
+}
+
 /**
  * The transcript and, for speech that wasn't English, its romanisation
  * (pinyin for Mandarin) and English translation. Side by side when there's
@@ -262,26 +290,26 @@ internal fun TextWithTranslation(
     highlightTerms: List<String>,
     onRetry: () -> Unit,
 ) {
+    // Mandarin always gets its pinyin: the translation's when there is one,
+    // else worked out here (no translation yet, translation off, or still live).
+    val pinyin = remember(text, translation?.romanization, translation?.language) {
+        translation?.romanization ?: DeviceRomanizer.mandarinPinyin(text, translation?.language)
+    }
     // Also collapses notes saved before this check existed.
     if (translation == null || translation.status == TranslationStatus.NOT_NEEDED ||
         TextSimilarity.nearlySame(translation.english, text)
     ) {
-        Text(highlighted(text, highlightTerms), color = color)
+        Column {
+            Text(highlighted(text, highlightTerms), color = color)
+            pinyin?.let { PinyinLine(it, color, highlightTerms) }
+        }
         return
     }
     val original: @Composable () -> Unit = {
         Column {
             translation.language?.let { LanguageLabel(LanguageTags.displayName(it), color) }
             Text(highlighted(text, highlightTerms), color = color)
-            translation.romanization?.let {
-                Text(
-                    highlighted(it, highlightTerms),
-                    color = color.copy(alpha = 0.85f),
-                    fontStyle = FontStyle.Italic,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
-            }
+            pinyin?.let { PinyinLine(it, color, highlightTerms) }
         }
     }
     val english: @Composable () -> Unit = {
@@ -491,3 +519,7 @@ fun LiveBubble(state: RecordingController.UiState) {
         }
     }
 }
+
+/** Chinese characters read as Mandarin (not Japanese or Cantonese). */
+private fun isMandarin(text: String, language: String?): Boolean =
+    language !in setOf("ja", "yue", "ko") && LanguageTags.containsHan(text) && !LanguageTags.containsKana(text)
