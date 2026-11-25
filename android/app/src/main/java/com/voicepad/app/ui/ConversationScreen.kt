@@ -1,6 +1,15 @@
 package com.voicepad.app.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -46,6 +55,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import android.widget.Toast
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Subtitles
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.runtime.CompositionLocalProvider
@@ -76,6 +86,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
@@ -84,6 +96,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -101,6 +114,11 @@ import com.voicepad.app.conversation.SpeakerRef
 import com.voicepad.app.conversation.SpeakerSource
 import com.voicepad.app.conversation.Stage
 import com.voicepad.app.conversation.Turn
+import com.voicepad.app.zh.BreakdownRequest
+import com.voicepad.app.glasses.GlassesController
+import com.voicepad.app.glasses.GlassesScope
+import com.voicepad.app.glasses.GlassesScreen
+import com.voicepad.app.glasses.GlassesStatus
 import com.voicepad.app.transcription.EngineChoice
 import kotlinx.coroutines.delay
 
@@ -113,13 +131,26 @@ import kotlinx.coroutines.delay
  * the middle where both can reach them.
  */
 @Composable
-fun ConversationScreen(conversation: ConversationController, notes: RecordingController) {
+fun ConversationScreen(conversation: ConversationController, notes: RecordingController, glasses: GlassesController) {
     val state by conversation.state.collectAsStateWithLifecycle()
     val notesState by notes.state.collectAsStateWithLifecycle()
     val speechState by conversation.speech.state.collectAsStateWithLifecycle()
+    val glassesState by glasses.status.collectAsStateWithLifecycle()
     var showSettings by remember { mutableStateOf(false) }
     var picking by remember { mutableStateOf<Side?>(null) }
     val context = LocalContext.current
+
+    // Turning the glasses on asks for Bluetooth first (Android 12 and later).
+    val glassesPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        if (granted.values.all { it }) conversation.setGlasses(true)
+    }
+    val setGlasses: (Boolean) -> Unit = { on ->
+        if (on && glasses.needsPermission()) glassesPermission.launch(glasses.permissions())
+        else conversation.setGlasses(on)
+    }
+    val lookForGlasses: () -> Unit = {
+        if (glasses.needsPermission()) setGlasses(true) else glasses.retry()
+    }
 
     BackHandler { conversation.close() }
     // Nobody should have to tap the screen to keep it awake mid-conversation.
@@ -161,14 +192,21 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
                 val layout = conversation.cycleLayout()
                 Toast.makeText(context, layout.label, Toast.LENGTH_SHORT).show()
             },
+            onSetLayout = conversation::setLayout,
             onDismissMessage = conversation::dismissMessage,
             onRetryModels = { conversation.retryModels(); if (notesState.engineStatus is EngineStatus.Failed) notes.loadEngine() },
             onUseEngine = notes::selectModel,
+            glasses = glassesState,
+            onToggleGlasses = { setGlasses(!state.settings.glasses) },
+            onLookForGlasses = lookForGlasses,
         )
     }
 
+    // Tapping a word of a Chinese turn opens its breakdown.
+    var breakdown by remember { mutableStateOf<BreakdownRequest?>(null) }
     CompositionLocalProvider(
         LocalSpeak provides SpeakActions(speechState, onSpeak = conversation::speak, onDismissError = conversation.speech::dismissError),
+        LocalWordTap provides { breakdown = it },
     ) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         if (state.fold != null || coverActive) {
@@ -211,6 +249,7 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
     }
     }
 
+    breakdown?.let { WordBreakdownSheet(it, onDismiss = { breakdown = null }) }
     picking?.let { side ->
         LanguagePickerDialog(
             title = if (side == Side.MINE) "You speak" else "They speak",
@@ -224,7 +263,13 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
         )
     }
     if (showSettings) {
-        ConversationSettingsSheet(conversation, state, notesState, notes.conversationMicChannels(), onPick = { picking = it }, onDismiss = { showSettings = false })
+        ConversationSettingsSheet(
+            conversation, state, notesState, notes.conversationMicChannels(), glassesState,
+            onPick = { picking = it },
+            onToggleGlasses = setGlasses,
+            onLookForGlasses = lookForGlasses,
+            onDismiss = { showSettings = false },
+        )
     }
 }
 
@@ -239,19 +284,25 @@ internal class SpeakActions(
 
 internal val LocalSpeak = staticCompositionLocalOf<SpeakActions?> { null }
 
-/** Speaker icon: says the turn in [language]; while it's being said, a stop icon. */
+/** Speaker icon: says the turn in [language]; while it's being said, a stop icon; while the voice
+ * is still being generated, bars that move so it's clear something is happening. */
 @Composable
 internal fun SpeakButton(turn: Turn, language: String, tint: Color) {
     val speak = LocalSpeak.current ?: return
     if (turn.id < 0 || turn.textIn(language) == null) return
     val active = speak.state.activeId == ConversationController.speechId(turn.id, language)
+    val generating = active && speak.state.generating
     IconButton(onClick = { speak.onSpeak(turn, language) }, modifier = Modifier.size(32.dp)) {
-        Icon(
-            if (active) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
-            contentDescription = if (active) "Stop" else "Say it",
-            tint = tint,
-            modifier = Modifier.size(20.dp),
-        )
+        if (generating) {
+            MakingVoiceBars(tint)
+        } else {
+            Icon(
+                if (active) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
+                contentDescription = if (active) "Stop" else "Say it",
+                tint = tint,
+                modifier = Modifier.size(20.dp),
+            )
+        }
     }
 }
 
@@ -371,7 +422,9 @@ internal fun TranscriptPane(state: ConversationController.UiState, textSize: Int
             val newest = turn === newestFirst.first()
             val size = if (newest) textSize else (textSize * 0.7f).toInt()
             val color = speakerColor(turn.speaker)
-            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+            // Double-tap types the translation if there is one, else what was said.
+            val typed = if (isLive) "" else turn.translation ?: turn.text
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).doubleTapToType(typed)) {
                 Box(Modifier.width(5.dp).fillMaxHeight().background(color, RoundedCornerShape(3.dp)))
                 Spacer(Modifier.width(10.dp))
                 Column {
@@ -385,21 +438,28 @@ internal fun TranscriptPane(state: ConversationController.UiState, textSize: Int
                         // Says the translation, for the other person.
                         SpeakButton(turn, turn.target, color)
                     }
+                    // Tap a word (when one side is Chinese) for its breakdown.
+                    val spokenLayout = remember { TextLayoutRef() }
                     Text(
                         turn.text,
                         fontSize = (size * 0.8f).sp,
                         lineHeight = (size * 0.95f).sp,
                         fontStyle = if (isLive) FontStyle.Italic else FontStyle.Normal,
+                        onTextLayout = { spokenLayout.value = it },
+                        modifier = Modifier.tapWordsOf(turn, tappedTranslation = false, spokenLayout, typed),
                     )
                     turn.romanization?.let {
                         Text(it, fontSize = (size * 0.45f).sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    val translatedLayout = remember { TextLayoutRef() }
                     Text(
                         "→ " + (turn.translation ?: if (turn.translationFailed) "(not translated)" else "…"),
                         fontSize = size.sp,
                         lineHeight = (size * 1.2f).sp,
                         fontWeight = if (newest) FontWeight.SemiBold else FontWeight.Normal,
                         color = MaterialTheme.colorScheme.primary,
+                        onTextLayout = { translatedLayout.value = it },
+                        modifier = Modifier.tapWordsOf(turn, tappedTranslation = true, translatedLayout, typed, prefix = 2),
                     )
                     turn.translationRomanization?.let {
                         Text(it, fontSize = (size * 0.45f).sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -425,12 +485,16 @@ internal fun ControlStrip(
     onRetryModels: () -> Unit,
     onUseEngine: (EngineChoice) -> Unit,
     onCycleLayout: () -> Unit = {},
+    onSetLayout: (ConversationLayout) -> Unit = {},
     onToggleSpeak: () -> Unit = {},
+    glasses: GlassesStatus = GlassesStatus.Off,
+    onToggleGlasses: () -> Unit = {},
+    onLookForGlasses: () -> Unit = {},
 ) {
     val settings = state.settings
     Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.padding(vertical = 6.dp)) {
-            StatusLines(state, notesState, onDismissMessage, onRetryModels, onUseEngine)
+            StatusLines(state, notesState, onDismissMessage, onRetryModels, onUseEngine, glasses, onLookForGlasses)
             val languages = @Composable { modifier: Modifier ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier, horizontalArrangement = Arrangement.Center) {
                     LanguageButton(settings.myLanguage) { onPick(Side.MINE) }
@@ -448,9 +512,20 @@ internal fun ControlStrip(
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
                 IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Leave conversation mode") }
                 val layoutButton = @Composable {
-                    // Tap to cycle through the layouts; the icon shows the current one.
-                    IconButton(onClick = onCycleLayout, modifier = Modifier.size(40.dp)) {
-                        Icon(layoutIcon(state.layout), contentDescription = "Layout: ${state.layout.label}. Tap for the next one.")
+                    // Tap to cycle through the layouts; drag up (or long-press) to pick one,
+                    // like the split button. The icon shows the current one.
+                    DragUpMenu(
+                        title = "Layout",
+                        options = ConversationLayout.entries,
+                        selected = state.layout,
+                        label = { it.label },
+                        icon = ::layoutIcon,
+                        onSelect = onSetLayout,
+                        onTap = onCycleLayout,
+                        description = "Layout: ${state.layout.label}. Tap for the next one; drag up or long-press to choose.",
+                        modifier = Modifier.size(40.dp).clip(CircleShape),
+                    ) {
+                        Icon(layoutIcon(state.layout), contentDescription = null)
                     }
                 }
                 if (narrow) {
@@ -461,6 +536,7 @@ internal fun ControlStrip(
                 }
                 MicButton(
                     state.listening, levels.maxOrNull() ?: 0f, onToggle,
+                    motion = rememberMotionEnabled(settings.forceAnimations),
                     hold = state.hold, refilled = state.hearing || state.live != null,
                     holdColor = stageColor(state.stage.turn, settings.myLanguage),
                 )
@@ -470,6 +546,22 @@ internal fun ControlStrip(
                         if (settings.autoSpeak) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
                         contentDescription = if (settings.autoSpeak) "Reading translations aloud. Tap to stop." else "Not reading aloud. Tap to read translations aloud.",
                         tint = if (settings.autoSpeak) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // Show the conversation on Even Realities G1 glasses; dimmed while they're not connected.
+                IconButton(onClick = onToggleGlasses, modifier = Modifier.size(40.dp)) {
+                    Icon(
+                        Icons.Default.Subtitles,
+                        contentDescription = when {
+                            !settings.glasses -> "Show the conversation on Even Realities G1 glasses."
+                            glasses is GlassesStatus.Connected -> "Showing on the G1 glasses. Tap to stop."
+                            else -> "The G1 glasses aren't connected. Tap to stop showing on them."
+                        },
+                        tint = when {
+                            !settings.glasses -> MaterialTheme.colorScheme.onSurfaceVariant
+                            glasses is GlassesStatus.Connected -> MaterialTheme.colorScheme.primary
+                            else -> MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+                        },
                     )
                 }
                 Spacer(Modifier.width(2.dp))
@@ -508,15 +600,25 @@ private fun LanguageButton(code: String, onClick: () -> Unit) {
 @Composable
 private fun MicButton(
     listening: Boolean, level: Float, onClick: () -> Unit,
+    motion: Boolean,
     hold: ConversationController.Hold?, refilled: Boolean, holdColor: Color,
 ) {
     Box(
         contentAlignment = Alignment.Center,
         modifier = Modifier
             .size(60.dp)
+            // Listening is hands-free: rings keep spreading from the button even in
+            // silence, so it reads as "on and listening", not "press to talk".
+            .then(if (listening) Modifier.listeningRings(RecordingRed, motion) else Modifier)
             .clip(CircleShape)
             .clickable(onClick = onClick)
-            .semantics { contentDescription = if (listening) "Pause listening" else "Start listening" },
+            .semantics {
+                contentDescription = if (listening) {
+                    "Listening hands-free: just talk. Tap to pause listening."
+                } else {
+                    "Paused. Tap to start listening."
+                }
+            },
     ) {
         if (listening) {
             Box(Modifier.size(60.dp).scale(0.8f + level * 0.4f).background(RecordingRed.copy(alpha = 0.22f), CircleShape))
@@ -526,6 +628,37 @@ private fun MicButton(
         } else {
             Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape))
             Icon(Icons.Default.MicOff, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+/**
+ * Two rings that keep spreading out from a listening mic and fading, drawn
+ * just outside its bounds. With animations off, one steady ring instead.
+ */
+@Composable
+private fun Modifier.listeningRings(color: Color, motion: Boolean): Modifier {
+    if (!motion) {
+        return drawBehind {
+            drawCircle(color.copy(alpha = 0.45f), radius = size.minDimension / 2 - 1.dp.toPx(), style = Stroke(2.dp.toPx()))
+        }
+    }
+    val phase by rememberInfiniteTransition(label = "listening").animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(durationMillis = 2000, easing = LinearEasing)),
+        label = "listening-rings",
+    )
+    return drawBehind {
+        val from = 24.dp.toPx() // the red disc's edge
+        val to = size.minDimension / 2 + 5.dp.toPx() // a little past the button
+        for (offset in listOf(0f, 0.5f)) {
+            val t = (phase + offset) % 1f
+            drawCircle(
+                color.copy(alpha = 0.6f * (1f - t)),
+                radius = from + (to - from) * t,
+                style = Stroke(2.dp.toPx()),
+            )
         }
     }
 }
@@ -560,6 +693,8 @@ private fun StatusLines(
     onDismissMessage: () -> Unit,
     onRetry: () -> Unit,
     onUseEngine: (EngineChoice) -> Unit,
+    glasses: GlassesStatus = GlassesStatus.Off,
+    onLookForGlasses: () -> Unit = {},
 ) {
     val settings = state.settings
     val lines = buildList<@Composable () -> Unit> {
@@ -608,6 +743,28 @@ private fun StatusLines(
                 if (status is SpeechOutput.VoiceStatus.Downloading) {
                     add { StatusText("Downloading ${voice.displayName} voice… ${(status.progress * 100).toInt()}% (the phone's voice speaks meanwhile)") }
                 }
+            }
+        }
+        if (settings.glasses) {
+            when (val g = glasses) {
+                GlassesStatus.Scanning -> add { StatusText("Looking for G1 glasses…") }
+                is GlassesStatus.Connecting -> add { StatusText("Connecting to ${g.name}…") }
+                GlassesStatus.NotFound -> add {
+                    StatusText(
+                        "No G1 glasses found: turn them on, and quit the Even Realities app.",
+                        action = "Look again", onAction = onLookForGlasses,
+                    )
+                }
+                GlassesStatus.Disconnected -> add {
+                    StatusText("The G1 glasses disconnected.", action = "Look again", onAction = onLookForGlasses)
+                }
+                is GlassesStatus.Failed -> add {
+                    StatusText("Glasses: ${g.message}", error = true, action = "Try again", onAction = onLookForGlasses)
+                }
+                GlassesStatus.NeedsPermission -> add {
+                    StatusText("The glasses need permission to use Bluetooth.", error = true)
+                }
+                else -> {}
             }
         }
         if (!state.listening) add { StatusText("Paused — tap the microphone to listen.") }
@@ -667,7 +824,10 @@ private fun ConversationSettingsSheet(
     state: ConversationController.UiState,
     notesState: RecordingController.UiState,
     micChannels: Int,
+    glasses: GlassesStatus,
     onPick: (Side) -> Unit,
+    onToggleGlasses: (Boolean) -> Unit,
+    onLookForGlasses: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val settings = state.settings
@@ -772,6 +932,45 @@ private fun ConversationSettingsSheet(
                 }
             }
 
+            SectionTitle("Even Realities G1 glasses")
+            ToggleRow(
+                title = "Show the conversation on the glasses",
+                subtitle = when (val g = glasses) {
+                    is GlassesStatus.Connected ->
+                        "Connected to ${g.name}${g.battery?.let { " · $it%" } ?: ""}. The glasses show five lines of 40 characters, " +
+                            "newest at the bottom; the phone keeps its own screen."
+                    GlassesStatus.Scanning -> "Looking for the glasses…"
+                    is GlassesStatus.Connecting -> "Connecting to ${g.name}…"
+                    GlassesStatus.NotFound -> "Not found: turn them on, and quit the Even Realities app (it holds the connection)."
+                    GlassesStatus.Disconnected -> "The glasses disconnected. Turn them on again."
+                    is GlassesStatus.Failed -> "Couldn't reach them: ${g.message}"
+                    GlassesStatus.NeedsPermission -> "Bluetooth permission is needed to find them."
+                    else -> "Five lines of 40 characters: the newest words at the bottom, older ones scrolling off the top."
+                },
+                checked = settings.glasses,
+                onChange = onToggleGlasses,
+            )
+            if (settings.glasses) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
+                    GlassesScope.entries.forEach { scope ->
+                        FilterChip(
+                            selected = settings.glassesScope == scope,
+                            onClick = { conversation.setGlassesScope(scope) },
+                            label = { Text(scope.label) },
+                        )
+                    }
+                }
+                Text(settings.glassesScope.description, style = MaterialTheme.typography.bodySmall, color = muted)
+                GlassesPreview(state)
+                when (glasses) {
+                    GlassesStatus.NotFound, GlassesStatus.Disconnected, GlassesStatus.NeedsPermission -> {
+                        TextButton(onClick = onLookForGlasses) { Text("Look for the glasses again") }
+                    }
+                    is GlassesStatus.Failed -> TextButton(onClick = onLookForGlasses) { Text("Try again") }
+                    else -> {}
+                }
+            }
+
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             ToggleRow(
                 title = "Tell voices apart",
@@ -802,7 +1001,9 @@ private fun ConversationSettingsSheet(
             )
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             Text(
-                "Every conversation is also saved as a note, with its audio and the transcript with translations.",
+                "Listening carries on with the app in the background or the phone locked: a Conversation " +
+                    "notification stays in the status bar, with Pause and Leave. Leaving conversation mode stops it. " +
+                    "Every conversation is also saved as a note, with its audio and the transcript with translations.",
                 style = MaterialTheme.typography.bodySmall, color = muted,
             )
             TextButton(onClick = { conversation.clearTurns(); onDismiss() }) { Text("Clear the screen") }
@@ -861,6 +1062,39 @@ private fun SpeechSettings(conversation: ConversationController, settings: Conve
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * What the glasses are showing, as the settings sheet draws it: the five
+ * 40-column lines, in the waveguide's green on black. It's the same page the
+ * glasses get, so the display's limits are visible while choosing.
+ */
+@Composable
+internal fun GlassesPreview(state: ConversationController.UiState, modifier: Modifier = Modifier) {
+    val settings = state.settings
+    val page = remember(state.stage, settings.myLanguage, settings.theirLanguage, settings.glassesScope, state.listening) {
+        GlassesScreen.of(state.stage, settings.myLanguage, settings.theirLanguage, settings.glassesScope, state.listening)
+    }
+    Column(
+        modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(Color(0xFF0A120B))
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        page.forEach { line ->
+            Text(
+                line.ifEmpty { " " },
+                fontFamily = FontFamily.Monospace,
+                fontSize = 9.sp,
+                lineHeight = 13.sp,
+                color = Color(0xFF7EF29A),
+                maxLines = 1,
+                softWrap = false,
+            )
         }
     }
 }

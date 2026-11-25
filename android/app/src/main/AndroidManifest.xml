@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- Routing recording to a Bluetooth headset mic. -->
@@ -10,6 +11,23 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Android 16 Live Updates: the recording notification as a status-bar chip. -->
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <!-- Bluetooth HID keyboard emulation (type-as-keyboard). -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Only to make the phone discoverable while a host pairs with it. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <!-- Finding nearby computers to pair with as a keyboard; never used for location. -->
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <!-- Android 11 needs location permission for Bluetooth discovery. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+    <!-- Keyboard mode and the Even Realities G1 glasses are both optional: don't
+         hide the app from phones without Bluetooth. The G1 is Bluetooth LE only. -->
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <!-- The phone's own text-to-speech engine, for languages without an on-device voice. -->
     <queries>
@@ -49,6 +67,13 @@
 
         <service
             android:name=".audio.RecordingService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- Keeps conversation mode listening (and the glasses updating) with the app
+             in the background or the phone locked. -->
+        <service
+            android:name=".conversation.ConversationService"
             android:exported="false"
             android:foregroundServiceType="microphone" />
     </application>

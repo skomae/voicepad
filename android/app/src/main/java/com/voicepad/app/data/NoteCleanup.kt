@@ -14,16 +14,42 @@ object NoteCleanup {
         DELETE("Delete"),
     }
 
-    const val DAY_MS = 24L * 60 * 60 * 1000
+    const val HOUR_MS = 60L * 60 * 1000
+    const val DAY_MS = 24 * HOUR_MS
+
+    /** How old a note must be before automatic clean-up touches it. */
+    enum class AutoAge(val label: String, val ageMs: Long?) {
+        OFF("Off", null),
+        HOURS_3("3 hours", 3 * HOUR_MS),
+        HOURS_24("24 hours", DAY_MS),
+        DAYS_7("7 days", 7 * DAY_MS),
+        DAYS_30("30 days", 30 * DAY_MS),
+    }
 
     /** @param olderThanDays 0 means any age. */
-    fun select(notes: List<Note>, action: Action, olderThanDays: Int, now: Long, busyIds: Set<String> = emptySet()): List<Note> {
-        val cutoff = now - olderThanDays * DAY_MS
+    fun select(notes: List<Note>, action: Action, olderThanDays: Int, now: Long, busyIds: Set<String> = emptySet()): List<Note> =
+        selectOlderThan(notes, action, olderThanDays * DAY_MS, now, busyIds)
+
+    /**
+     * What automatic clean-up takes: like [select], but compression only
+     * takes notes whose transcription is finished, so a recording waiting
+     * for (or retrying) a model keeps its original audio.
+     */
+    fun autoSelect(notes: List<Note>, action: Action, age: AutoAge, now: Long, busyIds: Set<String> = emptySet()): List<Note> {
+        val ageMs = age.ageMs ?: return emptyList()
+        return selectOlderThan(notes, action, ageMs, now, busyIds).filter { note ->
+            action != Action.COMPRESS || note.status == TranscriptionStatus.DONE
+        }
+    }
+
+    /** @param ageMs 0 means any age. */
+    private fun selectOlderThan(notes: List<Note>, action: Action, ageMs: Long, now: Long, busyIds: Set<String>): List<Note> {
+        val cutoff = now - ageMs
         return notes.filter { note ->
             val idle = note.id !in busyIds &&
                 note.status != TranscriptionStatus.RECORDING &&
                 note.status != TranscriptionStatus.IN_PROGRESS
-            val oldEnough = olderThanDays == 0 || note.createdAt < cutoff
+            val oldEnough = ageMs == 0L || note.createdAt < cutoff
             idle && oldEnough && when (action) {
                 Action.ARCHIVE -> !note.pinned && !note.archived
                 Action.DELETE -> !note.pinned

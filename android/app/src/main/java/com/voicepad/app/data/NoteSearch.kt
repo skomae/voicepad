@@ -4,8 +4,8 @@ import java.text.Normalizer
 
 /**
  * Full-text search over notes: current text, its English translation and
- * pinyin, text recovered from unfinished transcriptions, and every earlier
- * revision.
+ * pinyin, the LLM rewrite, text recovered from unfinished transcriptions,
+ * and every earlier revision.
  *
  * The query is split into terms; "quoted phrases" stay together. A note
  * matches when every term appears somewhere in it. Matching ignores case and
@@ -31,7 +31,7 @@ object NoteSearch {
         return notes.mapNotNull { note ->
             val translation = note.currentTranslation
             val current = fold(
-                listOfNotNull(note.currentText, note.partialText, translation?.english, translation?.romanization)
+                listOfNotNull(note.currentText, note.partialText, translation?.english, translation?.romanization, note.currentRewrite?.text)
                     .joinToString("\n")
             )
             val everything = fold((note.revisions.map { it.text } + listOfNotNull(note.partialText)).joinToString("\n"))

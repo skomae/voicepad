@@ -1,7 +1,6 @@
 package com.voicepad.app.transcription
 
-import android.icu.text.Transliterator
-import android.os.Build
+import android.content.Context
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.nl.languageid.LanguageIdentification
@@ -10,6 +9,8 @@ import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -17,20 +18,36 @@ import kotlin.coroutines.resumeWithException
  * On-device translation to English with Google ML Kit, plus romanisation;
  * conversation mode also uses it between any two languages.
  * Each language pair's model (~30 MB) downloads the first time it's needed;
- * after that, translation works offline.
+ * after that, translation works offline. Downloaded packs are kept in the
+ * user's model folder when one is chosen (see [MlKitTranslationModels]), so
+ * a reinstall doesn't download them again.
  */
-class EnglishTranslator {
+class EnglishTranslator(private val context: Context) {
     data class Result(val language: String?, val english: String?, val romanization: String?)
 
-    private val languageId = LanguageIdentification.getClient()
+    private val languageId by lazy { LanguageIdentification.getClient() }
     private val translators = mutableMapOf<String, Translator>()
-    private val romanizer = Romanizer { id, text ->
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            runCatching { Transliterator.getInstance(id).transliterate(text) }.getOrNull()
-        } else {
-            null // Android's ICU transliterator arrived in Android 10.
+    private val romanizer = DeviceRomanizer.romanizer
+
+    private val restoreMutex = Mutex()
+    private var restored = false
+
+    /**
+     * Copies the packs kept in the model folder back before ML Kit is first
+     * used: without its files ML Kit downloads them again. Cheap when there's
+     * nothing to restore.
+     */
+    private suspend fun restorePacks() {
+        if (restored) return
+        restoreMutex.withLock {
+            if (restored) return@withLock
+            MlKitTranslationModels.restore(context)
+            restored = true
         }
     }
+
+    /** Keeps a freshly downloaded pack in the model folder. */
+    private fun savePacks() = MlKitTranslationModels.saveAll(context)
 
     /**
      * Translates [text] to English. [modelLanguage] is what the speech model
@@ -38,6 +55,7 @@ class EnglishTranslator {
      * no translation is needed. Throws if translation was needed but failed.
      */
     suspend fun translate(text: String, modelLanguage: String?): Result {
+        restorePacks()
         val guess = runCatching { languageId.identifyLanguage(text).await() }.getOrNull()
         val language = LanguageTags.decide(modelLanguage, guess, text)
         if (language == null || LanguageTags.isEnglish(language)) return Result(language, null, null)
@@ -55,6 +73,7 @@ class EnglishTranslator {
             )
         }
         translator.downloadModelIfNeeded(DownloadConditions.Builder().build()).await()
+        savePacks()
         val english = translator.translate(text).await()
         return Result(language, english, romanization)
     }
@@ -75,23 +94,29 @@ class EnglishTranslator {
 
     /** Downloads what translating between [a] and [b] needs (both directions), so the first turn isn't slow. */
     suspend fun prepare(a: String, b: String) {
+        restorePacks()
         pairClient(a, b).downloadModelIfNeeded(DownloadConditions.Builder().build()).await()
         pairClient(b, a).downloadModelIfNeeded(DownloadConditions.Builder().build()).await()
+        savePacks()
     }
 
     /** Translates [text] from [from] to [to]. Throws if it can't. */
     suspend fun translate(text: String, from: String, to: String): String {
         if (from == to || (from == "yue" && to == "zh") || (from == "zh" && to == "yue")) return text
+        restorePacks()
         val client = pairClient(from, to)
         client.downloadModelIfNeeded(DownloadConditions.Builder().build()).await()
+        savePacks()
         return client.translate(text).await()
     }
 
     /** The text detector's guesses for [text], with confidence (0..1). */
-    suspend fun languageCandidates(text: String): List<Pair<String, Float>> =
-        runCatching { languageId.identifyPossibleLanguages(text).await() }.getOrNull()
+    suspend fun languageCandidates(text: String): List<Pair<String, Float>> {
+        restorePacks()
+        return runCatching { languageId.identifyPossibleLanguages(text).await() }.getOrNull()
             ?.map { it.languageTag to it.confidence }
             .orEmpty()
+    }
 
     /** Pinyin or other Latin letters for [text] in [language], or null. */
     fun romanize(language: String, text: String): String? = romanizer.romanize(language, text)

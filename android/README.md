@@ -16,15 +16,24 @@ copied, edited, re-transcribed and rolled back through its revision history.
 
   Each downloads once on first use. Recording starts immediately; text
   catches up once the model is ready.
+- **First-run offline setup**: the first time the app opens with no models
+  downloaded, it offers to pre-download the speech models you want (each
+  listed with what it does and its size), so recording works without a
+  connection. It also points at the **Model folder** option below, so a
+  reinstall can restore the models instead of downloading them again.
 - **Where models come from**: speech models, voices and the speaker model
-  download from GitHub Releases (k2-fsa/sherpa-onnx); translation packs
-  from Google ML Kit. Each downloads once, into VoicePad's own storage,
-  which Android deletes on uninstall. **Model folder** (Settings): choose a
-  folder (e.g. in Download) and every installed model is copied there; a
-  model missing after a reinstall is copied back from it instead of
-  downloaded, which also skips unpacking the archive on the phone. (An
-  access token wouldn't speed downloads up: GitHub serves public release
-  files from its CDN the same either way.)
+  download from GitHub Releases (k2-fsa/sherpa-onnx), LLM models from
+  Hugging Face; translation packs from Google ML Kit. Each downloads once,
+  into VoicePad's own storage, which Android deletes on uninstall. **Model
+  folder** (Settings): choose a folder (e.g. in Download) and everything
+  installed is copied there — speech models, voices (Kitten, MeloTTS), the
+  speaker model, LLM files and every ML Kit translation pack (with the
+  hashes ML Kit uses to tell a pack is there). A model missing after a
+  reinstall is copied back from it instead of downloaded, which also skips
+  unpacking the archive on the phone. The folder is synced at launch, so
+  packs downloaded later are picked up too. (An access token wouldn't speed
+  downloads up: GitHub serves public release files from its CDN the same
+  either way.)
 - **Quick model switcher**: tap the model name (top left) to switch between
   models already on the phone, e.g. Auto: Western ↔ Auto: Asian + English.
 - **Background voices** (ear button, top bar; also in Settings and the
@@ -134,6 +143,22 @@ copied, edited, re-transcribed and rolled back through its revision history.
     goes back to notes.
   - **Layout button** next to the microphone: each tap moves to the next
     layout; its icon shows the current one.
+  - **Even Realities G1 glasses** (glasses icon next to the microphone, or
+    conversation settings): the conversation also goes to a pair of G1
+    smart glasses over Bluetooth LE, so the phone can stay in a pocket. The
+    waveguide is a green 640×200 display: **five lines of 40 characters**
+    (a Chinese character takes two columns), about 200 characters a page,
+    and nothing to scroll. So the glasses get a subtitle track, not a
+    transcript: the newest words fill the page from the bottom up and older
+    turns scroll off the top. *Them* (default) shows only the other person,
+    translated into your language; *Both* shows everything in your
+    language, `>` marking their turns and `-` yours. Conversation settings
+    preview the exact page, plus the battery and a *Look for the glasses
+    again* button.
+    Runs on the vendored reverse-engineered
+    [Basis protocol](app/src/main/java/com/voicepad/app/glasses/basis/README.md)
+    — no Even Realities app needed, though that app must not be connected
+    to the glasses meanwhile. See [docs/g1-glasses.md](../docs/g1-glasses.md).
   - **Crash guard**: before each risky native step (several mic channels,
     telling voices apart, the cover screen, on-device voices) VoicePad notes
     it on disk and clears the note afterwards. If the app closed with a note
@@ -156,9 +181,16 @@ copied, edited, re-transcribed and rolled back through its revision history.
     text exactly. Every clip is cached (up to 150 MB), so replays are
     instant. (Piper voices for other languages need a phonemiser that
     sherpa-onnx 2.0 no longer includes, so they aren't offered.)
-  - Pauses when the app goes to the background; note recording is paused
-    while it's open and resumes after. Each listening stretch is saved as a
-    note: its audio plus the speaker-labelled transcript with translations.
+  - **Keeps listening with the phone locked**: conversation mode runs under a
+    foreground service (microphone type), so the app can go to the background
+    or the screen can lock and it still hears, translates and updates the
+    glasses. A *Conversation* notification stays in the status bar with the
+    newest line and **Pause** / **Leave** — private, so a locked screen shows
+    nothing until unlocked, and on Android 16 it's a Live Update ("LIVE"
+    chip). Pausing or leaving stops it. Note recording is paused while
+    conversation mode is open, and resumes after. Each listening stretch is
+    saved as a note: its audio plus the speaker-labelled transcript with
+    translations.
 - **Recordings are never lost to a model failure.** Every note saves its
   transcription status (recording → pending → transcribing → done/failed).
   Audio stays on disk until it has text; failed or waiting recordings show
@@ -176,7 +208,8 @@ copied, edited, re-transcribed and rolled back through its revision history.
   upright — plus **pinyin with tone marks** for Mandarin (with corrections
   for common words ICU reads character-by-character, e.g. 银行 *yín háng*)
   and Latin transliteration for other non-Latin scripts. Translation runs on
-  the phone with Google ML Kit; each language's pack (~30 MB) downloads once.
+  the phone with Google ML Kit; each language's pack (~30 MB) downloads once,
+  and is kept in the model folder like the rest when one is chosen.
   Translations are saved per revision, redone when the text is edited,
   retried like transcriptions if they fail, and included in search.
   For Mandarin use SenseVoice or a multilingual Whisper — Parakeet doesn't
@@ -211,6 +244,18 @@ copied, edited, re-transcribed and rolled back through its revision history.
 - **Your edits are final**: editing or restoring a note marks it done, a
   transcription that finishes afterwards goes into the history behind your
   edit, and an empty result never replaces text.
+- **Dictionaries** (Settings → Dictionaries): your own words — names, jargon,
+  product names — kept in as many dictionaries as you like. Each can be
+  turned on or off; open one to add, edit or delete words, or tick words and
+  *Move to…* another dictionary. Words in enabled dictionaries are spelled
+  your way in every transcript (case fixes like *iphone → iPhone*, split
+  words like *chat GPT → ChatGPT*, and one-letter slips on longer words like
+  *Kubernetis → Kubernetes*), so translations use them too. None of the
+  on-device speech models accepts a word list, so this is applied right
+  after recognition; the on-device LLM rewrite is also given the enabled
+  words, so it spells them your way instead of "fixing" them. When you save an edit, VoicePad lists the words your
+  edit introduced, each with its own checkbox (plus *Check all* / *Uncheck
+  all*), and adds the ticked ones to the dictionary you choose.
 - **Pin** notes to keep them in a *Pinned* section at the top.
 - **Full-text search** across every note — current text, every earlier
   revision and text recovered from unfinished transcriptions. All terms must

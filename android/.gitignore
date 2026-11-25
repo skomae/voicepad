@@ -4,7 +4,10 @@ local.properties
 *.iml
 .idea/
 app/libs/
+app/cpp/
+app/.cxx/
 *.jks
 *.keystore
 app/src/main/assets/silero_vad.onnx
 .kotlin/
+app/src/main/assets/zh_dict.dat

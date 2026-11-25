@@ -23,6 +23,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -65,9 +66,12 @@ import com.voicepad.app.data.Note
 import com.voicepad.app.data.NoteSearch
 import com.voicepad.app.data.RevisionSource
 import com.voicepad.app.data.TranscriptionStatus
+import com.voicepad.app.data.NoteRewrite
 import com.voicepad.app.data.NoteTranslation
 import com.voicepad.app.data.TextSimilarity
 import com.voicepad.app.data.TranslationStatus
+import com.voicepad.app.transcription.DeviceRomanizer
+import com.voicepad.app.zh.BreakdownRequest
 import com.voicepad.app.transcription.LanguageTags
 
 private val BubbleShape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp, bottomStart = 18.dp, bottomEnd = 4.dp)
@@ -98,10 +102,15 @@ fun NoteBubble(
     onTranslate: () -> Unit = {},
     onCopyText: (String) -> Unit = {},
     onArchive: () -> Unit = {},
+    /** Types the note on the paired Bluetooth host (menu item and double-tap); null when not connected. */
+    onType: (() -> Unit)? = null,
     /** Small window: only the date and Copy under the bubble; the rest is in the long-press menu. */
     compact: Boolean = false,
+    /** What a single tap does (Settings > "Tap a note to"). */
+    tapAction: NoteTapAction = NoteTapAction.EDIT,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    var breakdown by remember { mutableStateOf<BreakdownRequest?>(null) }
     val colors = MaterialTheme.colorScheme
     val failed = note.status == TranscriptionStatus.FAILED
     val working = note.status == TranscriptionStatus.IN_PROGRESS
@@ -109,14 +118,50 @@ fun NoteBubble(
     // Text in a failed or waiting note is only what was recovered so far.
     val bodyText = if (hasText) note.currentText else note.partialText.orEmpty()
     val solid = hasText || note.status == TranscriptionStatus.DONE
+    val translated = note.currentTranslation?.takeIf { it.status == TranslationStatus.DONE }
+    val rewrite = note.currentRewrite?.takeIf { it.text.isNotBlank() && it.text != bodyText }
+    val copyTranslation = translated?.let { t ->
+        { onCopyText(listOfNotNull(t.romanization, t.english).joinToString("\n")) }
+    }
+    val copyRewrite = rewrite?.let { rw -> { onCopyText(rw.text) } }
+    // Opens the word breakdown sheet; only for notes with Chinese in them.
+    val openBreakdown: (() -> Unit)? =
+        if (hasText && isMandarin(bodyText, note.currentTranslation?.language)) {
+            { breakdown = BreakdownRequest(bodyText, translated?.english, "en") }
+        } else null
+    // Same actions as the long-press menu; null where the action doesn't apply.
+    val onTap: (() -> Unit)? = when (tapAction) {
+        NoteTapAction.EDIT -> onEdit
+        NoteTapAction.COPY -> onCopy
+        NoteTapAction.TYPE -> onType?.takeIf { hasText }
+        NoteTapAction.COPY_TRANSLATION -> copyTranslation
+        NoteTapAction.TRANSLATE -> onTranslate.takeIf { hasText && translated == null }
+        NoteTapAction.WORD_BREAKDOWN -> openBreakdown
+        NoteTapAction.PIN -> onTogglePin
+        NoteTapAction.HISTORY -> onHistory
+        NoteTapAction.PLAY -> onPlay
+        NoteTapAction.SHARE -> onShare
+        NoteTapAction.RETRANSCRIBE -> onRetranscribe.takeIf { engineStatus == EngineStatus.Ready && !working }
+        NoteTapAction.ARCHIVE -> onArchive
+        NoteTapAction.DELETE -> onDelete
+        NoteTapAction.NOTHING -> null
+    }
 
+    breakdown?.let { WordBreakdownSheet(it, onDismiss = { breakdown = null }) }
     Column(BubbleStartInset, horizontalAlignment = Alignment.End) {
         Box {
             Column(
                 Modifier
                     .background(if (solid) colors.primary else colors.surfaceVariant, BubbleShape)
                     .then(if (failed) Modifier.border(1.5.dp, colors.error, BubbleShape) else Modifier)
-                    .combinedClickable(onClick = onEdit, onLongClick = { menuOpen = true })
+                    .combinedClickable(
+                        onClickLabel = tapAction.label.takeIf { onTap != null },
+                        onClick = { onTap?.invoke() },
+                        onLongClick = { menuOpen = true },
+                        // Only while a keyboard is connected, so a single tap
+                        // otherwise edits without waiting out a double-tap.
+                        onDoubleClick = onType?.takeIf { hasText },
+                    )
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
                 val textColor = if (solid) colors.onPrimary else colors.onSurfaceVariant
@@ -125,6 +170,10 @@ fun NoteBubble(
                     TextWithTranslation(bodyText, translation, textColor, highlightTerms, onTranslate)
                 } else if (note.status == TranscriptionStatus.DONE) {
                     Text("No speech detected", color = textColor.copy(alpha = 0.8f), fontStyle = FontStyle.Italic)
+                }
+                rewrite?.let { rw ->
+                    HorizontalDivider(Modifier.padding(vertical = 8.dp), color = textColor.copy(alpha = 0.3f))
+                    RewriteSection(rw, textColor)
                 }
                 if (!hasText || working) {
                     StatusLine(note, engineStatus, textColor, onRetranscribe)
@@ -141,14 +190,28 @@ fun NoteBubble(
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                 MenuItem("Copy", Icons.Default.ContentCopy) { menuOpen = false; onCopy() }
-                val translated = note.currentTranslation?.takeIf { it.status == TranslationStatus.DONE }
-                if (translated != null) {
+                if (onType != null && note.currentText.isNotBlank()) {
+                    MenuItem("Type on paired device", Icons.Default.Keyboard) { menuOpen = false; onType() }
+                }
+                if (copyTranslation != null) {
                     MenuItem("Copy translation", Icons.Default.Translate) {
                         menuOpen = false
-                        onCopyText(listOfNotNull(translated.romanization, translated.english).joinToString("\n"))
+                        copyTranslation()
                     }
                 } else if (hasText) {
                     MenuItem("Translate to English", Icons.Default.Translate) { menuOpen = false; onTranslate() }
+                }
+                if (hasText && isMandarin(bodyText, note.currentTranslation?.language)) {
+                    MenuItem("Word breakdown", Icons.Default.Translate) {
+                        menuOpen = false
+                        breakdown = BreakdownRequest(bodyText, translated?.english, "en")
+                    }
+                }
+                if (copyRewrite != null) {
+                    MenuItem("Copy rewrite", Icons.Default.Keyboard) {
+                        menuOpen = false
+                        copyRewrite()
+                    }
                 }
                 MenuItem(if (note.pinned) "Unpin" else "Pin", Icons.Default.PushPin) { menuOpen = false; onTogglePin() }
                 MenuItem("Edit", Icons.Default.Edit) { menuOpen = false; onEdit() }
@@ -202,6 +265,18 @@ fun NoteBubble(
     }
 }
 
+/** Pinyin under a Mandarin transcript. */
+@Composable
+private fun PinyinLine(pinyin: String, color: Color, highlightTerms: List<String>) {
+    Text(
+        highlighted(pinyin, highlightTerms),
+        color = color.copy(alpha = 0.85f),
+        fontStyle = FontStyle.Italic,
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.padding(top = 2.dp),
+    )
+}
+
 /**
  * The transcript and, for speech that wasn't English, its romanisation
  * (pinyin for Mandarin) and English translation. Side by side when there's
@@ -215,26 +290,26 @@ internal fun TextWithTranslation(
     highlightTerms: List<String>,
     onRetry: () -> Unit,
 ) {
+    // Mandarin always gets its pinyin: the translation's when there is one,
+    // else worked out here (no translation yet, translation off, or still live).
+    val pinyin = remember(text, translation?.romanization, translation?.language) {
+        translation?.romanization ?: DeviceRomanizer.mandarinPinyin(text, translation?.language)
+    }
     // Also collapses notes saved before this check existed.
     if (translation == null || translation.status == TranslationStatus.NOT_NEEDED ||
         TextSimilarity.nearlySame(translation.english, text)
     ) {
-        Text(highlighted(text, highlightTerms), color = color)
+        Column {
+            Text(highlighted(text, highlightTerms), color = color)
+            pinyin?.let { PinyinLine(it, color, highlightTerms) }
+        }
         return
     }
     val original: @Composable () -> Unit = {
         Column {
             translation.language?.let { LanguageLabel(LanguageTags.displayName(it), color) }
             Text(highlighted(text, highlightTerms), color = color)
-            translation.romanization?.let {
-                Text(
-                    highlighted(it, highlightTerms),
-                    color = color.copy(alpha = 0.85f),
-                    fontStyle = FontStyle.Italic,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.padding(top = 2.dp),
-                )
-            }
+            pinyin?.let { PinyinLine(it, color, highlightTerms) }
         }
     }
     val english: @Composable () -> Unit = {
@@ -287,6 +362,19 @@ private fun LanguageLabel(name: String, color: Color) {
         Icon(Icons.Default.Translate, null, Modifier.size(12.dp), tint = color.copy(alpha = 0.7f))
         Spacer(Modifier.width(4.dp))
         Text(name.uppercase(), color = color.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+/** The LLM's rewrite of a note, shown below the transcript like a translation. */
+@Composable
+private fun RewriteSection(rewrite: NoteRewrite, color: Color) {
+    Column {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(bottom = 2.dp)) {
+            Icon(Icons.Default.Keyboard, null, Modifier.size(12.dp), tint = color.copy(alpha = 0.7f))
+            Spacer(Modifier.width(4.dp))
+            Text((rewrite.prompt ?: "Rewritten").uppercase(), color = color.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall)
+        }
+        Text(rewrite.text, color = color)
     }
 }
 
@@ -431,3 +519,7 @@ fun LiveBubble(state: RecordingController.UiState) {
         }
     }
 }
+
+/** Chinese characters read as Mandarin (not Japanese or Cantonese). */
+private fun isMandarin(text: String, language: String?): Boolean =
+    language !in setOf("ja", "yue", "ko") && LanguageTags.containsHan(text) && !LanguageTags.containsKana(text)

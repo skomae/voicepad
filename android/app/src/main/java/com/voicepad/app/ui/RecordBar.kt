@@ -49,6 +49,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.voicepad.app.RecordingController
 import kotlinx.coroutines.delay
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material3.IconButton
 
 @Composable
 fun RecordBar(controller: RecordingController, state: RecordingController.UiState, compact: Boolean = false) {

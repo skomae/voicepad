@@ -5,7 +5,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import android.text.format.DateUtils
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.filled.DeleteSweep
@@ -96,12 +95,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.voicepad.app.RecordingController
 import com.voicepad.app.RecordingController.EngineStatus
 import com.voicepad.app.conversation.ConversationController
+import com.voicepad.app.transmit.SinkStatus
 import androidx.compose.material.icons.filled.Translate
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -113,6 +115,8 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
     val context = LocalContext.current
 
     var editingId by remember { mutableStateOf<String?>(null) }
+    /** Words an edit just introduced, offered for a dictionary. */
+    var newWords by remember { mutableStateOf<List<String>?>(null) }
     var historyId by remember { mutableStateOf<String?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     var confirmDeleteId by remember { mutableStateOf<String?>(null) }
@@ -123,9 +127,12 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
     val player = remember { AudioPlayer() }
     DisposableEffect(Unit) { onDispose { player.stop() } }
 
-    // Pop-up / split-screen / small windows get a tighter layout.
-    val config = LocalConfiguration.current
-    val compact = config.screenWidthDp < 420 || config.screenHeightDp < 560
+    // Pop-up / split-screen / small windows get a tighter layout. Measured from the
+    // window rather than the screen, so a freeform window is sized as it appears.
+    val container = LocalWindowInfo.current.containerSize
+    val compact = with(LocalDensity.current) {
+        container.width.toDp() < 420.dp || container.height.toDp() < 560.dp
+    }
     var searchActive by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     val searching = searchActive && query.isNotBlank()
@@ -153,12 +160,19 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
         if (!searching && itemCount > 0) listState.animateScrollToItem(itemCount - 1)
     }
 
-    fun copy(text: String) = copyToClipboard(context, text)
+    // Copying also types the text when a Bluetooth keyboard host is connected.
+    fun copy(text: String) {
+        copyToClipboard(context, text)
+        if (controller.sendToKeyboardIfConnected(text)) {
+            Toast.makeText(context, "Copied and typing on ${state.transmitHost ?: "the paired device"}", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     @Composable
     fun Bubble(note: Note, highlight: List<String> = emptyList(), matchedEarlier: Boolean = false) {
         NoteBubble(
             compact = compact,
+            tapAction = state.noteTapAction,
             note = note,
             engineStatus = state.engineStatus,
             isPlaying = player.playingId == note.id,
@@ -175,6 +189,11 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
             onTranslate = { controller.translateNow(note.id) },
             onArchive = { if (note.archived) controller.unarchive(note.id) else controller.archive(listOf(note.id)) },
             onCopyText = ::copy,
+            onType = if (state.transmitStatus == SinkStatus.CONNECTED) {
+                { controller.typeNote(note.id) }
+            } else {
+                null
+            },
         )
     }
 
@@ -220,6 +239,15 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
                         IconButton(onClick = { conversation.open() }) {
                             Icon(Icons.Default.Translate, contentDescription = "Conversation mode")
                         }
+                        KeyboardButton(controller, state, onTypeLatest = {
+                            val latest = notes.filter { !it.archived && it.currentText.isNotBlank() }
+                                .maxByOrNull { it.createdAt }
+                            if (latest != null) {
+                                controller.typeNote(latest.id)
+                            } else {
+                                Toast.makeText(context, "No note to type yet.", Toast.LENGTH_SHORT).show()
+                            }
+                        })
                         IconButton(onClick = { searchActive = true }) {
                             Icon(Icons.Default.Search, contentDescription = "Search")
                         }
@@ -334,11 +362,19 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
                 initialText = note.currentText,
                 onDismiss = { editingId = null },
                 onSave = { text ->
+                    val before = note.currentText
                     controller.store.addRevision(id, text, com.voicepad.app.data.RevisionSource.EDIT)
                     editingId = null
+                    // Offer the words this edit brought in for a dictionary.
+                    newWords = com.voicepad.app.data.DictionaryWords
+                        .newWords(before, text, known = controller.dictionaries.allWords())
+                        .takeIf { it.isNotEmpty() }
                 },
             )
         }
+    }
+    newWords?.let { words ->
+        SaveWordsDialog(words, controller.dictionaries, onDismiss = { newWords = null })
     }
     historyId?.let { id ->
         notes.firstOrNull { it.id == id }?.let { note ->
@@ -371,6 +407,13 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
             openOnUnfold = conversationState.settings.openOnUnfold,
             onOpenOnUnfoldChange = conversation::setOpenOnUnfold,
             onDismiss = { showSettings = false },
+        )
+    }
+    if (state.showSetup) {
+        SetupSheet(
+            controller = controller,
+            state = state,
+            onDismiss = { controller.dismissSetup() },
         )
     }
     if (showArchive) {
@@ -474,6 +517,10 @@ private fun CleanupDialog(controller: RecordingController, onDismiss: () -> Unit
                         NoteCleanup.Action.COMPRESS -> "Includes pinned notes. Each file is checked before the original is removed."
                         NoteCleanup.Action.DELETE_EMPTY -> "Pinned notes and recordings still waiting for transcription are kept."
                         else -> "Pinned notes are never touched."
+                    } + if (action == NoteCleanup.Action.COMPRESS || action == NoteCleanup.Action.DELETE_EMPTY) {
+                        " To do this automatically, see Settings \u2192 Automatic clean-up."
+                    } else {
+                        ""
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -602,7 +649,9 @@ private fun RecordingTitle(state: RecordingController.UiState, compact: Boolean)
             delay(500)
         }
     }
-    val elapsed = state.startedAt?.let { DateUtils.formatElapsedTime(((now - it) / 1000).coerceAtLeast(0)) } ?: ""
+    val elapsed = state.startedAt?.let {
+        DateUtils.formatElapsedTime(((now - it) / 1000).coerceAtLeast(0))
+    } ?: ""
     Row(verticalAlignment = Alignment.CenterVertically) {
         PulsingDot(color = Color.White, size = 12.dp)
         Spacer(Modifier.width(8.dp))

@@ -21,6 +21,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.security.MessageDigest
 import java.util.Locale
@@ -48,6 +49,8 @@ class SpeechOutput(private val context: Context) {
     data class State(
         /** Id of the request being prepared or played, for the UI's speaker icons. */
         val activeId: String? = null,
+        /** True while the voice is being made — nothing audible yet, so the UI shows it's working. */
+        val generating: Boolean = false,
         /** True while sound is coming out (the microphone should ignore it). */
         val playing: Boolean = false,
         val useLocalVoices: Boolean = true,
@@ -56,8 +59,13 @@ class SpeechOutput(private val context: Context) {
     )
 
     companion object {
+        private const val TAG = "SpeechOutput"
         /** The cache is trimmed to this size, oldest clips first. */
         private const val CACHE_BYTES = 150L * 1024 * 1024
+        /** 2: clips are peak-normalised before they're written (see [saveNormalized]). */
+        private const val CACHE_VERSION = 2
+        /** How long the phone's TTS engine gets to answer onInit before we call it missing. */
+        private const val SYSTEM_INIT_TIMEOUT_MS = 8_000L
     }
 
     private val prefs = context.getSharedPreferences("speech", Context.MODE_PRIVATE)
@@ -110,24 +118,26 @@ class SpeechOutput(private val context: Context) {
         current?.cancel()
         current = null
         releasePlayer()
-        _state.update { it.copy(activeId = null, playing = false) }
+        _state.update { it.copy(activeId = null, generating = false, playing = false) }
     }
 
     private fun next() {
         val request = queue.removeFirstOrNull()
         if (request == null) {
-            _state.update { it.copy(activeId = null, playing = false) }
+            _state.update { it.copy(activeId = null, generating = false, playing = false) }
             return
         }
         _state.update { it.copy(activeId = request.id) }
         current = scope.launch {
             try {
-                val clip = clipFor(request.text, request.language)
+                val clip = clipFor(request.text, request.language) { _state.update { it.copy(generating = true) } }
+                _state.update { it.copy(generating = false) }
                 play(clip)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
-                _state.update { it.copy(error = e.message ?: "Couldn't speak that.") }
+                android.util.Log.w(TAG, "couldn't say '${request.text}' as '${request.language}'", e)
+                _state.update { it.copy(generating = false, error = e.message ?: "Couldn't speak that.") }
             }
             current = null
             next()
@@ -169,34 +179,71 @@ class SpeechOutput(private val context: Context) {
 
     // region Synthesis and cache
 
-    /** The cached clip for [text], synthesising it first if needed. */
-    private suspend fun clipFor(text: String, language: String): File {
+    /**
+     * The cached clip for [text], synthesising it first if needed. [onSynthesize] runs
+     * when there's no cached clip and the voice is about to be made — the UI shows
+     * that it's working until the first sound comes out.
+     */
+    private suspend fun clipFor(text: String, language: String, onSynthesize: () -> Unit = {}): File {
         val local = localVoiceFor(language)
         if (local != null) {
             val prepared = if (local == LocalVoice.KITTEN_EN) SpeechText.spellNumbers(text) else text
             val file = cacheFile(local.name, language, prepared)
             if (file.exists()) return file.also { it.setLastModified(System.currentTimeMillis()) }
+            onSynthesize()
+            var leftOut: List<String> = emptyList()
             val made = synthMutex.withLock {
                 withContext(Dispatchers.Default) {
                     val synth = loaded.getOrPut(local) {
                         CrashGuard.during(CrashGuard.Risky.LOCAL_VOICE) { LocalSynthesizer(local, files.directory(local)) }
                     }
-                    // Kitten would skip words missing from its dictionary; the phone's voice says them.
+                    // Kitten drops words that aren't in its dictionary. Where there's a
+                    // phone engine to hand the line to, let it say it properly; where
+                    // there isn't (the Retroid ships with none), saying the rest beats
+                    // saying nothing, as long as the gap gets named.
                     val unknown = synth.knownWords?.let { SpeechText.unknownWords(prepared, it) }.orEmpty()
-                    if (unknown.isNotEmpty()) null else CrashGuard.during(CrashGuard.Risky.LOCAL_VOICE) { synth.generate(prepared) }?.let { audio ->
-                        val tmp = File(file.path + ".part")
-                        check(audio.save(tmp.path)) { "Couldn't save speech." }
-                        tmp.renameTo(file)
-                        file
+                    if (unknown.isNotEmpty() && hasSystemEngine()) {
+                        null
+                    } else {
+                        leftOut = unknown
+                        CrashGuard.during(CrashGuard.Risky.LOCAL_VOICE) { synth.generate(prepared) }?.let { audio ->
+                            val tmp = File(file.path + ".part")
+                            check(audio.saveNormalized(tmp)) { "Couldn't save speech." }
+                            tmp.renameTo(file)
+                            file
+                        }
                     }
                 }
             }
             if (made != null) {
+                if (leftOut.isNotEmpty()) _state.update { it.copy(error = leftOutMessage(leftOut)) }
                 trimCache()
                 return made
             }
+            // Falling through to the phone's voice: worth a line, since on a phone with
+            // no TTS engine that is exactly where "isn't available" comes from.
+            android.util.Log.w(TAG, "local voice declined ${local.name} for '$text'; falling back to the phone's voice")
+            return systemClip(text, language, local, onSynthesize)
+        } else {
+            android.util.Log.w(TAG, "no local voice for '$language'; using the phone's voice for '$text'")
         }
-        return systemClip(text, language)
+        return systemClip(text, language, null, onSynthesize)
+    }
+
+    /** Whether the phone has any text-to-speech engine at all; asked once, it doesn't change. */
+    private var systemEngines: Boolean? = null
+
+    private fun hasSystemEngine(): Boolean = systemEngines ?: run {
+        // The documented way to tell whether any engine is installed: the service intent
+        // every engine declares. A phone without one (the Retroid Pocket ships bare)
+        // never binds and always reports the error below.
+        val found = runCatching {
+            context.packageManager
+                .queryIntentServices(android.content.Intent(TextToSpeech.Engine.INTENT_ACTION_TTS_SERVICE), 0)
+                .isNotEmpty()
+        }.getOrDefault(true)
+        systemEngines = found
+        found
     }
 
     /** The local voice to use for [language], downloading it in the background the first time. */
@@ -236,7 +283,9 @@ class SpeechOutput(private val context: Context) {
         _state.update { it.copy(voices = it.voices + (voice to status)) }
 
     private fun cacheFile(engine: String, language: String, text: String): File {
-        val digest = MessageDigest.getInstance("SHA-256").digest("$engine|$language|$text".toByteArray())
+        // Bump CACHE_VERSION whenever how a clip is rendered changes: a cached
+        // wav keyed on the old pipeline would otherwise be replayed forever.
+        val digest = MessageDigest.getInstance("SHA-256").digest("$CACHE_VERSION|$engine|$language|$text".toByteArray())
         return File(cacheDir, digest.joinToString("") { "%02x".format(it) }.take(32) + ".wav")
     }
 
@@ -251,11 +300,18 @@ class SpeechOutput(private val context: Context) {
 
     private var system: TextToSpeech? = null
     private var systemReady: CompletableDeferred<Boolean>? = null
+    private val systemLock = Mutex()
 
     /** A clip from the phone's own text-to-speech, cached the same way. */
-    private suspend fun systemClip(text: String, language: String): File {
+    private suspend fun systemClip(text: String, language: String, declined: LocalVoice? = null, onSynthesize: () -> Unit = {}): File {
         val file = cacheFile("system", language, text)
         if (file.exists()) return file.also { it.setLastModified(System.currentTimeMillis()) }
+        // A phone with no engine at all (a handheld like the Retroid ships without one)
+        // would otherwise have us build a TextToSpeech, wait for onInit to fail, and
+        // report "isn't available" — while the line being spoken is only here because
+        // the local voice declined it. Say what's actually missing instead.
+        if (!hasSystemEngine()) throw IllegalStateException(missingVoiceMessage(language, declined?.displayName))
+        onSynthesize()
         val tts = systemTts()
         val result = tts.setLanguage(Locale.forLanguageTag(if (language == "yue") "zh-HK" else language))
         check(result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED) {
@@ -280,15 +336,58 @@ class SpeechOutput(private val context: Context) {
         return file
     }
 
-    private suspend fun systemTts(): TextToSpeech {
+    /**
+     * The phone's text-to-speech, initialised once.
+     *
+     * One caller at a time: two overlapping requests used to build two engines, and
+     * the second one replaced the field — when its init reported a failure the caller
+     * said "text-to-speech isn't available" while the first engine was still the one
+     * doing the talking. A dead engine is released here too, so the next request
+     * starts from a clean instance instead of awaiting a deferred that already
+     * answered false (which leaked a binder connection per attempt).
+     */
+    private suspend fun systemTts(): TextToSpeech = systemLock.withLock {
         system?.let { existing -> if (systemReady?.await() == true) return existing }
+        // Whatever was here either never came up or answered false: let it go.
+        system?.let { stale -> runCatching { stale.shutdown() } }
+        system = null
         val ready = CompletableDeferred<Boolean>()
         systemReady = ready
         val tts = TextToSpeech(context) { status -> ready.complete(status == TextToSpeech.SUCCESS) }
         system = tts
-        check(ready.await()) { "The phone's text-to-speech isn't available." }
-        return tts
+        // A phone whose engine never answers onInit would otherwise hang the caller.
+        val ok = withTimeoutOrNull(SYSTEM_INIT_TIMEOUT_MS) { ready.await() } == true
+        if (!ok) {
+            runCatching { tts.shutdown() }
+            system = null
+            systemReady = null
+            throw IllegalStateException("The phone's text-to-speech isn't available.")
+        }
+        tts
     }
 
     // endregion
+}
+
+/**
+ * Shown when a line can't be spoken because the phone ships no text-to-speech engine.
+ * [declinedVoice] is the bundled voice that was asked first, if any: it explains why an
+ * app that talks perfectly well needs the phone's engine at all.
+ */
+internal fun missingVoiceMessage(language: String, declinedVoice: String?): String =
+    if (declinedVoice != null) {
+        "This phone has no text-to-speech engine, and $declinedVoice doesn't know a word in this line."
+    } else {
+        "This phone has no text-to-speech engine, and VoicePad's own voices only cover English and Mandarin — not “$language”."
+    }
+
+/**
+ * Said when the bundled voice spoke the line minus words it has no pronunciation for —
+ * on a phone with no engine to hand those words to, that's the closest thing to a full
+ * sentence, but the gap shouldn't pass silently.
+ */
+internal fun leftOutMessage(words: List<String>): String {
+    val quoted = words.joinToString(", ") { "“$it”" }
+    val pronoun = if (words.size == 1) "that word" else "those words"
+    return "Kitten has no pronunciation for $quoted, so it left $pronoun out."
 }

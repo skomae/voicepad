@@ -39,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
@@ -169,7 +170,9 @@ internal fun StagePane(
 @Composable
 private fun Hero(turn: Turn, phase: Phase, language: String, textSize: Int, color: Color, motion: Boolean) {
     val original = turn.language == language
-    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+    // Double-tap types what this reader sees (finished turns only).
+    val typed = if (phase == Phase.LANDED) (turn.textIn(language) ?: turn.text) else ""
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).doubleTapToType(typed)) {
         Box(Modifier.width(5.dp).fillMaxHeight().background(color, RoundedCornerShape(3.dp)))
         Spacer(Modifier.width(10.dp))
         Column {
@@ -194,13 +197,24 @@ private fun Hero(turn: Turn, phase: Phase, language: String, textSize: Int, colo
                 }
                 if (phase != Phase.SPEAKING && phase != Phase.HOLDING) SpeakButton(turn, language, color)
             }
-            if (original) SpokenText(turn, phase, textSize) else TranslatedText(turn, phase, language, textSize, color, motion)
+            // Once it has landed, tap a word (when one side is Chinese) for its breakdown.
+            val landed = phase == Phase.LANDED
+            val mainLayout = remember { TextLayoutRef() }
+            val tapMain = if (landed) Modifier.tapWordsOf(turn, tappedTranslation = !original, mainLayout, typed) else Modifier
+            if (original) {
+                SpokenText(turn, phase, textSize, tapMain, onLayout = { mainLayout.value = it })
+            } else {
+                TranslatedText(turn, phase, language, textSize, color, motion, tapMain, onLayout = { mainLayout.value = it })
+            }
             if (!original) {
+                val spokenLayout = remember { TextLayoutRef() }
                 Text(
                     turn.text + (if (turn.translationFailed) "  (not translated)" else ""),
                     fontSize = (textSize * 0.42f).coerceAtLeast(13f).sp,
                     lineHeight = (textSize * 0.55f).coerceAtLeast(16f).sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    onTextLayout = { spokenLayout.value = it },
+                    modifier = if (landed) Modifier.tapWordsOf(turn, tappedTranslation = false, spokenLayout, typed) else Modifier,
                 )
             }
         }
@@ -209,7 +223,13 @@ private fun Hero(turn: Turn, phase: Phase, language: String, textSize: Int, colo
 
 /** The speaker's own words: while they talk, the newest few are the brightest. */
 @Composable
-private fun SpokenText(turn: Turn, phase: Phase, textSize: Int) {
+private fun SpokenText(
+    turn: Turn,
+    phase: Phase,
+    textSize: Int,
+    modifier: Modifier = Modifier,
+    onLayout: (TextLayoutResult) -> Unit = {},
+) {
     val ink = MaterialTheme.colorScheme.onSurface
     val text = turn.text
     val settled = if (phase != Phase.SPEAKING) 0 else if (Glyphs.isDense(turn.language)) {
@@ -229,6 +249,8 @@ private fun SpokenText(turn: Turn, phase: Phase, textSize: Int) {
         lineHeight = (textSize * 1.2f).sp,
         fontWeight = FontWeight.SemiBold,
         color = ink,
+        onTextLayout = onLayout,
+        modifier = modifier,
     )
 }
 
@@ -238,7 +260,16 @@ private fun SpokenText(turn: Turn, phase: Phase, textSize: Int) {
  * when it arrives, they resolve into it from the start.
  */
 @Composable
-private fun TranslatedText(turn: Turn, phase: Phase, language: String, textSize: Int, color: Color, motion: Boolean) {
+private fun TranslatedText(
+    turn: Turn,
+    phase: Phase,
+    language: String,
+    textSize: Int,
+    color: Color,
+    motion: Boolean,
+    modifier: Modifier = Modifier,
+    onLayout: (TextLayoutResult) -> Unit = {},
+) {
     val ink = MaterialTheme.colorScheme.onSurface
     val translation = turn.translation
     val pending = turn.pending && !turn.translationFailed
@@ -267,7 +298,7 @@ private fun TranslatedText(turn: Turn, phase: Phase, language: String, textSize:
         tailLength = if (phase == Phase.HOLDING) 0 else (expected - shown.length).coerceIn(3, 28)
     } else {
         val full = translation ?: turn.text
-        val k = (reveal.value * full.length).toInt().coerceIn(0, full.length)
+        val k = (reveal.floatValue * full.length).toInt().coerceIn(0, full.length)
         shown = full.take(k)
         tailLength = (full.length - k).coerceAtMost(28)
     }
@@ -280,7 +311,7 @@ private fun TranslatedText(turn: Turn, phase: Phase, language: String, textSize:
     Text(
         buildAnnotatedString {
             // Just landed: the words arrive in the speaker's colour and settle to the normal one.
-            withStyle(SpanStyle(color = if (pending) ink.copy(alpha = 0.75f) else lerp(color, ink, reveal.value))) { append(shown) }
+            withStyle(SpanStyle(color = if (pending) ink.copy(alpha = 0.75f) else lerp(color, ink, reveal.floatValue))) { append(shown) }
             if (tail.isNotEmpty()) {
                 if (shown.isNotEmpty() && !Glyphs.isDense(language)) append(' ')
                 withStyle(SpanStyle(color = color.copy(alpha = if (phase == Phase.SPEAKING) 0.4f else 0.85f))) { append(tail) }
@@ -290,6 +321,8 @@ private fun TranslatedText(turn: Turn, phase: Phase, language: String, textSize:
         lineHeight = (textSize * 1.2f).sp,
         fontWeight = FontWeight.SemiBold,
         color = ink,
+        onTextLayout = onLayout,
+        modifier = modifier,
     )
 }
 
@@ -313,9 +346,11 @@ private fun rememberScramble(language: String, active: Boolean): State<String> {
 @Composable
 private fun HistoryTurn(turn: Turn, language: String, textSize: Int) {
     val size = (textSize * 0.5f).coerceAtLeast(15f)
-    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+    val typed = turn.textIn(language) ?: turn.text
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min).doubleTapToType(typed)) {
         Box(Modifier.width(5.dp).fillMaxHeight().background(speakerColor(turn.speaker).copy(alpha = 0.6f), RoundedCornerShape(3.dp)))
         Spacer(Modifier.width(10.dp))
+        val layout = remember { TextLayoutRef() }
         Text(
             turn.textIn(language) ?: turn.text,
             fontSize = size.sp,
@@ -323,7 +358,9 @@ private fun HistoryTurn(turn: Turn, language: String, textSize: Int) {
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
             maxLines = 6,
             overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
+            onTextLayout = { layout.value = it },
+            modifier = Modifier.weight(1f, fill = false)
+                .tapWordsOf(turn, tappedTranslation = language != turn.language && turn.translation != null, layout, typed),
         )
         SpeakButton(turn, language, speakerColor(turn.speaker).copy(alpha = 0.8f))
     }

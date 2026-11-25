@@ -318,7 +318,7 @@ class AudioRecorder {
     private fun updateRouting(routing: AudioRouting) {
         val device = routing.routedDevice
         routedDeviceName = device?.let {
-            InputDeviceNaming.name(it.type, it.productName?.toString().orEmpty(), it.address)
+            InputDeviceNaming.name(it.type, it.productName?.toString().orEmpty(), InputDeviceNaming.addressOf(it))
         }
         onRoutingChanged?.invoke()
     }

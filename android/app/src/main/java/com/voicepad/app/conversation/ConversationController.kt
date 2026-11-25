@@ -17,6 +17,8 @@ import com.voicepad.app.data.RevisionSource
 import com.voicepad.app.data.TranscriptionStatus
 import com.voicepad.app.data.TranslationStatus
 import com.voicepad.app.data.withTranscription
+import com.voicepad.app.glasses.GlassesController
+import com.voicepad.app.glasses.GlassesScope
 import com.voicepad.app.transcription.ChunkPlanner.Span
 import com.voicepad.app.transcription.EnglishTranslator
 import com.voicepad.app.transcription.SpeechDetector
@@ -67,6 +69,7 @@ class ConversationController(
     private val context: Context,
     private val notes: RecordingController,
     val speech: SpeechOutput,
+    val glasses: GlassesController,
 ) {
     data class Settings(
         val myLanguage: String = "en",
@@ -93,6 +96,10 @@ class ConversationController(
         val coverRotation: Int = 0,
         /** Animate the stage even when the phone's own animations are off (e.g. by power saving). */
         val forceAnimations: Boolean = false,
+        /** Show the conversation on Even Realities G1 glasses. */
+        val glasses: Boolean = false,
+        /** What the glasses show: the other person only, or both sides. */
+        val glassesScope: GlassesScope = GlassesScope.THEM,
     ) {
         val pair: Pair<String, String> get() = myLanguage to theirLanguage
     }
@@ -191,7 +198,7 @@ class ConversationController(
     private val prefs = context.getSharedPreferences("conversation", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val recorder = AudioRecorder()
-    private val translator by lazy { EnglishTranslator() }
+    private val translator by lazy { EnglishTranslator(context) }
     private val store: NoteStore get() = notes.store
 
     private val _state = MutableStateFlow(
@@ -222,6 +229,9 @@ class ConversationController(
         coverScreen = prefs.getBoolean("coverScreen", true),
         coverRotation = prefs.getInt("coverRotation", 0),
         forceAnimations = prefs.getBoolean("forceAnimations", false),
+        glasses = prefs.getBoolean("glasses", false),
+        glassesScope = prefs.getString("glassesScope", null)?.let { runCatching { GlassesScope.valueOf(it) }.getOrNull() }
+            ?: GlassesScope.THEM,
     )
 
     private fun saveSettings(s: Settings) = prefs.edit {
@@ -237,6 +247,8 @@ class ConversationController(
         putBoolean("coverScreen", s.coverScreen)
         putInt("coverRotation", s.coverRotation)
         putBoolean("forceAnimations", s.forceAnimations)
+        putBoolean("glasses", s.glasses)
+        putString("glassesScope", s.glassesScope.name)
     }
 
     private fun changeSettings(transform: (Settings) -> Settings): Settings {
@@ -303,6 +315,19 @@ class ConversationController(
 
     fun setForceAnimations(enabled: Boolean) { changeSettings { it.copy(forceAnimations = enabled) } }
 
+    /** Shows the conversation on the glasses from now on (and connects them), or stops doing so. */
+    fun setGlasses(enabled: Boolean) {
+        changeSettings { it.copy(glasses = enabled) }
+        applyGlasses()
+    }
+
+    fun setGlassesScope(scope: GlassesScope) { changeSettings { it.copy(glassesScope = scope) } }
+
+    /** Starts or stops the glasses' view of the conversation; on, it connects them if they aren't yet. */
+    private fun applyGlasses() {
+        if (settings.glasses && _state.value.visible) glasses.follow(_state) else glasses.stop()
+    }
+
     /** Reported by the activity as the phone's cover screen comes and goes. */
     fun setCover(cover: Cover) = _state.update { it.copy(cover = cover) }
 
@@ -335,6 +360,7 @@ class ConversationController(
         _state.update { it.copy(visible = true) }
         prepareTranslation()
         if (settings.identifyVoices) ensureVoiceModel()
+        applyGlasses()
         startListening()
     }
 
@@ -346,6 +372,7 @@ class ConversationController(
         _state.update { it.copy(visible = false, live = null, message = null) }
         speech.stop()
         releaseHeld()
+        glasses.stop()
         notes.leaveConversation()
     }
 
@@ -363,18 +390,36 @@ class ConversationController(
         if (!unfolded && openedByUnfold && _state.value.visible) close()
     }
 
-    /** The app went to the background: Android stops giving it microphone audio, so pause. */
+    /**
+     * The app went to the background. With [ConversationService] running, the
+     * microphone keeps working (and so do the glasses) until the user pauses;
+     * without it Android stops giving us audio, so pause as before.
+     */
     fun onAppStopped() {
-        if (_state.value.visible && _state.value.listening) {
-            pausedInBackground = true
-            stopListening()
-        }
+        if (!_state.value.visible || !_state.value.listening) return
+        // The service may have been refused after it was asked for (Android won't
+        // always let a microphone service start), so ask it rather than assume.
+        if (backgroundService && ConversationService.isForeground) return
+        pausedInBackground = true
+        stopListening()
     }
 
     fun onAppStarted() {
-        if (_state.value.visible && pausedInBackground) {
+        if (!_state.value.visible) return
+        if (pausedInBackground) {
             pausedInBackground = false
             startListening()
+            return
+        }
+        // Listening says on but nothing is recording (the system took the
+        // service, or the microphone failed while away): start it again.
+        if (_state.value.listening && session == null && finishingJob?.isActive != true) {
+            startBackgroundService()
+            val previous = finishingJob
+            scope.launch {
+                previous?.join()
+                if (_state.value.listening && session == null) begin()
+            }
         }
     }
 
@@ -476,6 +521,7 @@ class ConversationController(
             return
         }
         _state.update { it.copy(listening = true) }
+        startBackgroundService()
         val previous = finishingJob
         scope.launch {
             // The recorder still holds the previous session's audio until it's done.
@@ -484,11 +530,37 @@ class ConversationController(
         }
     }
 
+    /** Whether [ConversationService] is keeping the microphone alive while the app is away. */
+    private var backgroundService = false
+
+    private fun startBackgroundService() {
+        backgroundService = try {
+            ConversationService.start(context)
+            true
+        } catch (e: Throwable) {
+            // Android 12+ refuses to start a foreground service from the background;
+            // listening then pauses when the app goes away, as it used to.
+            false
+        }
+    }
+
+    private fun stopBackgroundService() {
+        backgroundService = false
+        ConversationService.stop(context)
+    }
+
     private fun begin() {
         val wanted = settings.channels
         val fileName = "${UUID.randomUUID()}.wav"
         val file = File(store.recordingsDir, fileName)
         val device = notes.beginConversationInput()
+        // Mark the risky step before it runs, so a native crash while the
+        // recorder opens several channels is caught too — not only one while
+        // recording. It's cleared below once we're sure we're on one channel.
+        if (wanted > 1 && !multiChannelMarked) {
+            multiChannelMarked = true
+            CrashGuard.enter(CrashGuard.Risky.MULTI_CHANNEL)
+        }
         try {
             try {
                 recorder.start(file, device, sourceFor(wanted), wanted)
@@ -498,15 +570,21 @@ class ConversationController(
                 recorder.start(file, device, sourceFor(1), 1)
             }
         } catch (e: Throwable) {
+            if (multiChannelMarked) {
+                multiChannelMarked = false
+                CrashGuard.exit(CrashGuard.Risky.MULTI_CHANNEL)
+            }
             notes.endConversationInput()
             _state.update { it.copy(listening = false) }
+            stopBackgroundService()
             showMessage(e.message ?: "Could not start the microphone.")
             return
         }
         val got = recorder.channelCount
-        if (got > 1 && !multiChannelMarked) {
-            multiChannelMarked = true
-            CrashGuard.enter(CrashGuard.Risky.MULTI_CHANNEL)
+        if (got == 1 && multiChannelMarked) {
+            // The mic (or the 1-channel fallback) gave one channel after all.
+            multiChannelMarked = false
+            CrashGuard.exit(CrashGuard.Risky.MULTI_CHANNEL)
         }
         if (got < wanted && _state.value.message == null) {
             showMessage("The microphone gave $got channel${if (got == 1) "" else "s"} instead of $wanted.")
@@ -544,6 +622,7 @@ class ConversationController(
     fun stopListening() {
         if (!_state.value.listening) return
         _state.update { it.copy(listening = false, live = null, hearing = false, working = false) }
+        stopBackgroundService()
         liveTranslateJob?.cancel()
         val s = session
         if (s == null) {

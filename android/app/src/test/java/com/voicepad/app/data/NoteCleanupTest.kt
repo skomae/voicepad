@@ -76,4 +76,29 @@ class NoteCleanupTest {
     fun `any age means zero days`() {
         assertEquals(true, "fresh" in ids(Action.DELETE, 0))
     }
+
+    @Test
+    fun `automatic clean-up ages`() {
+        val hour = NoteCleanup.HOUR_MS
+        val list = listOf(
+            note("empty2h", 2.0 * hour / DAY_MS, text = ""),
+            note("empty4h", 4.0 * hour / DAY_MS, text = ""),
+            note("empty2d", 2.0, text = ""),
+            note("emptyPinned", 40.0, text = "", pinned = true),
+            note("spoken4h", 4.0 * hour / DAY_MS),
+        )
+        fun auto(action: Action, age: NoteCleanup.AutoAge) =
+            NoteCleanup.autoSelect(list, action, age, now).map { it.id }.toSet()
+        assertEquals(emptySet<String>(), auto(Action.DELETE_EMPTY, NoteCleanup.AutoAge.OFF))
+        assertEquals(setOf("empty4h", "empty2d"), auto(Action.DELETE_EMPTY, NoteCleanup.AutoAge.HOURS_3))
+        assertEquals(setOf("empty2d"), auto(Action.DELETE_EMPTY, NoteCleanup.AutoAge.HOURS_24))
+        assertEquals(emptySet<String>(), auto(Action.DELETE_EMPTY, NoteCleanup.AutoAge.DAYS_7))
+        assertEquals(setOf("empty4h", "empty2d", "emptyPinned", "spoken4h"), auto(Action.COMPRESS, NoteCleanup.AutoAge.HOURS_3))
+    }
+
+    @Test
+    fun `automatic compress keeps the original audio of notes still needing a model`() {
+        val c = NoteCleanup.autoSelect(notes, Action.COMPRESS, NoteCleanup.AutoAge.DAYS_30, now).map { it.id }.toSet()
+        assertEquals(setOf("fortyDays", "pinnedOld", "emptyOld"), c)
+    }
 }
