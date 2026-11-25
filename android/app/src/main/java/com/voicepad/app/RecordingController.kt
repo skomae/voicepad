@@ -277,7 +277,7 @@ class RecordingController(
     private var translateJob: Job? = null
     /** Notes already attempted since the app was last opened; failures wait for the next open. */
     private val translationTried = mutableSetOf<String>()
-    private val translator by lazy { EnglishTranslator() }
+    private val translator by lazy { EnglishTranslator(context) }
     private var llm: LlmEngine? = null
     private var llmLoadJob: Job? = null
     private var typingJob: Job? = null

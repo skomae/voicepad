@@ -198,7 +198,7 @@ class ConversationController(
     private val prefs = context.getSharedPreferences("conversation", Context.MODE_PRIVATE)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val recorder = AudioRecorder()
-    private val translator by lazy { EnglishTranslator() }
+    private val translator by lazy { EnglishTranslator(context) }
     private val store: NoteStore get() = notes.store
 
     private val _state = MutableStateFlow(

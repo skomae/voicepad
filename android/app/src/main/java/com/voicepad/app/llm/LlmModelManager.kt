@@ -1,6 +1,7 @@
 package com.voicepad.app.llm
 
 import android.content.Context
+import com.voicepad.app.transcription.ModelFolder
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -9,7 +10,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 
 /** Downloads and caches one GGUF model per [LlmChoice] into app storage. */
-class LlmModelManager(context: Context) {
+class LlmModelManager(private val context: Context) {
     private val modelsDir = File(context.filesDir, "llm").apply { mkdirs() }
 
     fun file(choice: LlmChoice) = File(modelsDir, choice.fileName)
@@ -40,6 +41,13 @@ class LlmModelManager(context: Context) {
         if (isInstalled(choice)) return@withContext
         val target = file(choice)
         target.parentFile?.mkdirs()
+        val folder = ModelFolder.get(context)
+        // A copy kept in the user's model folder (e.g. from before a reinstall) beats downloading.
+        if (!target.exists() && folder.restore("llm/${choice.fileName}", target)) {
+            File(target.path + ".complete").writeText(choice.fileName)
+            progress(1.0)
+            return@withContext
+        }
         discard(choice)
 
         val tmp = File(target.path + ".part")
@@ -75,6 +83,7 @@ class LlmModelManager(context: Context) {
             check(total <= 0 || tmp.length() == total) { "Model download was incomplete." }
             check(tmp.renameTo(target)) { "Could not save the model." }
             File(target.path + ".complete").writeText(choice.fileName)
+            folder.saveLater("llm/${choice.fileName}", target)
         } catch (e: Throwable) {
             tmp.delete()
             throw e
