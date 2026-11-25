@@ -10,6 +10,7 @@ object NoteCleanup {
     enum class Action(val label: String) {
         ARCHIVE("Archive"),
         COMPRESS("Compress audio"),
+        DELETE_AUDIO("Delete audio"),
         DELETE_EMPTY("Delete empty"),
         DELETE("Delete"),
     }
@@ -20,6 +21,9 @@ object NoteCleanup {
     /** How old a note must be before automatic clean-up touches it. */
     enum class AutoAge(val label: String, val ageMs: Long?) {
         OFF("Off", null),
+        /** As soon as the note has its text (0 ms: any age). */
+        NOW("Immediately", 0L),
+        HOURS_1("1 hour", HOUR_MS),
         HOURS_3("3 hours", 3 * HOUR_MS),
         HOURS_24("24 hours", DAY_MS),
         DAYS_7("7 days", 7 * DAY_MS),
@@ -54,6 +58,8 @@ object NoteCleanup {
                 Action.ARCHIVE -> !note.pinned && !note.archived
                 Action.DELETE -> !note.pinned
                 Action.COMPRESS -> note.audioFileName?.endsWith(".wav") == true
+                Action.DELETE_AUDIO -> !note.pinned && note.audioFileName != null &&
+                    note.status == TranscriptionStatus.DONE && note.currentText.isNotBlank()
                 Action.DELETE_EMPTY -> !note.pinned && isEmpty(note)
             }
         }
