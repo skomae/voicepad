@@ -76,22 +76,35 @@ second line — Lock Screen, and the expanded Dynamic Island.
 - Next, if it proves useful: show the *conversation* turn pair instead of the
   notes transcript when Conversation mode is driving the microphone.
 
-## 2. The Duo's two postures — planned
+## 2. The Duo's two postures — tabletop layout DONE on this branch
 
-On the foldable iPhone itself, the ideas map onto geometry rather than a hinge API:
+On the foldable iPhone itself, the ideas map onto geometry rather than a hinge API.
+`Views/DuoPosture.swift` turns a window size into a posture: 600 pt on the short
+side is the boundary, chosen between the Duo's outer 466 pt and inner 669 pt so the
+two postures never overlap and a resize across it is the fold itself. `DuoPostureTests`
+pins those numbers (folded, unfolded, unfolded landscape, folded landscape, iPad,
+and the zero size SwiftUI proposes before first layout).
 
-- **Unfolded (inner, ~669–951 pt wide): laptop/tabletop layout.** Transcript and
-  translation on one side, the control pad on the other — the foldable's
-  `TabletopScreen`, triggered by a wide window instead of a hinge angle.
-- **Folded (outer, 466×678 with the 84 pt right inset): glance mode.** Live line,
-  translation, and Start/Stop/Split only; the notes list is a swipe away.
-- **The fold event opens and closes conversation mode**, the way
-  `onFoldStateChanged` does on Android: a scene resize from small to wide opens
-  the four-pane stage, wide to small returns to notes.
-- Requires landscape support on the inner display (`project.yml` currently pins
-  `UIInterfaceOrientationPortrait`), and the layout must key off
-  `windowGeometry`/size classes rather than `UIScreen`, which only ever reports
-  the active display.
+Done:
+- **Wide window = tabletop layout** (`Views/TabletopView.swift`): what is being said
+  above in large type with the English line underneath, a pad below (Notes, older /
+  newer note, Latest). The record bar stays where it was, in `ContentView`'s bottom
+  inset. The notes list is one tap away and the toolbar has a way back.
+- Landscape is enabled for iPad in `project.yml`; iPhone stays portrait so a normal
+  phone never turns into a tabletop.
+
+Still to do:
+- **Glance mode on the folded display.** The outer display is 466×678 with an 84 pt
+  inset on the right, which already squeezes the toolbar; a shorter version of the
+  notes screen (live line + controls) would suit it better than the full list.
+- **The fold event drives conversation mode**, the way `onFoldStateChanged` does on
+  Android: wide → conversation stage, folded → notes. Needs care: `ConversationView`
+  is a separate full-screen mode, so the fold would overrule whatever the user
+  opened.
+- Verified on the iPad simulator (wide window: tabletop renders, one record bar) and
+  on the Duo folded (compact: the notes list, unchanged). The Duo *unfolded* could
+  not be exercised here — this Xcode install has no Simulator.app, so nothing can
+  fold the device; the same code path is what the iPad screenshots show.
 
 ## 3. StandBy tabletop — planned
 

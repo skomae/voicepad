@@ -19,15 +19,27 @@ struct ContentView: View {
     @State private var toast: String?
     @State private var query = ""
     @State private var player = AudioPlayer()
+    /// On a wide screen the notes list is behind the tabletop layout's Notes button.
+    @State private var showListWhenWide = false
 
     var body: some View {
-        NavigationStack {
-            NotesList(
-                query: query,
-                player: player,
-                bubbleActions: bubbleActions
-            )
-            .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search all notes and revisions")
+        // A foldable resizes the scene instead of reporting a hinge, so the window
+        // size is the posture: wide means the tabletop layout.
+        GeometryReader { geo in
+            let wide = DuoPosture.of(geo.size) == .wide
+            NavigationStack {
+                Group {
+                    if wide && !showListWhenWide {
+                        TabletopView { showListWhenWide = true }
+                    } else {
+                        NotesList(
+                            query: query,
+                            player: player,
+                            bubbleActions: bubbleActions
+                        )
+                    }
+                }
+                .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search all notes and revisions")
             // Unmistakable: a red frame around the notes while the mic is on.
             .overlay {
                 if controller.isRecording {
@@ -51,6 +63,13 @@ struct ContentView: View {
                         Image(systemName: "bubble.left.and.text.bubble.right")
                     }
                     .accessibilityLabel("Conversation mode")
+                    if wide && showListWhenWide {
+                        Button { showListWhenWide = false } label: {
+                            Image(systemName: "rectangle.split.1x2")
+                        }
+                        .tint(controller.isRecording ? .white : nil)
+                        .accessibilityLabel("Tabletop layout")
+                    }
                     Menu {
                         Toggle(isOn: Binding(get: { controller.backgroundVoices }, set: { controller.setBackgroundVoices($0) })) {
                             Label("Background voices", systemImage: "ear")
@@ -112,6 +131,7 @@ struct ContentView: View {
             }
         }
         #endif
+        }
     }
 
     private var bubbleActions: BubbleActions {

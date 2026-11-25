@@ -40,6 +40,14 @@ targets:
         UIApplicationSupportsIndirectInputEvents: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+        # The Duo unfolded (and an iPad) is a landscape machine: the tabletop layout
+        # needs both, and a foldable rotates the scene itself. iPhone stays portrait
+        # on purpose — its folded display is a phone.
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         NSMicrophoneUsageDescription: VoicePad records your voice as soon as it opens so it can transcribe what you say.
         UIBackgroundModes:
           - audio
@@ -92,6 +100,7 @@ targets:
       - VoicePad/Conversation/Stage.swift
       - VoicePad/Conversation/ConversationLanguages.swift
       - VoicePad/Conversation/SpeakerClustering.swift
+      - VoicePad/Views/DuoPosture.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.voicepad.tests
