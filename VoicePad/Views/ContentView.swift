@@ -28,11 +28,11 @@ struct ContentView: View {
                 bubbleActions: bubbleActions
             )
             .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search all notes and revisions")
-            // Unmistakable: a red frame around the notes while the mic is on.
+            // Unmistakable: a neon bezel glowing round the edge while the mic is on.
             .overlay {
-                if controller.isRecording {
-                    Rectangle().strokeBorder(Color.recordingRed.opacity(0.6), lineWidth: 3).allowsHitTesting(false)
-                }
+                RecordingBezel(active: controller.isRecording, level: controller.level)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
             }
             .safeAreaInset(edge: .bottom) { RecordBar() }
             .navigationTitle("VoicePad")
