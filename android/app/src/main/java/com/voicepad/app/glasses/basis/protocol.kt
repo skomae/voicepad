@@ -1,5 +1,7 @@
 package com.voicepad.app.glasses.basis
 
+import java.io.ByteArrayOutputStream
+
 // bluetooth device name ---------------------------------------------------------------------------
 
 // Arms advertise as `G1_<channel>_<L|R>_<serial>` (some firmware: `Even G1_...`).
@@ -68,8 +70,14 @@ object G1Protocol {
     /**
      * One page of [text] as the 0x4E packets that carry it:
      * `4E <seq> <packets> <index> <screen status> <pos hi> <pos lo> <page> <pages> <data…>`,
-     * the UTF-8 text cut into [TEXT_CHUNK]-byte pieces. All packets of a page
-     * share [seq]; it should change from one page to the next.
+     * the UTF-8 text cut into pieces of at most [TEXT_CHUNK] bytes. All packets of
+     * a page share [seq]; it should change from one page to the next.
+     *
+     * The pieces are cut on character boundaries, not byte offsets. 191 is not a
+     * multiple of a Han character's three bytes, so a byte-wise cut splits the
+     * character straddling the boundary and the glasses draw a replacement mark at
+     * the end of one packet and the start of the next — the last character of the
+     * page, every page.
      */
     fun text(
         text: String,
@@ -79,23 +87,39 @@ object G1Protocol {
         screenStatus: Int = TEXT_SHOW_NEW,
         position: Int = 0,
     ): List<ByteArray> {
-        val data = text.encodeToByteArray()
-        val count = maxOf(1, (data.size + TEXT_CHUNK - 1) / TEXT_CHUNK)
-        require(count <= 255) { "Text too long for one page: ${data.size} bytes" }
-        return List(count) { index ->
-            val start = index * TEXT_CHUNK
-            val end = minOf(start + TEXT_CHUNK, data.size)
+        val chunks = mutableListOf<ByteArray>()
+        var chunk = ByteArrayOutputStream(TEXT_CHUNK)
+        // By code point, not Char: a surrogate pair is one glyph and four bytes, and
+        // cutting between its halves breaks it exactly like a split Han character.
+        var index = 0
+        while (index < text.length) {
+            val codePoint = Character.codePointAt(text, index)
+            val encoded = String(Character.toChars(codePoint)).encodeToByteArray()
+            if (chunk.size() > 0 && chunk.size() + encoded.size > TEXT_CHUNK) {
+                chunks.add(chunk.toByteArray())
+                chunk = ByteArrayOutputStream(TEXT_CHUNK)
+            }
+            chunk.write(encoded)
+            index += Character.charCount(codePoint)
+        }
+        // An empty page is still one packet, so the glasses have something to show
+        // (and something to acknowledge).
+        chunks.add(chunk.toByteArray())
+
+        val count = chunks.size
+        require(count <= 255) { "Text too long for one page: ${text.length} characters" }
+        return chunks.mapIndexed { chunkIndex, data ->
             byteArrayOf(
                 TEXT,
                 (seq and 0xFF).toByte(),
                 count.toByte(),
-                index.toByte(),
+                chunkIndex.toByte(),
                 screenStatus.toByte(),
                 ((position shr 8) and 0xFF).toByte(),
                 (position and 0xFF).toByte(),
                 page.toByte(),
                 pages.toByte(),
-            ) + data.copyOfRange(start, end)
+            ) + data
         }
     }
 
