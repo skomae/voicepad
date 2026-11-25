@@ -267,7 +267,7 @@ fun SplitButton(controller: RecordingController, state: RecordingController.UiSt
     AutoSplitMenu(controller, state, modifier) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.width(72.dp).clip(RoundedCornerShape(12.dp)).padding(vertical = 6.dp),
+            modifier = Modifier.width(72.dp).clip(RoundedCornerShape(12.dp)).padding(top = 6.dp),
         ) {
             val tint = if (state.isRecording) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.outline
             SplitIcon(state, tint)
