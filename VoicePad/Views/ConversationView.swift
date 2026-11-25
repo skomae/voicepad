@@ -638,6 +638,9 @@ private struct ConversationSettings: View {
                         Text(reduceMotion ? "Reduce Motion is on right now." : "Reduce Motion is off right now.")
                     }
                 }
+                // A second screen as well as a second language: the glasses mirror the
+                // conversation, so they are set here rather than only in app Settings.
+                GlassesSection()
                 Section {
                     Picker("Thinking pause", selection: Binding(get: { s.thinkingPause }, set: { conversation.setThinkingPause($0) })) {
                         Text("Off").tag(0)

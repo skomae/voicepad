@@ -49,6 +49,10 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         NSMicrophoneUsageDescription: VoicePad records your voice as soon as it opens so it can transcribe what you say.
+        # The G1 glasses are a BLE peripheral: without this key iOS kills the app the
+        # moment a CBCentralManager is created.
+        NSBluetoothAlwaysUsageDescription: VoicePad connects to Even Realities G1 glasses to show the conversation on their display.
+        NSBluetoothPeripheralUsageDescription: VoicePad connects to Even Realities G1 glasses to show the conversation on their display.
         UIBackgroundModes:
           - audio
         # Recording Live Activity (Lock Screen / Dynamic Island) with Stop and Split.
