@@ -375,6 +375,8 @@ fun SettingsSheet(
                 Switch(checked = openOnUnfold, onCheckedChange = onOpenOnUnfoldChange)
             }
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
+            DictionariesSection(controller.dictionaries)
+            HorizontalDivider(Modifier.padding(vertical = 12.dp))
             Text("Transcription model", style = MaterialTheme.typography.titleSmall)
             EngineChoice.entries.forEach { choice ->
                 Row(

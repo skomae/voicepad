@@ -56,4 +56,15 @@ class LlmPromptTest {
         assertEquals(114, LlmPrompt.maxTokens("x".repeat(100)))
         assertEquals(1024, LlmPrompt.maxTokens("x".repeat(100_000)))
     }
+
+    @Test
+    fun vocabularyIsAddedToTheInstruction() {
+        assertEquals("Fix it.", LlmPrompt.withVocabulary("Fix it.", emptyList()))
+        val withWords = LlmPrompt.withVocabulary("Fix it.", listOf("Priya", " Kubernetes ", "Priya"))
+        assertTrue(withWords.startsWith("Fix it. "))
+        assertTrue(withWords.endsWith(": Priya, Kubernetes."))
+        val many = LlmPrompt.withVocabulary("x", (1..500).map { "w$it" })
+        assertTrue(many.contains("w${LlmPrompt.MAX_VOCABULARY}."))
+        assertTrue(!many.contains("w${LlmPrompt.MAX_VOCABULARY + 1}"))
+    }
 }

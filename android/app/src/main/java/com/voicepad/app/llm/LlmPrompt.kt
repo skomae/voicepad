@@ -35,6 +35,21 @@ object LlmPrompt {
     fun system(instruction: String): String =
         "You are a careful editor. ${instruction.trim().ifEmpty { CLEANUP.instruction }} $TRANSCRIPT_ONLY"
 
+    /** Most dictionary words passed to the model; small models lose the thread with long lists. */
+    const val MAX_VOCABULARY = 150
+
+    /**
+     * [instruction] plus the user's dictionary words, so the model spells
+     * names and jargon their way (and doesn't "fix" them back).
+     */
+    fun withVocabulary(instruction: String, words: List<String>): String {
+        val list = words.map { it.trim() }.filter { it.isNotEmpty() }.distinct().take(MAX_VOCABULARY)
+        if (list.isEmpty()) return instruction
+        val base = instruction.trim().ifEmpty { CLEANUP.instruction }
+        return "$base The speaker uses these words and names; where the transcript means one of them, " +
+            "spell it exactly as written here: ${list.joinToString(", ")}."
+    }
+
     /** The preset whose instruction is [instruction], if any. */
     fun presetFor(instruction: String): Preset? = PRESETS.firstOrNull { it.instruction == instruction.trim() }
 
