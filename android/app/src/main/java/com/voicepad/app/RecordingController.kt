@@ -46,6 +46,7 @@ import com.voicepad.app.transcription.SherpaEngine
 import com.voicepad.app.transcription.SpeechDetector
 import com.voicepad.app.transcription.SpeechEngine
 import com.voicepad.app.transcription.Transcript
+import com.voicepad.app.transmit.AutoSend
 import com.voicepad.app.transmit.KeyboardHost
 import com.voicepad.app.transmit.ScanState
 import com.voicepad.app.transmit.SinkStatus
@@ -146,8 +147,6 @@ class RecordingController(
         val liveTranslation: NoteTranslation? = null,
         /** Which part of a split recording is being recorded (1 = not split). */
         val partNumber: Int = 1,
-        /** When the current recording was paused, or null while it's capturing. */
-        val pausedAt: Long? = null,
         /** Stopped or split-off notes still being transcribed (the notification stays until 0). */
         val finishingCount: Int = 0,
         /** Whether the phone is paired as a Bluetooth keyboard (type-as-keyboard). */
@@ -159,6 +158,10 @@ class RecordingController(
         val llmChoice: LlmChoice = LlmChoice.QWEN_0_5B,
         /** Instruction the LLM follows before typing (a preset or the user's own). */
         val typePrompt: String = LlmPrompt.CLEANUP.instruction,
+        /** Prompt 2: the laptop pad's second rewrite button. */
+        val typePrompt2: String = LlmPrompt.POLISH.instruction,
+        /** What gets typed on the computer automatically. */
+        val autoSend: AutoSend = AutoSend.ON_COPY,
         /** User-written prompts, most recent first (presets aren't included). */
         val recentPrompts: List<String> = emptyList(),
         /** Name of the computer the keyboard is connected to. */
@@ -223,6 +226,10 @@ class RecordingController(
                 ?.let { runCatching { LlmChoice.valueOf(it) }.getOrNull() } ?: LlmChoice.QWEN_0_5B,
             typePrompt = prefs.getString("typePrompt", null)?.takeIf { it.isNotBlank() }
                 ?: LlmPrompt.CLEANUP.instruction,
+            typePrompt2 = prefs.getString("typePrompt2", null)?.takeIf { it.isNotBlank() }
+                ?: LlmPrompt.POLISH.instruction,
+            autoSend = prefs.getString("autoSend", null)
+                ?.let { runCatching { AutoSend.valueOf(it) }.getOrNull() } ?: AutoSend.ON_COPY,
             recentPrompts = prefs.getString("recentPrompts", null)?.let { json ->
                 runCatching {
                     val array = JSONArray(json)
@@ -478,7 +485,6 @@ class RecordingController(
         try {
             // A chosen mic that isn't connected falls back to the phone's default.
             val preferred = inputs.beginRecording(s.selectedInputKey)
-            recorder.paused = false
             recorder.start(File(store.recordingsDir, fileName), preferred, AudioRecorder.sourceFor(context, s.backgroundVoices))
         } catch (e: Throwable) {
             inputs.endRecording()
@@ -508,12 +514,9 @@ class RecordingController(
         store.add(note)
         session = LiveSession(note.id, origin)
         tailTranslateJob?.cancel()
-        val now = System.currentTimeMillis()
         _state.update {
             it.copy(
-                startedAt = now,
-                // A split while paused starts the new part paused too.
-                pausedAt = it.pausedAt?.let { now },
+                startedAt = System.currentTimeMillis(),
                 liveText = "",
                 liveTranslation = null,
                 recordingNoteId = note.id,
@@ -543,30 +546,9 @@ class RecordingController(
         scope.launch { finishSession(old) }
     }
 
-    /** Pauses the microphone without ending the note; [resume] carries on in the same note. */
-    fun pause() {
-        val s = _state.value
-        if (!s.isRecording || s.pausedAt != null) return
-        recorder.paused = true
-        _state.update { it.copy(pausedAt = System.currentTimeMillis()) }
-    }
-
-    fun resume() {
-        val pausedAt = _state.value.pausedAt ?: return
-        recorder.paused = false
-        // Shift the start so the elapsed time doesn't count the pause.
-        val pausedFor = System.currentTimeMillis() - pausedAt
-        _state.update { it.copy(pausedAt = null, startedAt = it.startedAt?.plus(pausedFor)) }
-    }
-
-    fun togglePause() {
-        if (_state.value.pausedAt != null) resume() else pause()
-    }
-
     fun stop() {
         val current = session ?: return
         if (!_state.value.isRecording) return
-        recorder.paused = false
         recorder.stop()
         inputs.endRecording()
         current.end = recorder.sampleCount
@@ -576,7 +558,7 @@ class RecordingController(
         tailTranslateJob?.cancel()
         _state.update {
             it.copy(isRecording = false, startedAt = null, activeInputName = null, recordingNoteId = null,
-                liveText = "", liveTranslation = null, partNumber = 1, pausedAt = null)
+                liveText = "", liveTranslation = null, partNumber = 1)
         }
         recorder.writeError?.let { showError("Part of this recording couldn't be saved: $it") }
         // Taken now, so a quick restart's new live job isn't the one cancelled.
@@ -748,16 +730,25 @@ class RecordingController(
 
     /** Puts a just-finished recording's transcript on the clipboard and says so with a toast. */
     private fun copyWhenDone(noteId: String) {
-        if (!_state.value.copyWhenDone) return
         val text = store.note(noteId)?.currentText?.takeIf { it.isNotBlank() } ?: return
-        val clipboard = context.getSystemService(ClipboardManager::class.java)
-        clipboard.setPrimaryClip(ClipData.newPlainText("VoicePad transcript", text))
+        val copy = _state.value.copyWhenDone
+        if (copy) {
+            context.getSystemService(ClipboardManager::class.java)
+                .setPrimaryClip(ClipData.newPlainText("VoicePad transcript", text))
+        }
+        // Auto-send applies to every finished recording, copied or not.
         val typing = sendToKeyboardIfConnected(text)
-        Toast.makeText(
-            context,
-            if (typing) "Transcript copied and typing on the keyboard" else "Transcript copied to clipboard",
-            Toast.LENGTH_SHORT,
-        ).show()
+        if (copy || typing) {
+            Toast.makeText(
+                context,
+                when {
+                    copy && typing -> "Transcript copied and typing on the keyboard"
+                    typing -> "Typing the transcript on the keyboard"
+                    else -> "Transcript copied to clipboard"
+                },
+                Toast.LENGTH_SHORT,
+            ).show()
+        }
     }
 
     fun setAutoSplit(mode: AutoSplit) {
@@ -1313,51 +1304,46 @@ class RecordingController(
     }
 
     /**
-     * Types [text] as keystrokes on the paired host, after the optional LLM
-     * transform. Ignored while a previous text is still being typed; use
+     * Types [text] on the connected computer (double-tap, the keyboard icon,
+     * "Type on paired device"). With auto-send "after LLM" it's rewritten with
+     * prompt 1 first. Ignored while a previous text is still being typed; use
      * [stopTyping] to abandon that one.
      */
     fun typeText(text: String) {
-        if (text.isBlank() || typingJob?.isActive == true) return
-        typingJob = scope.launch {
-            _state.update { it.copy(isTyping = true) }
-            try {
-                val final = if (_state.value.llmEnabled) transform(text) else text
-                keyboard.type(final)
-            } finally {
-                _state.update { it.copy(isTyping = false) }
-            }
-        }
+        val prompt = if (_state.value.autoSend == AutoSend.AFTER_LLM) _state.value.typePrompt else null
+        send(text, prompt, copyIfDisconnected = false)
     }
 
     /**
-     * "Send" from the tabletop controls: types [text] on the connected
-     * computer, or copies it when none is connected. With [rewrite] the LLM
-     * prompt is applied for this send even if the rewrite toggle is off; it
-     * needs the model loaded (it's loaded on demand, which can take a while).
+     * The laptop-mode Send buttons: types [text] (or, with [prompt], the
+     * model's rewrite of it) on the connected computer, or copies it when no
+     * computer is connected.
      */
-    fun sendText(text: String, rewrite: Boolean) {
+    fun sendText(text: String, prompt: String?) = send(text, prompt, copyIfDisconnected = true)
+
+    private fun send(text: String, prompt: String?, copyIfDisconnected: Boolean) {
         if (text.isBlank()) return
+        val connected = _state.value.transmitStatus == SinkStatus.CONNECTED
+        if (!connected && !copyIfDisconnected) return
         if (typingJob?.isActive == true) {
             toast("Still typing the previous text.")
             return
         }
-        if (rewrite && llm == null) {
-            if (_state.value.llmStatus !is LlmStatus.Loading) loadLlm(force = true)
+        if (prompt != null && interpretationCache[prompt to text] == null && llm == null) {
+            ensureLlm()
             toast("Loading the LLM model; try again when it's ready.")
             return
         }
-        val connected = _state.value.transmitStatus == SinkStatus.CONNECTED
         typingJob = scope.launch {
             _state.update { it.copy(isTyping = true) }
             try {
-                val final = if (rewrite) transform(text) else text
+                val final = if (prompt != null) interpret(text, prompt) ?: text else text
                 if (connected) {
                     keyboard.type(final)
                 } else {
                     context.getSystemService(ClipboardManager::class.java)
                         .setPrimaryClip(ClipData.newPlainText("VoicePad", final))
-                    toast(if (rewrite) "Rewritten and copied (no keyboard connected)" else "Copied (no keyboard connected)")
+                    toast(if (prompt != null) "Rewritten and copied (no keyboard connected)" else "Copied (no keyboard connected)")
                 }
             } finally {
                 _state.update { it.copy(isTyping = false) }
@@ -1373,14 +1359,24 @@ class RecordingController(
     }
 
     /**
-     * Also types [text] when a host is connected; used wherever the app
-     * copies text to the clipboard. Returns whether typing started.
+     * Called wherever the app copies text (Copy, copy translation, history,
+     * auto-copy when a recording finishes). Per the auto-send mode it also
+     * types the original or prompt 1's rewrite. Returns whether typing started.
      */
     fun sendToKeyboardIfConnected(text: String): Boolean {
         if (_state.value.transmitStatus != SinkStatus.CONNECTED || text.isBlank()) return false
         if (typingJob?.isActive == true) return false
-        typeText(text)
+        when (_state.value.autoSend) {
+            AutoSend.OFF -> return false
+            AutoSend.ON_COPY -> send(text, prompt = null, copyIfDisconnected = false)
+            AutoSend.AFTER_LLM -> send(text, _state.value.typePrompt, copyIfDisconnected = false)
+        }
         return true
+    }
+
+    fun setAutoSend(mode: AutoSend) {
+        prefs.edit { putString("autoSend", mode.name) }
+        _state.update { it.copy(autoSend = mode) }
     }
 
     fun stopTyping() {
@@ -1405,15 +1401,19 @@ class RecordingController(
     }
 
     /** Uses [instruction] for the LLM rewrite and remembers it if it's the user's own. */
-    fun setTypePrompt(instruction: String) {
+    /** Sets prompt [slot] (0 = prompt 1, 1 = prompt 2) and remembers it if it's the user's own. */
+    fun setTypePrompt(instruction: String, slot: Int = 0) {
         val trimmed = instruction.trim()
         if (trimmed.isEmpty()) return
         val recent = LlmPrompt.remember(_state.value.recentPrompts, trimmed)
         prefs.edit {
-            putString("typePrompt", trimmed)
+            putString(if (slot == 0) "typePrompt" else "typePrompt2", trimmed)
             putString("recentPrompts", JSONArray(recent).toString())
         }
-        _state.update { it.copy(typePrompt = trimmed, recentPrompts = recent) }
+        _state.update {
+            if (slot == 0) it.copy(typePrompt = trimmed, recentPrompts = recent)
+            else it.copy(typePrompt2 = trimmed, recentPrompts = recent)
+        }
     }
 
     fun forgetPrompt(instruction: String) {
@@ -1476,21 +1476,39 @@ class RecordingController(
 
     private fun setLlmStatus(status: LlmStatus) = _state.update { it.copy(llmStatus = status) }
 
+    /** Recent rewrites keyed by (prompt, text), so showing an interpretation and then sending it runs the model once. */
+    private val interpretationCache = object : LinkedHashMap<Pair<String, String>, String>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Pair<String, String>, String>?) = size > 16
+    }
+
+    /** Whether a model is loaded and can rewrite right now. */
+    val llmReady: Boolean get() = llm != null
+
+    /** Starts loading the model if it isn't loaded or loading (for one-off rewrites). */
+    fun ensureLlm() {
+        if (llm == null && _state.value.llmStatus !is LlmStatus.Loading) loadLlm(force = true)
+    }
+
     /**
-     * Runs the optional LLM transform over [text], falling back to the
-     * original. Holds [llmMutex] for the whole call so the engine can't be
-     * released underneath it.
+     * The model's rewrite of [text] with [prompt], or null if no model is
+     * loaded or it failed. Cached. Holds [llmMutex] for the whole call so
+     * the engine can't be released underneath it.
      */
-    private suspend fun transform(text: String): String = llmMutex.withLock {
-        val engine = llm ?: return@withLock text
-        try {
-            withContext(Dispatchers.Default) { engine.transform(text, _state.value.typePrompt) }
-                .ifBlank { text }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Throwable) {
-            text // never block typing on the LLM
-        }
+    suspend fun interpret(text: String, prompt: String): String? {
+        if (text.isBlank()) return null
+        interpretationCache[prompt to text]?.let { return it }
+        val result = llmMutex.withLock {
+            val engine = llm ?: return null
+            try {
+                withContext(Dispatchers.Default) { engine.transform(text, prompt) }.takeIf { it.isNotBlank() }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                null
+            }
+        } ?: return null
+        interpretationCache[prompt to text] = result
+        return result
     }
 
     // endregion

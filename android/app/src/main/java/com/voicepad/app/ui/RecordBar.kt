@@ -91,7 +91,7 @@ fun RecordBar(controller: RecordingController, state: RecordingController.UiStat
                     val started = state.startedAt
                     Text(
                         if (state.isRecording && started != null) {
-                            DateUtils.formatElapsedTime((((state.pausedAt ?: now) - started) / 1000).coerceAtLeast(0))
+                            DateUtils.formatElapsedTime(((now - started) / 1000).coerceAtLeast(0))
                         } else {
                             "--:--"
                         },
@@ -127,13 +127,6 @@ fun RecordBar(controller: RecordingController, state: RecordingController.UiStat
 
                 // Split: tap for a new note now; drag up or long-press for auto-split.
                 SplitButton(controller, state)
-
-                // Pause keeps the same note; while paused the amber overlay takes over the screen.
-                if (state.isRecording) {
-                    IconButton(onClick = controller::togglePause) {
-                        Icon(Icons.Default.Pause, contentDescription = "Pause recording")
-                    }
-                }
             }
             val auto = state.autoSplit.badge
             Text(

@@ -35,10 +35,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.voicepad.app.ui.TabletopHinge
 import com.voicepad.app.ui.TabletopScreen
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.ui.Modifier
-import com.voicepad.app.ui.PausedOverlay
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 
 class MainActivity : ComponentActivity() {
     private val app get() = application as VoicePadApplication
@@ -88,11 +86,7 @@ class MainActivity : ComponentActivity() {
                     when {
                         conversationState.visible -> ConversationScreen(conversation, controller)
                         hinge != null && state.tabletopLayout -> TabletopScreen(controller, hinge)
-                        else -> Box(Modifier.fillMaxSize()) {
-                            VoicePadScreen(controller, conversation)
-                            // Paused can't be missed: amber over everything, with Resume / Stop.
-                            PausedOverlay(controller, state)
-                        }
+                        else -> VoicePadScreen(controller, conversation)
                     }
                 }
             }
@@ -112,6 +106,7 @@ class MainActivity : ComponentActivity() {
                     )
                     // Separately: half-open with the hinge across the screen is tabletop posture.
                     tabletopHinge = tabletop?.let { TabletopHinge(top = it.bounds.top, bottom = it.bounds.bottom) }
+                    rotateForLaptop(hinge)
                 }
             }
         }
@@ -119,6 +114,33 @@ class MainActivity : ComponentActivity() {
     }
 
     private var cover: CoverScreen? = null
+
+    /**
+     * Half-folded with the hinge running up the screen (book posture) means
+     * the screen is sideways for laptop use: rotate so the hinge runs across
+     * it. The SENSOR_ variants let gravity pick which way up, and override a
+     * rotation lock. Unfolding or closing hands orientation back to the
+     * system. Only while the laptop layout is on in Settings.
+     */
+    private fun rotateForLaptop(hinge: FoldingFeature?) {
+        val halfOpen = hinge?.state == FoldingFeature.State.HALF_OPENED
+        val ours = requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE ||
+            requestedOrientation == ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+        when {
+            halfOpen && hinge?.orientation == FoldingFeature.Orientation.VERTICAL &&
+                controller.state.value.tabletopLayout && !conversation.state.value.visible -> {
+                val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+                requestedOrientation = if (portrait) {
+                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                } else {
+                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                }
+            }
+            // Keep our rotation while still half-open (the hinge is now horizontal).
+            halfOpen && ours -> {}
+            ours -> requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
 
     override fun onDestroy() {
         cover?.stop()

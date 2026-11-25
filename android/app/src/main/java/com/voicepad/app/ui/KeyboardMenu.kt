@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import com.voicepad.app.RecordingController
 import com.voicepad.app.RecordingController.LlmStatus
 import com.voicepad.app.llm.LlmPrompt
+import com.voicepad.app.transmit.AutoSend
 import com.voicepad.app.transmit.SinkStatus
 
 /**
@@ -113,10 +114,10 @@ fun KeyboardMenu(
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Rewrite with on-device LLM")
+                    Text("Keep the on-device LLM loaded")
                     Text(
                         when (val llm = state.llmStatus) {
-                            LlmStatus.Idle -> if (state.llmEnabled) "Model not loaded" else "Off: text is typed as is"
+                            LlmStatus.Idle -> if (state.llmEnabled) "Model not loaded" else "Off: loads when a rewrite is asked for"
                             is LlmStatus.Loading ->
                                 if (llm.downloading) "Downloading ${state.llmChoice.shortName}… ${(llm.progress * 100).toInt()}%"
                                 else "Loading ${state.llmChoice.shortName}…"
@@ -139,13 +140,12 @@ fun KeyboardMenu(
             }
 
             Spacer(Modifier.height(16.dp))
-            Text("Prompt", style = MaterialTheme.typography.titleSmall)
-            PromptChooser(
-                current = state.typePrompt,
-                recent = state.recentPrompts,
-                onUse = controller::setTypePrompt,
-                onForget = controller::forgetPrompt,
-            )
+            Text("Auto send", style = MaterialTheme.typography.titleSmall)
+            AutoSendChooser(state.autoSend, onSelect = controller::setAutoSend)
+
+            Spacer(Modifier.height(16.dp))
+            Text("Prompts", style = MaterialTheme.typography.titleSmall)
+            PromptSlots(controller, state)
         }
     }
 }
@@ -239,4 +239,51 @@ fun Modifier.doubleTapToType(text: String): Modifier {
     val type = LocalTypeOnKeyboard.current ?: return this
     if (text.isBlank()) return this
     return this.pointerInput(text, type) { detectTapGestures(onDoubleTap = { type(text) }) }
+}
+
+/** No auto send / on copy / after the LLM prompt. */
+@Composable
+fun AutoSendChooser(current: AutoSend, onSelect: (AutoSend) -> Unit) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.padding(top = 6.dp).horizontalScroll(rememberScrollState()),
+    ) {
+        AutoSend.entries.forEach { mode ->
+            FilterChip(selected = current == mode, onClick = { onSelect(mode) }, label = { Text(mode.label) })
+        }
+    }
+    Text(
+        when (current) {
+            AutoSend.OFF -> "Nothing is typed unless you send it."
+            AutoSend.ON_COPY -> "Copying a note, or a recording finishing, also types it on the computer."
+            AutoSend.AFTER_LLM -> "Copying a note, or a recording finishing, types prompt 1's rewrite of it."
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/** Short name for a prompt: the preset's label, or the start of your own. */
+fun promptLabel(prompt: String): String =
+    LlmPrompt.presetFor(prompt)?.label ?: prompt.trim().let { if (it.length > 18) it.take(17).trimEnd() + "…" else it }
+
+/** The two active prompts (the laptop pad's two rewrite buttons); pick one to change it. */
+@Composable
+fun PromptSlots(controller: RecordingController, state: RecordingController.UiState) {
+    var slot by remember { mutableStateOf(0) }
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(top = 6.dp)) {
+        listOf(state.typePrompt, state.typePrompt2).forEachIndexed { i, prompt ->
+            FilterChip(
+                selected = slot == i,
+                onClick = { slot = i },
+                label = { Text("${i + 1} · ${promptLabel(prompt)}") },
+            )
+        }
+    }
+    PromptChooser(
+        current = if (slot == 0) state.typePrompt else state.typePrompt2,
+        recent = state.recentPrompts,
+        onUse = { controller.setTypePrompt(it, slot) },
+        onForget = controller::forgetPrompt,
+    )
 }
