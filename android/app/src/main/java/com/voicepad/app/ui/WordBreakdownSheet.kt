@@ -355,7 +355,7 @@ private fun EnglishCandidates(engine: WordBreakdown, word: String) {
 
 @Composable
 private fun ScoreRow(title: String, detail: String?, score: Double, color: Color, matched: Boolean) =
-    ScoreRow(AnnotatedString(title), detail, score, color, matched)
+    ScoreRow(AnnotatedString(Pinyin.marksInBrackets(title)), detail, score, color, matched)
 
 /** A ranked option: what it is, a bar for its likelihood, and the percentage. */
 @Composable
@@ -382,7 +382,7 @@ private fun ScoreRow(title: AnnotatedString, detail: String?, score: Double, col
             )
         }
         detail?.let {
-            Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text(Pinyin.marksInBrackets(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         Box(
             Modifier.padding(top = 3.dp).fillMaxWidth().height(6.dp)

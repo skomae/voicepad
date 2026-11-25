@@ -37,4 +37,17 @@ object Pinyin {
 
     /** The tone of a numbered syllable (1–4, 5 for neutral), or 0 when there's none. */
     fun tone(numbered: String): Int = numbered.lastOrNull()?.digitToIntOrNull()?.takeIf { it in 1..5 } ?: 0
+
+    private val BRACKETED = Regex("\\[([^]]+)]")
+
+    /**
+     * Glosses cite other words with numbered pinyin in brackets — CC-CEDICT writes
+     * "you (informal, as opposed to courteous 您[nin2])". The characters elsewhere in
+     * the sheet carry tone marks, so convert the bracket too; brackets without a tone
+     * digit are left exactly as they are.
+     */
+    fun marksInBrackets(text: String): String = BRACKETED.replace(text) { m ->
+        val inside = m.groupValues[1]
+        if (inside.any { it.isDigit() }) "[" + marks(inside) + "]" else m.value
+    }
 }
