@@ -37,15 +37,11 @@ struct ContentView: View {
             .safeAreaInset(edge: .bottom) { RecordBar() }
             .navigationTitle("VoicePad")
             .navigationBarTitleDisplayMode(.inline)
-            // The whole bar turns red while recording, and only then: the red
-            // tint leaked into the idle bar, where "Not recording" in grey on
-            // red was unreadable.
-            .toolbarBackground(Color.recordingRed, for: .navigationBar)
-            .toolbarBackground(controller.isRecording ? .visible : .hidden, for: .navigationBar)
-            .toolbarColorScheme(controller.isRecording ? .dark : nil, for: .navigationBar)
+            // The bar keeps the system's Liquid Glass; the recording cue is the
+            // red REC title and the red dock button, not a painted bar.
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    ModelSwitcher(color: controller.isRecording ? .white : .secondary) { showSettings = true }
+                    ModelSwitcher(color: .secondary) { showSettings = true }
                 }
                 ToolbarItem(placement: .principal) {
                     if controller.isRecording { RecordingTitle() } else { IdleTitle() }
@@ -54,7 +50,6 @@ struct ContentView: View {
                     Button { conversation.open() } label: {
                         Image(systemName: "bubble.left.and.text.bubble.right")
                     }
-                    .tint(controller.isRecording ? .white : nil)
                     .accessibilityLabel("Conversation mode")
                     Menu {
                         Toggle(isOn: Binding(get: { controller.backgroundVoices }, set: { controller.setBackgroundVoices($0) })) {
@@ -67,7 +62,6 @@ struct ContentView: View {
                     } label: {
                         Image(systemName: "ellipsis.circle")
                     }
-                    .tint(controller.isRecording ? .white : nil)
                     .accessibilityLabel("More")
                 }
             }
@@ -311,13 +305,13 @@ private struct RecordingTitle: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            PulsingDot(color: .white, size: 11)
+            PulsingDot(color: .recordingRed, size: 11)
             Text("REC")
             ElapsedTime(start: controller.startedAt).monospacedDigit()
         }
         .font(.headline.weight(.bold))
         .fixedSize()
-        .foregroundStyle(.white)
+        .foregroundStyle(Color.recordingRed)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Recording")
     }

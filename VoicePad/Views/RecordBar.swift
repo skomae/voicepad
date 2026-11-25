@@ -29,19 +29,18 @@ struct PulsingDot: View {
 
 struct RecordBar: View {
     @Environment(RecordingController.self) private var controller
-    @Environment(\.pureBlack) private var pureBlack
 
     var body: some View {
         let recording = controller.isRecording
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
             if controller.isRecording, controller.noSoundWarning {
                 Label("No sound is coming in from the microphone, so this part isn't being captured. If the iPhone is connected to a Mac, unplug it.", systemImage: "mic.slash.fill")
                     .font(.footnote.weight(.semibold))
                     .foregroundStyle(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.recordingRed, in: RoundedRectangle(cornerRadius: 10))
-                    .padding(.horizontal, 12)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.recordingRed, in: Capsule())
+                    .padding(.horizontal, 4)
                     .accessibilityAddTraits(.updatesFrequently)
             }
             if let error = controller.errorMessage {
@@ -56,53 +55,83 @@ struct RecordBar: View {
                 }
                 .font(.footnote.weight(.semibold))
             }
-            HStack(spacing: 20) {
-                VStack(spacing: 4) {
-                    ElapsedTime(start: recording ? controller.startedAt : nil)
-                        .font(.title3.monospacedDigit())
-                        .foregroundStyle(recording ? Color.recordingRed : .secondary)
-                    LevelMeter(level: recording ? controller.level : 0)
-                        .frame(height: 28)
-                }
-                .frame(width: 72)
 
-                Button {
-                    Task { await controller.toggle() }
-                } label: {
-                    ZStack {
-                        if recording {
-                            Circle()
-                                .fill(Color.recordingRed.opacity(0.22))
-                                .frame(width: 80, height: 80)
-                                .scaleEffect(1 + CGFloat(controller.level) * 0.3)
-                                .animation(.easeOut(duration: 0.08), value: controller.level)
-                            Circle().fill(Color.recordingRed).frame(width: 64, height: 64)
-                            RoundedRectangle(cornerRadius: 5).fill(.white).frame(width: 24, height: 24)
-                        } else {
-                            // Idle looks clearly different: a ring with a red dot, like a camera.
-                            Circle().strokeBorder(Color.secondary, lineWidth: 4).frame(width: 64, height: 64)
-                            Circle().fill(Color.recordingRed).frame(width: 44, height: 44)
-                        }
+            // One floating glass dock, like Voice Memos: the controls sit on a
+            // single surface over the notes rather than a full-width strip.
+            VStack(spacing: 2) {
+                HStack(spacing: 18) {
+                    VStack(spacing: 4) {
+                        // No "--:--" when stopped: the dashes read as broken
+                        // glyphs in a monospaced title face. The space is kept so
+                        // the dock never resizes.
+                        ElapsedTime(start: recording ? controller.startedAt : nil)
+                            .font(.title3.monospacedDigit())
+                            .foregroundStyle(Color.recordingRed)
+                            .opacity(recording ? 1 : 0)
+                        LevelMeter(level: recording ? controller.level : 0)
+                            .frame(height: 28)
                     }
-                    .frame(width: 80, height: 80)
-                }
-                .accessibilityLabel(recording ? "Stop recording" : "Start recording")
+                    .frame(width: 72)
 
-                // Both side stacks are centred on the row, but the timer sits above
-                // the bars while the split's label sits under the icon, so the
-                // scissors ride above the meter. Nudged down until the scissors sit
-                // in line with the meter (Android #f0bc488); the label stays clear
-                // of the caption below.
-                SplitButton()
-                    .offset(y: 16)
+                    Button {
+                        Task { await controller.toggle() }
+                    } label: {
+                        ZStack {
+                            if recording {
+                                Circle()
+                                    .fill(Color.recordingRed.opacity(0.18))
+                                    .frame(width: 80, height: 80)
+                                    .scaleEffect(1 + CGFloat(controller.level) * 0.25)
+                                    .animation(.easeOut(duration: 0.08), value: controller.level)
+                                Circle().fill(Color.recordingRed).frame(width: 64, height: 64)
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(.white)
+                                    .frame(width: 26, height: 26)
+                            } else {
+                                // Idle looks clearly different: a ring with a red dot, like a camera.
+                                Circle().strokeBorder(Color.idleCaption.opacity(0.55), lineWidth: 3)
+                                    .frame(width: 64, height: 64)
+                                Circle().fill(Color.recordingRed).frame(width: 34, height: 34)
+                            }
+                        }
+                        .frame(width: 80, height: 80)
+                        .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(recording ? "Stop recording" : "Start recording")
+
+                    // Both side stacks are centred on the row, but the timer sits above
+                    // the bars while the split's label sits under the icon, so the
+                    // scissors ride above the meter. Nudged down until the scissors sit
+                    // in line with the meter (Android #f0bc488); the label stays clear
+                    // of the caption below.
+                    SplitButton()
+                        .offset(y: 12)
+                }
+                Text(recording ? "Recording..." : "Tap to Start")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(recording ? Color.recordingRed : Color.idleCaption)
             }
-            Text(recording ? "Recording..." : "Tap to Start")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(recording ? Color.recordingRed : Color.idleCaption)
+            .padding(.top, 6)
+            .padding(.bottom, 4)
+            .padding(.horizontal, 6)
+            .glassDock(tint: recording ? Color.recordingRed.opacity(0.07) : nil)
         }
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity)
-        .background { if pureBlack { Color.black } else { Rectangle().fill(.bar) } }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 6)
+    }
+}
+
+private extension View {
+    /// The dock's surface. Liquid Glass on iOS 26+, the old bar material before
+    /// it, in the same shape so the layout doesn't move.
+    @ViewBuilder func glassDock(tint: Color? = nil) -> some View {
+        if #available(iOS 26.0, *) {
+            let glass: Glass = tint.map { .regular.tint($0) } ?? .regular
+            self.glassEffect(glass, in: RoundedRectangle(cornerRadius: 34, style: .continuous))
+        } else {
+            self.background(.bar, in: RoundedRectangle(cornerRadius: 34, style: .continuous))
+        }
     }
 }
 
@@ -185,18 +214,18 @@ struct SplitButton: View {
             VStack(spacing: 2) {
                 Image(systemName: "scissors")
                     .font(.title3)
-                    .overlay(alignment: .topTrailing) {
-                        if let badge = controller.autoSplit.badge {
-                            Text(badge)
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 4)
-                                .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 5))
-                                .offset(x: 18, y: -8)
-                                .fixedSize()
-                        }
+                HStack(spacing: 3) {
+                    Text(controller.autoSplit == .off ? "Split" : "Auto")
+                        .font(.caption.weight(.medium))
+                    if let badge = controller.autoSplit.badge {
+                        Text(badge)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.accentColor, in: Capsule())
                     }
-                Text(controller.autoSplit == .off ? "Split" : "Auto").font(.caption.weight(.medium))
+                }
             }
             .frame(width: 72, height: 56)
             .contentShape(Rectangle())
