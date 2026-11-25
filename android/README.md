@@ -134,6 +134,22 @@ copied, edited, re-transcribed and rolled back through its revision history.
     goes back to notes.
   - **Layout button** next to the microphone: each tap moves to the next
     layout; its icon shows the current one.
+  - **Even Realities G1 glasses** (glasses icon next to the microphone, or
+    conversation settings): the conversation also goes to a pair of G1
+    smart glasses over Bluetooth LE, so the phone can stay in a pocket. The
+    waveguide is a green 640×200 display: **five lines of 40 characters**
+    (a Chinese character takes two columns), about 200 characters a page,
+    and nothing to scroll. So the glasses get a subtitle track, not a
+    transcript: the newest words fill the page from the bottom up and older
+    turns scroll off the top. *Them* (default) shows only the other person,
+    translated into your language; *Both* shows everything in your
+    language, `>` marking their turns and `-` yours. Conversation settings
+    preview the exact page, plus the battery and a *Look for the glasses
+    again* button.
+    Runs on the vendored reverse-engineered
+    [Basis protocol](app/src/main/java/com/voicepad/app/glasses/basis/README.md)
+    — no Even Realities app needed, though that app must not be connected
+    to the glasses meanwhile. See [docs/g1-glasses.md](../docs/g1-glasses.md).
   - **Crash guard**: before each risky native step (several mic channels,
     telling voices apart, the cover screen, on-device voices) VoicePad notes
     it on disk and clears the note afterwards. If the app closed with a note
@@ -156,9 +172,16 @@ copied, edited, re-transcribed and rolled back through its revision history.
     text exactly. Every clip is cached (up to 150 MB), so replays are
     instant. (Piper voices for other languages need a phonemiser that
     sherpa-onnx 2.0 no longer includes, so they aren't offered.)
-  - Pauses when the app goes to the background; note recording is paused
-    while it's open and resumes after. Each listening stretch is saved as a
-    note: its audio plus the speaker-labelled transcript with translations.
+  - **Keeps listening with the phone locked**: conversation mode runs under a
+    foreground service (microphone type), so the app can go to the background
+    or the screen can lock and it still hears, translates and updates the
+    glasses. A *Conversation* notification stays in the status bar with the
+    newest line and **Pause** / **Leave** — private, so a locked screen shows
+    nothing until unlocked, and on Android 16 it's a Live Update ("LIVE"
+    chip). Pausing or leaving stops it. Note recording is paused while
+    conversation mode is open, and resumes after. Each listening stretch is
+    saved as a note: its audio plus the speaker-labelled transcript with
+    translations.
 - **Recordings are never lost to a model failure.** Every note saves its
   transcription status (recording → pending → transcribing → done/failed).
   Audio stays on disk until it has text; failed or waiting recordings show

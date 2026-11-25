@@ -84,7 +84,7 @@ class MainActivity : ComponentActivity() {
                 CompositionLocalProvider(LocalTypeOnKeyboard provides typeOnKeyboard) {
                     val hinge = tabletopHinge
                     when {
-                        conversationState.visible -> ConversationScreen(conversation, controller)
+                        conversationState.visible -> ConversationScreen(conversation, controller, app.glasses)
                         hinge != null && state.tabletopLayout -> TabletopScreen(controller, hinge)
                         else -> VoicePadScreen(controller, conversation)
                     }
