@@ -20,11 +20,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
@@ -53,6 +56,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.voicepad.app.VoicePadApplication
 import com.voicepad.app.transcription.LanguageTags
 import com.voicepad.app.zh.BreakdownRequest
 import com.voicepad.app.zh.ChineseDictionary
@@ -251,9 +256,26 @@ private fun WordCard(card: WordBreakdown.Card, color: Color?, selected: Boolean,
 @Composable
 private fun CardDetail(card: WordBreakdown.Card, color: Color?, matchedWords: List<String>) {
     val accent = color ?: MaterialTheme.colorScheme.primary
+    val context = LocalContext.current
+    val speech = remember { (context.applicationContext as VoicePadApplication).speech }
+    val speechState by speech.state.collectAsStateWithLifecycle()
+    val speechId = "breakdown:${card.text}"
+    val saying = speechState.activeId == speechId
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(card.text, fontSize = 40.sp, lineHeight = 46.sp)
-        Spacer(Modifier.width(14.dp))
+        IconButton(onClick = { speech.say(speechId, card.text, "zh") }, modifier = Modifier.size(36.dp)) {
+            if (saying && speechState.generating) {
+                MakingVoiceBars(accent)
+            } else {
+                Icon(
+                    if (saying) Icons.Default.Stop else Icons.AutoMirrored.Filled.VolumeUp,
+                    contentDescription = if (saying) "Stop" else "Say the word",
+                    tint = accent,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        Spacer(Modifier.width(10.dp))
         Column {
             Text(tonedPinyin(card.numbered, card.pinyin), style = MaterialTheme.typography.titleLarge)
             if (matchedWords.isNotEmpty()) {

@@ -23,7 +23,21 @@ class WordBreakdown(
      * up, so particles read as particles (了 le, not liǎo).
      */
     private val usualReading: ((String) -> String?)? = null,
+    /**
+     * How runs of Chinese characters are cut into words: HanLP on the phone.
+     * Null (and any segmenter that throws) falls back to the frequency search
+     * below, which only uses the bundled dictionary.
+     */
+    private val segmenter: Segmenter? = null,
 ) {
+
+    /** Cuts a run of Chinese characters into words, as [start, end) offsets into it. */
+    fun interface Segmenter {
+        fun segment(run: String): List<Pair<Int, Int>>
+
+        /** Numbered pinyin for a word the dictionary doesn't know, if the segmenter has a table. */
+        fun numberedPinyin(word: String): String? = null
+    }
 
     data class Sense(
         val gloss: String,
@@ -116,6 +130,18 @@ class WordBreakdown(
     }
 
     private fun segmentRun(text: String, from: Int, to: Int): List<Pair<Int, Int>> {
+        val run = text.substring(from, to)
+        // HanLP knows words the dictionary doesn't, and cuts common words apart
+        // where the frequency search would glue them into one unlikely long one.
+        segmenter?.let { cutter ->
+            runCatching { cutter.segment(run) }.getOrNull()
+                ?.takeIf { words -> words.isNotEmpty() && words.all { (a, b) -> a >= 0 && a < b && b <= run.length } }
+                ?.let { words -> return words.map { (a, b) -> (from + a) to (from + b) } }
+        }
+        return frequencyRun(text, from, to)
+    }
+
+    private fun frequencyRun(text: String, from: Int, to: Int): List<Pair<Int, Int>> {
         val n = to - from
         val logTotal = ln(dictionary.totalFrequency.toDouble())
         // Unknown single characters still have to be words of their own.
@@ -146,11 +172,23 @@ class WordBreakdown(
         val readings = senses.groupBy { it.numbered.lowercase() }
             .map { (_, list) -> Reading(list.first().pinyin, list.first().numbered, list.sumOf { it.score }) }
             .sortedByDescending { it.score }
+        // A word the dictionary doesn't know still has a reading: HanLP's pinyin
+        // table covers the hanzi CC-CEDICT leaves out.
+        val fallback = if (readings.isEmpty()) segmenter?.numberedPinyin(word) else null
         val chars = if (word.length > 1) word.map { c ->
             val top = senses(c.toString(), emptySet()).firstOrNull()
-            CharInfo(c.toString(), top?.pinyin, top?.numbered, top?.gloss)
+            when {
+                top != null -> CharInfo(c.toString(), top.pinyin, top.numbered, top.gloss)
+                else -> segmenter?.numberedPinyin(c.toString())?.let { p ->
+                    CharInfo(c.toString(), Pinyin.marks(p), p, null)
+                } ?: CharInfo(c.toString(), null, null, null)
+            }
         } else emptyList()
-        return Card(word, start, end, senses, readings, chars)
+        return Card(
+            word, start, end, senses,
+            readings.ifEmpty { fallback?.let { listOf(Reading(Pinyin.marks(it), it, 1.0)) }.orEmpty() },
+            chars,
+        )
     }
 
     /** [word]'s meanings, best first, with scores that sum to 1. */

@@ -306,38 +306,6 @@ internal fun SpeakButton(turn: Turn, language: String, tint: Color) {
     }
 }
 
-/** Three bars breathing while the voice is made: nothing is audible yet, and it takes a moment. */
-@Composable
-private fun MakingVoiceBars(tint: Color) {
-    val transition = rememberInfiniteTransition(label = "making-voice")
-    Row(
-        modifier = Modifier
-            .height(14.dp)
-            .semantics { contentDescription = "Generating the voice" },
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalAlignment = Alignment.Bottom,
-    ) {
-        repeat(3) { index ->
-            val height by transition.animateFloat(
-                initialValue = 0.2f,
-                targetValue = 1f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 380, delayMillis = index * 110, easing = FastOutSlowInEasing),
-                    repeatMode = RepeatMode.Reverse,
-                ),
-                label = "bar-$index",
-            )
-            Box(
-                Modifier
-                    .width(3.dp)
-                    .height(14.dp * height)
-                    .clip(RoundedCornerShape(1.5.dp))
-                    .background(tint),
-            )
-        }
-    }
-}
-
 /**
  * A foldable standing half open like a laptop, or showing their side on its
  * cover screen: the upright half is the stage, the flat half under your hands
