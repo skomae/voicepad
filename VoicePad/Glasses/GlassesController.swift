@@ -14,6 +14,10 @@ final class GlassesController {
     private(set) var linkState: GlassesLinkState = .idle
     /// The page on the glasses (also the settings preview).
     private(set) var page: [String] = []
+    /// Named devices heard while scanning, newest last. Empty while a scan is
+    /// hearing nothing — which is the difference between "wrong name" and "the
+    /// glasses aren't advertising".
+    private(set) var sightings: [String] = []
 
     var scope: GlassesScope {
         didSet {
@@ -83,6 +87,11 @@ final class GlassesController {
     private func startLinkIfNeeded() {
         guard link == nil else { return }
         let link = GlassesLink()
+        link.onSighting = { [weak self] name in
+            guard let self, !self.sightings.contains(name) else { return }
+            self.sightings.append(name)
+            if self.sightings.count > 4 { self.sightings.removeFirst() }
+        }
         link.onChange = { [weak self] state in
             guard let self else { return }
             self.linkState = state
@@ -93,6 +102,7 @@ final class GlassesController {
             }
         }
         self.link = link
+        sightings = []
         link.start()
     }
 
@@ -149,6 +159,11 @@ struct GlassesSection: View {
                         Button("Look again") { glasses.stop(); glasses.enabled = true }
                             .font(.footnote.weight(.semibold))
                     }
+                }
+                if case .scanning = glasses.linkState, !glasses.sightings.isEmpty {
+                    Text("Nearby: " + glasses.sightings.joined(separator: ", "))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                 }
                 preview
             }

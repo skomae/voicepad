@@ -32,6 +32,10 @@ enum GlassesLinkState: Equatable {
 final class GlassesLink: NSObject {
     /// Called on every state change; the settings row and the controller read it.
     var onChange: ((GlassesLinkState) -> Void)?
+    /// Every named peripheral seen while scanning, for the settings row: a scan that
+    /// has stopped hearing anything looks exactly like one that is hearing a dozen
+    /// other devices.
+    var onSighting: ((String) -> Void)?
     /// The page currently on the glasses, for re-sending after a reconnect.
     private var lastPage: [String]?
     private var state: GlassesLinkState = .idle {
@@ -185,8 +189,12 @@ extension GlassesLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         switch central.state {
         case .poweredOn:
-            // Scan by service: the glasses advertise Nordic's UART service.
-            central.scanForPeripherals(withServices: [serviceID], options: nil)
+            // Unfiltered on purpose. A service filter is matched against the
+            // advertisement, and the G1 does not advertise its UART service — only
+            // its name — so filtering here finds nothing at all. Android scans
+            // unfiltered too and matches on the name; so does this.
+            central.scanForPeripherals(withServices: nil, options: nil)
+            Diagnostics.log("glasses: scanning unfiltered")
             state = .scanning
         case .unauthorized:
             state = .failed("Bluetooth is not allowed for VoicePad")
@@ -200,7 +208,15 @@ extension GlassesLink: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral,
                         advertisementData: [String: Any], rssi RSSI: NSNumber) {
         let name = advertisementData[CBAdvertisementDataLocalNameKey] as? String ?? peripheral.name
+        let services = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID])?.count ?? 0
+        if let name, !name.isEmpty {
+            // What is actually in the air, so "looking for glasses" can be told
+            // apart from "the glasses aren't advertising".
+            onSighting?(name)
+            Diagnostics.log("glasses: saw \(name) rssi=\(RSSI.intValue) advServices=\(services)")
+        }
         guard case let .arm(channel, side, _)? = G1Name.parse(name) else { return }
+        Diagnostics.log("glasses: matched \(side.rawValue) channel \(channel)")
         // First pair only: the glasses are a two-arm set on one channel.
         if let existing = arms[side], existing.channel != channel { return }
         if arms[side] == nil {
