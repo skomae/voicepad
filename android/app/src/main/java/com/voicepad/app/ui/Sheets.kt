@@ -212,6 +212,14 @@ private fun AutoCleanupSection(state: RecordingController.UiState, controller: R
     )
     Spacer(Modifier.height(8.dp))
     AutoAgeRow(
+        title = "Delete audio after",
+        detail = "Keeps the note and its text; the recording itself is deleted permanently. " +
+            "\u201cImmediately\u201d removes it as soon as the note has its text.",
+        selected = state.autoDeleteAudio,
+        onSelect = controller::setAutoDeleteAudio,
+    )
+    Spacer(Modifier.height(8.dp))
+    AutoAgeRow(
         title = "Compress audio after",
         detail = "Shrinks recordings to about a tenth of their size; notes stay in the list and still play. " +
             "Each file is checked before the original is removed.",

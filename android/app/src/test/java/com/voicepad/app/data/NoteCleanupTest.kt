@@ -101,4 +101,20 @@ class NoteCleanupTest {
         val c = NoteCleanup.autoSelect(notes, Action.COMPRESS, NoteCleanup.AutoAge.DAYS_30, now).map { it.id }.toSet()
         assertEquals(setOf("fortyDays", "pinnedOld", "emptyOld"), c)
     }
+
+    @Test
+    fun `delete audio takes notes with text and audio, never pinned or unfinished ones`() {
+        val list = listOf(
+            note("fresh", 0.01),
+            note("old", 5.0),
+            note("pinned", 1.0, pinned = true),
+            note("waiting", 1.0, status = TranscriptionStatus.PENDING),
+            note("noAudio", 1.0).copy(audioFileName = null),
+        )
+        fun auto(age: NoteCleanup.AutoAge) =
+            NoteCleanup.autoSelect(list, Action.DELETE_AUDIO, age, now).map { it.id }.toSet()
+        assertEquals(setOf("old"), auto(NoteCleanup.AutoAge.HOURS_1))
+        assertEquals(setOf("old"), auto(NoteCleanup.AutoAge.HOURS_24))
+        assertEquals(emptySet<String>(), auto(NoteCleanup.AutoAge.OFF))
+    }
 }
