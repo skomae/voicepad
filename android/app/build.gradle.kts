@@ -68,7 +68,9 @@ val downloadLlamaCpp by tasks.registering {
         marker.asFile.writeText(llamaCppVersion)
     }
 }
-tasks.named("preBuild") { dependsOn(downloadSherpaOnnx, downloadSileroVad, downloadLlamaCpp) }
+apply(from = "zh-dictionary.gradle.kts")
+
+tasks.named("preBuild") { dependsOn(downloadSherpaOnnx, downloadSileroVad, downloadLlamaCpp, "downloadChineseDictionary") }
 
 // Release signing comes from environment variables (set by CI from repo
 // secrets). Without them the release build falls back to the debug key.

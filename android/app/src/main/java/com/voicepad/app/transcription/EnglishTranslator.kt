@@ -1,8 +1,6 @@
 package com.voicepad.app.transcription
 
 import android.content.Context
-import android.icu.text.Transliterator
-import android.os.Build
 import com.google.android.gms.tasks.Task
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.nl.languageid.LanguageIdentification
@@ -29,13 +27,7 @@ class EnglishTranslator(private val context: Context) {
 
     private val languageId by lazy { LanguageIdentification.getClient() }
     private val translators = mutableMapOf<String, Translator>()
-    private val romanizer = Romanizer { id, text ->
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            runCatching { Transliterator.getInstance(id).transliterate(text) }.getOrNull()
-        } else {
-            null // Android's ICU transliterator arrived in Android 10.
-        }
-    }
+    private val romanizer = DeviceRomanizer.romanizer
 
     private val restoreMutex = Mutex()
     private var restored = false

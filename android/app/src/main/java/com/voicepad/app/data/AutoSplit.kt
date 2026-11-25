@@ -40,6 +40,9 @@ enum class AutoSplit(val label: String, val badge: String?, val silenceSeconds: 
         now - noteStart >= (everyMinutes!! * 60 + GRACE_SECONDS) * rate
 
     companion object {
+        /** Until the user picks one: a new note after each 3-second pause. */
+        val DEFAULT = SILENCE_3S
+
         /** A pause at least this long counts as a good place to split. */
         const val PAUSE_SECONDS = 0.7
         const val GRACE_SECONDS = 60

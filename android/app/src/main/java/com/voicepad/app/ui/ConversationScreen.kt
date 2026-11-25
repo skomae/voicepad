@@ -111,6 +111,7 @@ import com.voicepad.app.conversation.SpeakerRef
 import com.voicepad.app.conversation.SpeakerSource
 import com.voicepad.app.conversation.Stage
 import com.voicepad.app.conversation.Turn
+import com.voicepad.app.zh.BreakdownRequest
 import com.voicepad.app.glasses.GlassesController
 import com.voicepad.app.glasses.GlassesScope
 import com.voicepad.app.glasses.GlassesScreen
@@ -188,6 +189,7 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
                 val layout = conversation.cycleLayout()
                 Toast.makeText(context, layout.label, Toast.LENGTH_SHORT).show()
             },
+            onSetLayout = conversation::setLayout,
             onDismissMessage = conversation::dismissMessage,
             onRetryModels = { conversation.retryModels(); if (notesState.engineStatus is EngineStatus.Failed) notes.loadEngine() },
             onUseEngine = notes::selectModel,
@@ -197,8 +199,11 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
         )
     }
 
+    // Tapping a word of a Chinese turn opens its breakdown.
+    var breakdown by remember { mutableStateOf<BreakdownRequest?>(null) }
     CompositionLocalProvider(
         LocalSpeak provides SpeakActions(speechState, onSpeak = conversation::speak, onDismissError = conversation.speech::dismissError),
+        LocalWordTap provides { breakdown = it },
     ) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         if (state.fold != null || coverActive) {
@@ -241,6 +246,7 @@ fun ConversationScreen(conversation: ConversationController, notes: RecordingCon
     }
     }
 
+    breakdown?.let { WordBreakdownSheet(it, onDismiss = { breakdown = null }) }
     picking?.let { side ->
         LanguagePickerDialog(
             title = if (side == Side.MINE) "You speak" else "They speak",
@@ -461,21 +467,28 @@ internal fun TranscriptPane(state: ConversationController.UiState, textSize: Int
                         // Says the translation, for the other person.
                         SpeakButton(turn, turn.target, color)
                     }
+                    // Tap a word (when one side is Chinese) for its breakdown.
+                    val spokenLayout = remember { TextLayoutRef() }
                     Text(
                         turn.text,
                         fontSize = (size * 0.8f).sp,
                         lineHeight = (size * 0.95f).sp,
                         fontStyle = if (isLive) FontStyle.Italic else FontStyle.Normal,
+                        onTextLayout = { spokenLayout.value = it },
+                        modifier = Modifier.tapWordsOf(turn, tappedTranslation = false, spokenLayout, typed),
                     )
                     turn.romanization?.let {
                         Text(it, fontSize = (size * 0.45f).sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    val translatedLayout = remember { TextLayoutRef() }
                     Text(
                         "→ " + (turn.translation ?: if (turn.translationFailed) "(not translated)" else "…"),
                         fontSize = size.sp,
                         lineHeight = (size * 1.2f).sp,
                         fontWeight = if (newest) FontWeight.SemiBold else FontWeight.Normal,
                         color = MaterialTheme.colorScheme.primary,
+                        onTextLayout = { translatedLayout.value = it },
+                        modifier = Modifier.tapWordsOf(turn, tappedTranslation = true, translatedLayout, typed, prefix = 2),
                     )
                     turn.translationRomanization?.let {
                         Text(it, fontSize = (size * 0.45f).sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -501,6 +514,7 @@ internal fun ControlStrip(
     onRetryModels: () -> Unit,
     onUseEngine: (EngineChoice) -> Unit,
     onCycleLayout: () -> Unit = {},
+    onSetLayout: (ConversationLayout) -> Unit = {},
     onToggleSpeak: () -> Unit = {},
     glasses: GlassesStatus = GlassesStatus.Off,
     onToggleGlasses: () -> Unit = {},
@@ -527,9 +541,20 @@ internal fun ControlStrip(
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
                 IconButton(onClick = onClose) { Icon(Icons.Default.Close, contentDescription = "Leave conversation mode") }
                 val layoutButton = @Composable {
-                    // Tap to cycle through the layouts; the icon shows the current one.
-                    IconButton(onClick = onCycleLayout, modifier = Modifier.size(40.dp)) {
-                        Icon(layoutIcon(state.layout), contentDescription = "Layout: ${state.layout.label}. Tap for the next one.")
+                    // Tap to cycle through the layouts; drag up (or long-press) to pick one,
+                    // like the split button. The icon shows the current one.
+                    DragUpMenu(
+                        title = "Layout",
+                        options = ConversationLayout.entries,
+                        selected = state.layout,
+                        label = { it.label },
+                        icon = ::layoutIcon,
+                        onSelect = onSetLayout,
+                        onTap = onCycleLayout,
+                        description = "Layout: ${state.layout.label}. Tap for the next one; drag up or long-press to choose.",
+                        modifier = Modifier.size(40.dp).clip(CircleShape),
+                    ) {
+                        Icon(layoutIcon(state.layout), contentDescription = null)
                     }
                 }
                 if (narrow) {
