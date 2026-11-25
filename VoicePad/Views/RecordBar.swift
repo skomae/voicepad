@@ -82,7 +82,12 @@ struct RecordBar: View {
                 }
                 .accessibilityLabel(recording ? "Stop recording" : "Start recording")
 
+                // Both side stacks are centred on the row, but the timer sits above
+                // the bars while the split's label sits under the icon, so the
+                // scissors ride above the meter. Drop it onto the meter's centre
+                // line, as Android #f0bc488 does with 6 dp on its bar.
                 SplitButton()
+                    .offset(y: 27)
             }
             Text(recording
                  ? "Recording" + (controller.partNumber > 1 ? " · part \(controller.partNumber)" : "")
