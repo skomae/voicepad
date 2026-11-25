@@ -2,6 +2,12 @@ import SwiftUI
 
 extension Color {
     static let recordingRed = Color(red: 0.83, green: 0.18, blue: 0.18)
+
+    /// Dark grey in light mode, light grey in dark: the "Tap to Start" hint has
+    /// to stay readable on both, including the pure-black theme.
+    static let idleCaption = Color(uiColor: UIColor { traits in
+        traits.userInterfaceStyle == .dark ? UIColor(white: 0.72, alpha: 1) : UIColor(white: 0.28, alpha: 1)
+    })
 }
 
 /// A dot that pulses, for "recording now".
@@ -84,17 +90,15 @@ struct RecordBar: View {
 
                 // Both side stacks are centred on the row, but the timer sits above
                 // the bars while the split's label sits under the icon, so the
-                // scissors ride above the meter. Drop it onto the meter's centre
-                // line, as Android #f0bc488 does with 6 dp on its bar.
+                // scissors ride above the meter. Nudged down until the scissors sit
+                // in line with the meter (Android #f0bc488); the label stays clear
+                // of the caption below.
                 SplitButton()
-                    .offset(y: 27)
+                    .offset(y: 16)
             }
-            Text(recording
-                 ? "Recording" + (controller.partNumber > 1 ? " · part \(controller.partNumber)" : "")
-                    + (controller.backgroundVoices ? " · background voices" : "") + " — tap ■ to stop"
-                 : "Not recording — tap ● to start")
+            Text(recording ? "Recording..." : "Tap to Start")
                 .font(.subheadline.weight(.medium))
-                .foregroundStyle(recording ? Color.recordingRed : .secondary)
+                .foregroundStyle(recording ? Color.recordingRed : Color.idleCaption)
         }
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity)
