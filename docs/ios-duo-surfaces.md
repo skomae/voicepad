@@ -130,30 +130,35 @@ Work:
 
 Effort: 2–3 days including the capability and the deep-link path.
 
-## 4. Even G1 glasses on iOS — planned
+## 4. Even G1 glasses on iOS — ported, needs hardware
 
-The glasses are the truest "second surface": always in view, only the wearer can
-see it, 5 lines × 40 columns. The Android design in `docs/g1-glasses.md` is
-device-agnostic — `Stage → 5 lines × 40 columns → one write per changed page` —
-and Even Realities expose the G1 as a BLE GATT peripheral, which CoreBluetooth can
-drive as a central. There is no HID-peripheral requirement on this path, so the
-one thing iOS cannot do (act as a Bluetooth keyboard) does not apply.
+Ported on this branch, from the Android implementation in
+`android/.../glasses/`:
 
-Work:
-- `GlassesScreen` (pure layout: `Stage` → pages) ports as-is; it has no Android
-  dependencies.
-- `GlassesController` (page diffing, newest-wins, re-send after reconnect) ports
-  as-is.
-- `GlassesLink` needs a `CoreBluetooth` implementation: scan by service, connect,
-  discover the two arm characteristics, write. Same protocol as Android, different
-  API shape. Keep the existing `GlassesLink` protocol so the controller and tests
-  do not change.
-- Test the pure parts (page layout, diffing) in `VoicePadTests`; the BLE link is
-  device-only and needs a real pair of glasses.
-- Privacy: the HUD is the wearer's subtitle track; the phone keeps its own screen
-  for the person opposite.
+| Piece | File | State |
+|---|---|---|
+| 5 lines x 40 columns, column-aware wrapping, gutters, pinyin line | `Glasses/GlassesScreen.swift` | done, `GlassesScreenTests` |
+| `0x4E` page packets, `0x25` heartbeat, battery, acks, arm-name parsing | `Glasses/GlassesProtocol.swift` | done, `GlassesProtocolTests` |
+| Scan, pair the two arms, write left then right, heartbeat every 8 s | `Glasses/GlassesLink.swift` | written, never run against a pair |
+| Page conflation, 350 ms spacing, re-send after reconnect, scope | `Glasses/GlassesController.swift` | done |
+| Settings: on/off, Them/Both, status, 5x40 green preview | `GlassesSection` | done |
 
-Effort: 3–5 days, most of it the BLE link and on-glasses timing.
+Two things iOS forced:
+
+- **Chunking is character-aware.** The protocol carries 191 bytes per packet and
+  the Android sender cuts at byte offsets; 191 is not a multiple of 3, so a Chinese
+  page splits a character in half and the glasses show a replacement mark at the
+  end of every page. The Swift version packs whole characters up to 191 bytes, and
+  `GlassesProtocolTests.testWideTextSplitsByBytesNotCharacters` pins it. Worth
+  fixing on Android too.
+- **The link is not `@MainActor`.** `CBCentralManagerDelegate` requirements are
+  nonisolated; the manager is created on the main queue so every callback already
+  arrives there, and the controller stays on the main actor.
+
+Untested against real glasses, exactly like the Android side: scanning against the
+real advertisements, the page write being acknowledged on current firmware, the
+heartbeat holding the link, the battery answer, and whether 40 columns really fit
+the waveguide. There were no G1s to hand.
 
 ## 5. Watch companion — later
 

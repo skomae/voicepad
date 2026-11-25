@@ -6,6 +6,7 @@ struct VoicePadApp: App {
     @State private var store: NoteStore
     @State private var controller: RecordingController
     @State private var conversation: ConversationController
+    @State private var glasses = GlassesController()
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -22,6 +23,7 @@ struct VoicePadApp: App {
                 .environment(store)
                 .environment(controller)
                 .environment(conversation)
+                .environment(glasses)
                 .preferredColorScheme(controller.themeMode.colorScheme)
                 .environment(\.pureBlack, controller.themeMode == .black)
         }

@@ -20,6 +20,7 @@ private enum Side: Identifiable { case mine, theirs; var id: Self { self } }
 struct ConversationView: View {
     @Environment(ConversationController.self) private var conversation
     @Environment(RecordingController.self) private var notes
+    @Environment(GlassesController.self) private var glasses
     @State private var showSettings = false
     @State private var picking: Side?
     @State private var breakdown: BreakdownRequest?
@@ -59,7 +60,19 @@ struct ConversationView: View {
         .background { TranslationHost(translator: notes.translator) }
         // Nobody should have to tap the screen to keep it awake mid-conversation.
         .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
-        .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
+        .onDisappear {
+            UIApplication.shared.isIdleTimerDisabled = false
+            glasses.leave()
+        }
+        // The glasses are the wearer's subtitle track: mirror every stage change.
+        .onChange(of: conversation.stage, initial: true) { _, stage in
+            glasses.mirror(stage: stage, myLanguage: settings.myLanguage,
+                           theirLanguage: settings.theirLanguage, listening: conversation.listening)
+        }
+        .onChange(of: settings) { _, new in
+            glasses.mirror(stage: conversation.stage, myLanguage: new.myLanguage,
+                           theirLanguage: new.theirLanguage, listening: conversation.listening)
+        }
         .sheet(item: $picking) { side in
             LanguagePicker(
                 title: side == .mine ? "You speak" : "They speak",

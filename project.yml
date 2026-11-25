@@ -101,6 +101,8 @@ targets:
       - VoicePad/Conversation/ConversationLanguages.swift
       - VoicePad/Conversation/SpeakerClustering.swift
       - VoicePad/Views/DuoPosture.swift
+      - VoicePad/Glasses/GlassesScreen.swift
+      - VoicePad/Glasses/GlassesProtocol.swift
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.voicepad.tests

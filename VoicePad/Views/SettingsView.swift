@@ -20,6 +20,8 @@ struct SettingsView: View {
 
                 DictionariesSection()
 
+                GlassesSection()
+
                 Section {
                     Picker("Delete audio after", selection: $controller.autoDeleteAudio) {
                         ForEach(NoteCleanup.AutoAge.allCases) { Text($0.label).tag($0) }
