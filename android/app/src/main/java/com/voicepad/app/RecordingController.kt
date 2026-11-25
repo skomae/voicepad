@@ -191,6 +191,7 @@ class RecordingController(
     }
 
     companion object {
+        private const val TAG = "RecordingController"
         /** Longest audio one model call gets (Whisper's window is 30 s). */
         private const val MAX_CHUNK_SECONDS = 25.0
         /** With Whisper, utterances are batched until about this long before committing. */
@@ -571,7 +572,26 @@ class RecordingController(
         val s = _state.value
         val canRecord = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
-        if (s.autoRecordOnOpen && !s.isRecording && !conversationActive && canRecord) start()
+        if (s.autoRecordOnOpen && !s.isRecording && !conversationActive && canRecord) {
+            // Saved audio comes first. The queue can only run while nothing is
+            // recording, so opening the app into an instant recording — which is what
+            // auto-record does — starves it: the notes wait for the next stop, and if
+            // the app is killed mid-recording, for the stop after that.
+            if (backlog() > 0) autoRecordDeferred = true else start()
+        }
+    }
+
+    /** Notes the queue would take (a note out of attempts waits for a manual retry). */
+    private fun backlog(): Int = store.notes.value.count { it.needsTranscription && it.attempts < MAX_AUTO_ATTEMPTS }
+
+    /** Starts the recording that auto-record put off while saved audio was transcribed. */
+    private fun startDeferredRecording() {
+        if (!autoRecordDeferred) return
+        val canRecord = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!canRecord || _state.value.isRecording || conversationActive || backlog() > 0) return
+        autoRecordDeferred = false
+        start()
     }
 
     fun toggle() {
@@ -581,6 +601,7 @@ class RecordingController(
     fun start() {
         val s = _state.value
         if (s.isRecording || conversationActive) return
+        autoRecordDeferred = false
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             showError("Microphone access is needed to record.")
             return
@@ -1021,6 +1042,8 @@ class RecordingController(
 
     /** True while conversation mode has the microphone and the model; notes don't record meanwhile. */
     private var conversationActive = false
+    /** Set when auto-record was put off for saved audio; cleared when it starts. */
+    @Volatile private var autoRecordDeferred = false
     private var resumeAfterConversation = false
 
     /** Hands the microphone and the model to conversation mode, saving any note being recorded. */
@@ -1081,6 +1104,10 @@ class RecordingController(
      */
     private fun processQueue() {
         if (queueJob?.isActive == true) return
+        val ready = engineReady
+        val recording = _state.value.isRecording
+        val conversing = conversationActive
+        android.util.Log.i(TAG, "processQueue: engineReady=$ready isRecording=$recording conversation=$conversing pending=${store.notes.value.count { it.needsTranscription }}")
         queueJob = scope.launch {
             // Each note gets at most one attempt per pass; the next pass comes
             // with the next app launch, model load or finished recording.
@@ -1091,8 +1118,11 @@ class RecordingController(
                         it.id != _state.value.recordingNoteId && it.id !in tried
                 } ?: break
                 tried += next.id
+                android.util.Log.i(TAG, "processQueue: transcribing ${next.id} (attempt ${next.attempts + 1})")
                 transcribeSaved(next.id)
             }
+            android.util.Log.i(TAG, "processQueue: done (engineReady=${engineReady} isRecording=${_state.value.isRecording} conversation=$conversationActive)")
+            startDeferredRecording()
         }
     }
 
