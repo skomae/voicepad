@@ -49,10 +49,16 @@ glasses/basis/                         vendored Basis protocol (G1.kt, G1Device.
 - `GlassesController` mirrors the conversation: it maps the state to a page,
   drops duplicates, and conflates — a page still in flight is abandoned rather
   than queued behind a newer one. Writes are spaced at least 350 ms apart and
-  time out after 3 s.
+  time out after 5 s.
 - `BasisGlassesLink` pairs the two arms by the channel number in their
-  advertised names, writes the page to both, and keeps the Basis heartbeat
-  going (the link drops after ~30 s of silence).
+  advertised names and writes the page to both: left first, then right once
+  the left has acknowledged, as Even Realities' demo app does. A page is cut
+  into 191-byte `0x4E` packets, each acknowledged (`G1Protocol`, unit-tested in
+  `G1ProtocolTest`). Each arm gets the official `0x25` heartbeat every 8 s
+  (the link drops after ~30 s of silence) and a battery check every ~30 s.
+- A link lost mid-conversation shows as *Connecting* while Android reconnects
+  it; after 45 s without it the glasses are let go and shown as disconnected,
+  and *Look for the glasses again* scans afresh at any point.
 - The settings sheet draws the same page as a green-on-black preview, so the
   5×40 limit is visible while choosing the scope.
 
@@ -66,7 +72,9 @@ See `android/app/src/main/java/com/voicepad/app/glasses/basis/README.md`.
 Short version: both advertised-name prefixes are accepted (upstream only
 matched `Even G1_...`, the official app's units say `G1_45_L_92333`), pairing
 works across scan batches, the notification subscription is actually written,
-and lost acknowledgements no longer block the write queue for 15 s.
+writes no longer block (and fail) on the main thread, pages are split into
+packets the glasses accept with acknowledgements actually checked, and the
+official heartbeat keeps the link up.
 
 ## Limits
 
@@ -87,7 +95,9 @@ conversation mode stops the service; nothing runs in the background after that.
 
 If the system refuses to start the service (Android 12+ won't start a foreground
 service from the background), listening falls back to pausing when the app goes
-away, and restarts when it comes back.
+away, and restarts when it comes back. The service always calls
+`startForeground` before deciding to stop, and a refusal inside it is caught
+rather than crashing the app.
 
 ## Not yet verified — needs the hardware
 
@@ -97,9 +107,13 @@ real pair of G1s (there were none to hand):
 - scanning and pairing against the glasses' real advertisements;
 - the 0x4E page write being accepted and acknowledged on current firmware;
 - the heartbeat actually holding the link for long conversations;
+- the `0x25` heartbeat's answer on current firmware (taken from the official
+  demo app; a missed answer is harmless, it only retries once);
 - how much text the waveguide really fits at 40 columns (Basis's own limit,
-  and the source of the "5 lines × 40" figure) — if lines come out clipped,
-  lower `GlassesScreen.COLUMNS` and the wrapping follows;
+  and the source of the "5 lines × 40" figure). The official app measures with
+  a proportional font, 21 px in a 488 px line, so a line of wide Latin letters
+  (`W`, `M`) may clip before 40 — if lines come out clipped, lower
+  `GlassesScreen.COLUMNS` and the wrapping follows;
 - the foreground service holding the microphone with the phone locked (the
   Conversation notification, its Pause/Leave actions and the Live Update chip);
 - Bluetooth permission prompts on Android 12+ when the glasses are first

@@ -397,7 +397,9 @@ class ConversationController(
      */
     fun onAppStopped() {
         if (!_state.value.visible || !_state.value.listening) return
-        if (backgroundService) return
+        // The service may have been refused after it was asked for (Android won't
+        // always let a microphone service start), so ask it rather than assume.
+        if (backgroundService && ConversationService.isForeground) return
         pausedInBackground = true
         stopListening()
     }

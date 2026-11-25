@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.voicepad.app.MainActivity
@@ -40,6 +41,16 @@ class ConversationService : Service() {
         private const val ACTION_LEAVE = "com.voicepad.app.CONVERSATION_LEAVE"
         /** `Notification.CATEGORY_TRANSLATION`, which NotificationCompat doesn't carry (API 31). */
         private const val CATEGORY_TRANSLATION = "translation"
+        private const val TAG = "ConversationService"
+
+        /**
+         * Whether the service is in the foreground holding the microphone, so
+         * listening can carry on with the app in the background. False when
+         * Android refused it, which the caller of [start] can't see.
+         */
+        @Volatile
+        var isForeground = false
+            private set
 
         fun start(context: Context) {
             ContextCompat.startForegroundService(context, Intent(context, ConversationService::class.java))
@@ -64,24 +75,37 @@ class ConversationService : Service() {
             ACTION_TOGGLE -> controller.toggleListening()
             ACTION_LEAVE -> controller.close()
         }
-        // "Leave" and "Pause" make the notification pointless: don't go (or stay) foreground for it.
-        if (!controller.state.value.visible) {
+        // Started with startForegroundService(), the service must call
+        // startForeground() even when it's about to stop — stopping without it
+        // crashes the app ("did not then call Service.startForeground()").
+        if (!started) createChannel()
+        val foreground = try {
+            goForeground(build(controller.state.value))
+            true
+        } catch (e: Exception) {
+            // Android refuses a microphone service the app may not start right now
+            // (in the background, or without the permission). Listening then falls
+            // back to pausing when the app goes away; don't take the app down.
+            Log.w(TAG, "Couldn't keep listening in the background", e)
+            false
+        }
+        isForeground = foreground
+        // "Leave" and "Pause" make the notification pointless: don't stay foreground for it.
+        if (!foreground || !controller.state.value.visible || !controller.state.value.listening) {
+            isForeground = false
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf(startId)
             return START_NOT_STICKY
         }
         if (!started) {
             started = true
-            createChannel()
-            goForeground(build(controller.state.value))
             watch()
-        } else {
-            goForeground(build(controller.state.value))
         }
         return START_NOT_STICKY
     }
 
     override fun onDestroy() {
+        isForeground = false
         scope.cancel()
         super.onDestroy()
     }
@@ -94,6 +118,7 @@ class ConversationService : Service() {
                 .distinctUntilChanged()
                 .collect { model ->
                     if (!model.visible || !model.listening) {
+                        isForeground = false
                         stopForeground(STOP_FOREGROUND_REMOVE)
                         // Ignored if listening started again in the meantime.
                         stopSelf(lastStartId)

@@ -3,20 +3,31 @@ package com.voicepad.app.glasses.basis
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import no.nordicsemi.android.ble.ktx.suspend
 import no.nordicsemi.android.support.v18.scanner.ScanResult
-import java.util.Date
-import java.util.concurrent.Executors
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.ScheduledFuture
-import java.util.concurrent.TimeUnit
-import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
 
+/**
+ * One arm of the glasses: a request/response channel over its own BLE link.
+ *
+ * Requests are strictly one at a time per arm (a [Mutex]), each waiting for
+ * the response that starts with its command byte, or for a timeout. While
+ * connected the arm gets the official app's heartbeat every 8 s and a battery
+ * check every 30 s; without traffic the glasses drop the link after ~30 s.
+ */
 internal class G1Device(
     private val scanResult: ScanResult
 ) {
@@ -24,173 +35,125 @@ internal class G1Device(
     /** The name the arm advertises, e.g. `G1_45_L_92333`; some firmware says `Even G1_45_L_...`. */
     @SuppressLint("MissingPermission")
     val name = scanResult.scanRecord?.deviceName ?: scanResult.device.name.orEmpty()
-    val address = scanResult.device.address
-
-    // state flow ----------------------------------------------------------------------------------
+    val address: String = scanResult.device.address
 
     data class State(
         val connectionState: G1.ConnectionState = G1.ConnectionState.UNINITIALIZED,
         val batteryPercentage: Int? = null
     )
 
-    private val writableState = MutableStateFlow<State>(State())
+    private val writableState = MutableStateFlow(State())
     val state = writableState.asStateFlow()
 
-    // manager -------------------------------------------------------------------------------------
-
-    private lateinit var manager: G1BLEManager
+    /** Lives as long as this arm is in use; cancelled by [disconnect]. */
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var manager: G1BLEManager? = null
 
     // connection ----------------------------------------------------------------------------------
 
-    @SuppressLint("MissingPermission")
-    suspend fun connect(context: Context, scope: CoroutineScope): Boolean {
-        if(this::manager.isInitialized.not()) {
-            manager = G1BLEManager(scanResult.device.name, context, scope)
+    suspend fun connect(context: Context): Boolean {
+        val manager = manager ?: G1BLEManager(context, ::onIncoming).also { created ->
+            manager = created
             scope.launch {
-                manager.connectionState.collect {
-                    Log.d("G1Device", "CONNECTION_STATUS ${scanResult.device.name} = ${it}")
-                    writableState.value = state.value.copy(
-                        connectionState = it
-                    )
+                created.connectionState.collect {
+                    Log.d(TAG, "$name: $it")
+                    writableState.value = writableState.value.copy(connectionState = it)
                 }
             }
             scope.launch {
-                manager.incoming.collect { packet ->
-                    when(packet) {
-                        is BatteryLevelResponsePacket -> {
-                            if(state.value.batteryPercentage != packet.level) {
-                                writableState.value = state.value.copy(
-                                    batteryPercentage = packet.level
-                                )
-                            }
-                        }
-                        else -> {
-                            // is this the response we're expecting?
-                            val request = currentRequest
-                            if(request != null && packet.responseTo == request.outgoing.type) {
-                                // service the request, and advance the queue until a command is successfully sent
-                                request.callback.invoke(packet)
-                                advanceQueue()
-                            } else {
-                                // TODO: emit it as an unrequested packet
-                            }
-                        }
-                    }
+                // (Re)started on every connection, stopped while the link is down.
+                created.connectionState.collectLatest { state ->
+                    if (state == G1.ConnectionState.CONNECTED) keepAlive()
                 }
             }
         }
-        try {
+        return try {
             manager.connect(scanResult.device)
                 .useAutoConnect(true)
                 .retry(3)
                 .timeout(30_000)
                 .suspend()
-            startPeriodicBatteryCheck()
-            return true
+            true
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Throwable) {
-            Log.e(
-                "G1BLEManager",
-                "ERROR: Device connection error ${e}"
-            )
-            return false
+            Log.e(TAG, "$name: couldn't connect: $e")
+            false
         }
     }
 
     suspend fun disconnect() {
-        stopHeartbeat()
-        manager.disconnect().suspend()
+        val m = manager
+        scope.cancel()
+        pending?.response?.cancel()
+        if (m != null) {
+            runCatching { m.disconnect().suspend() }
+            m.close()
+        }
+        writableState.value = writableState.value.copy(connectionState = G1.ConnectionState.DISCONNECTED)
     }
 
-    private fun advanceQueue() {
-        var nextRequest = queuedRequests.removeFirstOrNull()
-        var successfullySent = false
-        while (nextRequest != null && !successfullySent) {
-            currentRequest = nextRequest.copy(
-                expires = Date().time + REQUEST_EXPIRATION_MILLIS
-            )
-            successfullySent = manager.send(nextRequest.outgoing)
-            if(!successfullySent) {
-                // TODO: log send error
-                nextRequest.callback(null)
-                nextRequest = queuedRequests.removeFirstOrNull()
+    // request and response ------------------------------------------------------------------------
+
+    private class Pending(val command: Byte, val response: CompletableDeferred<ByteArray>)
+
+    private val requestLock = Mutex()
+    @Volatile private var pending: Pending? = null
+
+    /**
+     * Writes [bytes] and waits for the glasses' answer to that command;
+     * null if the write failed or no answer came within [timeoutMs].
+     */
+    suspend fun request(bytes: ByteArray, timeoutMs: Long): ByteArray? = requestLock.withLock {
+        val m = manager ?: return null
+        val waiting = Pending(bytes[0], CompletableDeferred())
+        pending = waiting
+        try {
+            if (!m.send(bytes)) return null
+            withTimeoutOrNull(timeoutMs) { waiting.response.await() }
+        } finally {
+            if (pending === waiting) pending = null
+        }
+    }
+
+    /** Sends packets one after another, each acknowledged before the next. */
+    suspend fun requestAll(packets: List<ByteArray>, timeoutMs: Long): Boolean =
+        packets.all { G1Protocol.accepted(request(it, timeoutMs)) }
+
+    private fun onIncoming(bytes: ByteArray) {
+        if (bytes.isEmpty()) return
+        G1Protocol.batteryLevel(bytes)?.let { level ->
+            if (writableState.value.batteryPercentage != level) {
+                writableState.value = writableState.value.copy(batteryPercentage = level)
             }
         }
-        if(nextRequest == null) {
-            currentRequest = null
-        }
+        val waiting = pending
+        if (waiting != null && waiting.command == bytes[0]) waiting.response.complete(bytes)
     }
 
-    // request and response mechanism --------------------------------------------------------------
+    // keep-alive ----------------------------------------------------------------------------------
 
-    private val REQUEST_EXPIRATION_MILLIS = 5000
+    private var heartbeatSeq = 0
 
-    private data class Request(
-        val outgoing: OutgoingPacket,
-        val callback: (IncomingPacket?) -> Unit,
-        val expires: Long = 0
-    )
-
-    private val queuedRequests = mutableListOf<Request>()
-    private var currentRequest: Request? = null
-
-    fun sendRequest(outgoing: OutgoingPacket) = manager.send(outgoing)
-
-    suspend fun sendRequestForResponse(outgoing: OutgoingPacket) =
-        suspendCoroutine<IncomingPacket?> { continuation ->
-            if(queuedRequests.isEmpty()) {
-                currentRequest = Request(
-                    outgoing = outgoing,
-                    callback = { incomingPacket -> continuation.resume(incomingPacket) },
-                    expires = Date().time + REQUEST_EXPIRATION_MILLIS
-                )
-                if(!manager.send(outgoing)) {
-                    currentRequest = null
-                    continuation.resume(null)
-                }
-            } else {
-                queuedRequests.add(
-                    Request(
-                        outgoing = outgoing,
-                        callback = { incomingPacket -> continuation.resume(incomingPacket) }
-                    )
-                )
+    private suspend fun keepAlive() {
+        var tick = 0
+        while (scope.isActive) {
+            if (tick % BATTERY_EVERY == 0) {
+                request(G1Protocol.battery(), RESPONSE_TIMEOUT_MS)
+            } else if (!G1Protocol.heartbeatAnswered(request(G1Protocol.heartbeat(heartbeatSeq++), RESPONSE_TIMEOUT_MS))) {
+                // The official app retries a missed heartbeat once.
+                request(G1Protocol.heartbeat(heartbeatSeq++), RESPONSE_TIMEOUT_MS)
             }
-        }
-
-    // heartbeat (battery check) -------------------------------------------------------------------
-
-    private val batteryCheckScheduler: ScheduledExecutorService = Executors.newScheduledThreadPool(1)
-    private var batteryCheckTask: ScheduledFuture<*>? = null
-    private var requestExpiryTask: ScheduledFuture<*>? = null
-
-    private fun startPeriodicBatteryCheck() {
-        batteryCheckTask?.cancel(true)
-        batteryCheckTask = batteryCheckScheduler.scheduleWithFixedDelay(this::sendBatteryCheck, 0, 15, TimeUnit.SECONDS)
-        // A write whose acknowledgement never comes would otherwise hold the queue
-        // for the whole 15-second heartbeat; check for those every second.
-        requestExpiryTask?.cancel(true)
-        requestExpiryTask = batteryCheckScheduler.scheduleWithFixedDelay(this::expireStaleRequest, 1, 1, TimeUnit.SECONDS)
-    }
-
-    private fun sendBatteryCheck() {
-        if(!manager.send(BatteryLevelRequestPacket())) {
-            // TODO: log error
+            tick++
+            delay(HEARTBEAT_INTERVAL_MS)
         }
     }
 
-    /** If the current request has expired, return failure and advance the queue. */
-    private fun expireStaleRequest() {
-        val request = currentRequest
-        if(request != null && request.expires < Date().time) {
-            request.callback(null)
-            advanceQueue()
-        }
-    }
-
-    private fun stopHeartbeat() {
-        batteryCheckTask?.cancel(true)
-        batteryCheckTask = null
-        requestExpiryTask?.cancel(true)
-        requestExpiryTask = null
+    private companion object {
+        const val TAG = "G1Device"
+        const val HEARTBEAT_INTERVAL_MS = 8_000L
+        /** Every fourth beat (~30 s) asks for the battery instead. */
+        const val BATTERY_EVERY = 4
+        const val RESPONSE_TIMEOUT_MS = 1_500L
     }
 }
