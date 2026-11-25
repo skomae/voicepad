@@ -17,8 +17,16 @@ class HanlpSegmenterTest {
     private fun words(run: String) = segmenter.segment(run).map { (start, end) -> run.substring(start, end) }
 
     @Test
-    fun `cuts a long compound the way people read it`() {
-        // The frequency search glues 北京大学生 into one word; the dictionary has no such entry.
+    fun `keeps a name the dictionary doesn't have as one word`() {
+        // 张伟 is not a CC-CEDICT entry, so the dictionary-driven search can only
+        // fall back to 张/伟; HanLP's own dictionary tags it nr, a person name.
+        assertEquals(listOf("张伟"), words("张伟"))
+    }
+
+    @Test
+    fun `cuts a compound into the words people read`() {
+        // 北京 and 大学生 are both entries, so this is the ordinary case: agree with
+        // HanLP rather than glue them into one improbable long word.
         assertEquals(listOf("北京", "大学生"), words("北京大学生"))
     }
 
