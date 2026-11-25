@@ -37,9 +37,11 @@ struct ContentView: View {
             .safeAreaInset(edge: .bottom) { RecordBar() }
             .navigationTitle("VoicePad")
             .navigationBarTitleDisplayMode(.inline)
-            // The whole bar turns red while recording.
+            // The whole bar turns red while recording, and only then: the red
+            // tint leaked into the idle bar, where "Not recording" in grey on
+            // red was unreadable.
             .toolbarBackground(Color.recordingRed, for: .navigationBar)
-            .toolbarBackground(controller.isRecording ? .visible : .automatic, for: .navigationBar)
+            .toolbarBackground(controller.isRecording ? .visible : .hidden, for: .navigationBar)
             .toolbarColorScheme(controller.isRecording ? .dark : nil, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -302,40 +304,32 @@ private struct NotesList: View {
     }
 }
 
-/// Top bar title while recording: pulsing dot, REC, elapsed time, part number.
+/// Top bar title while recording: pulsing dot, REC and the elapsed time. The
+/// part number lives on the live bubble, so it stays out of a bar this narrow.
 private struct RecordingTitle: View {
     @Environment(RecordingController.self) private var controller
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             PulsingDot(color: .white, size: 11)
-            HStack(spacing: 6) {
-                Text("REC")
-                ElapsedTime(start: controller.startedAt).monospacedDigit()
-            }
-            .font(.headline.weight(.bold))
-            if controller.partNumber > 1 {
-                Text("· part \(controller.partNumber)").font(.subheadline)
-            }
+            Text("REC")
+            ElapsedTime(start: controller.startedAt).monospacedDigit()
         }
+        .font(.headline.weight(.bold))
+        .fixedSize()
         .foregroundStyle(.white)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Recording" + (controller.partNumber > 1 ? ", part \(controller.partNumber)" : ""))
+        .accessibilityLabel("Recording")
     }
 }
 
-/// Top bar title when the mic is off.
+/// Top bar title when the mic is off. Nothing else: "Not recording" only
+/// repeated what the record bar already says, and truncated to "Not recor…".
 private struct IdleTitle: View {
     var body: some View {
-        VStack(spacing: 0) {
-            Text("VoicePad").font(.headline)
-            HStack(spacing: 3) {
-                Image(systemName: "mic.slash")
-                Text("Not recording")
-            }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-        }
+        Text("VoicePad")
+            .font(.headline)
+            .fixedSize()
     }
 }
 
