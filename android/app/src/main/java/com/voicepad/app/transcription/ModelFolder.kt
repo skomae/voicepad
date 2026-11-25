@@ -276,7 +276,7 @@ class ModelFolder private constructor(private val context: Context) {
             mutex.withLock {
                 val index = readIndex() ?: Index()
                 // Only pay for a write when the pass actually recorded something.
-                if (save(relPath, source, index)) writeIndex(index)
+                if (save(relPath, source, index)) writeIndexReporting(index)
             }
         }
     }
@@ -343,20 +343,23 @@ class ModelFolder private constructor(private val context: Context) {
         // round trip to the provider, and a folder watching app start can have dozens
         // of models to check.
         val index = readIndex() ?: Index()
+        var changed = false
         for (top in listOf("models", "voices")) {
             File(files, top).listFiles()?.forEach { entry ->
                 when {
-                    entry.isDirectory && File(entry, MARKER).exists() -> save("$top/${entry.name}", entry, index)
+                    entry.isDirectory && File(entry, MARKER).exists() -> { changed = save("$top/${entry.name}", entry, index) || changed }
                     entry.isDirectory && entry.name == "speaker" -> entry.listFiles()?.filter { it.isFile && !it.name.endsWith(".part") }
-                        ?.forEach { save("$top/${entry.name}/${it.name}", it, index) } // e.g. models/speaker/*.onnx
+                        ?.forEach { changed = save("$top/${entry.name}/${it.name}", it, index) || changed } // e.g. models/speaker/*.onnx
                 }
             }
         }
         // LLM: one .gguf per choice, with a .complete file beside it.
         File(files, "llm").listFiles()
             ?.filter { it.isFile && File(it.path + ".complete").exists() }
-            ?.forEach { save("llm/${it.name}", it, index) }
-        writeIndex(index)
+            ?.forEach { changed = save("llm/${it.name}", it, index) || changed }
+        // Nothing new: leave the index alone (and never overwrite it with an empty
+        // one because a read happened to fail).
+        if (changed) writeIndexReporting(index)
     }
 
     /** Copies [relPath] into the folder, recording what landed in [index]. Returns true if it changed the index. */
@@ -421,6 +424,19 @@ class ModelFolder private constructor(private val context: Context) {
     }
 
     private fun writeIndex(index: Index) = writeText(INDEX, index.serialize())
+
+    /**
+     * [writeIndex] for the batched passes, where it runs outside [save]'s own
+     * try: a provider error lands in the state instead of escaping the scope
+     * (which has no handler, so it would take the app down).
+     */
+    private fun writeIndexReporting(index: Index) {
+        try {
+            writeIndex(index)
+        } catch (e: Throwable) {
+            _state.update { it.copy(error = "Couldn't update the folder's index: ${e.message}") }
+        }
+    }
 
     /** Creates or replaces the file at [relPath] with [text]. */
     private fun writeText(relPath: String, text: String) {
