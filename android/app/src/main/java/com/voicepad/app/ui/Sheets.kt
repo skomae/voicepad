@@ -1,5 +1,7 @@
 package com.voicepad.app.ui
 
+import android.content.Context
+import android.content.Intent
 import android.text.format.DateFormat
 import androidx.compose.foundation.clickable
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -594,6 +596,19 @@ private fun MicOption(
 }
 
 /**
+ * The system folder picker, preferring the standard one: some OEM pickers
+ * (ColorOS's "My Files") return a folder without a permission VoicePad can
+ * keep, so every later copy or restore fails with "can no longer reach the
+ * folder" — the standard picker (DocumentsUI) grants it properly.
+ */
+private fun folderPickerIntent(context: Context): Intent {
+    val base = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+    val standard = Intent(base).setPackage("com.android.documentsui")
+    return if (standard.resolveActivity(context.packageManager) != null) standard else base
+}
+
+/**
  * A folder outside the app (e.g. in Download) that keeps every downloaded
  * model, so reinstalling VoicePad restores them instead of downloading again.
  */
@@ -602,19 +617,20 @@ internal fun ModelFolderSection() {
     val context = LocalContext.current
     val folder = remember { com.voicepad.app.transcription.ModelFolder.get(context) }
     val state by folder.state.collectAsStateWithLifecycle()
-    val pick = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        if (uri != null) folder.choose(uri)
+    val pick = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        val uri = result.data?.data
+        if (result.resultCode == android.app.Activity.RESULT_OK && uri != null) folder.choose(uri)
     }
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     Text("Model folder", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 4.dp))
     Text(
         when {
             state.unavailable -> "VoicePad can no longer reach the chosen folder (it may have been moved or deleted). Choose it again."
-            state.folderName != null -> "Models are also kept in \u201c${state.folderName}\u201d. After reinstalling VoicePad, " +
-                "choose the same folder and they're copied back instead of downloaded."
-            else -> "Models are downloaded from GitHub into VoicePad's own storage, which Android deletes when the app " +
-                "is uninstalled. Choose a folder (e.g. in Download) to keep a copy there: a reinstall then restores " +
-                "them from it in seconds instead of downloading them again."
+            state.folderName != null -> "Models, voices and translation packs are also kept in \u201c${state.folderName}\u201d. After reinstalling " +
+                "VoicePad, choose the same folder and they're copied back instead of downloaded."
+            else -> "Models, voices and translation packs are downloaded into VoicePad's own storage, which Android deletes " +
+                "when the app is uninstalled. Choose a folder (e.g. in Download) to keep a copy there: a reinstall then " +
+                "restores them from it in seconds instead of downloading them again."
         },
         style = MaterialTheme.typography.bodySmall,
         color = if (state.unavailable) MaterialTheme.colorScheme.error else muted,
@@ -625,7 +641,7 @@ internal fun ModelFolderSection() {
             modifier = Modifier.clickable { folder.dismissError() })
     }
     Row {
-        TextButton(onClick = { pick.launch(null) }) { Text(if (state.folderName == null) "Choose folder" else "Change folder") }
+        TextButton(onClick = { pick.launch(folderPickerIntent(context)) }) { Text(if (state.folderName == null) "Choose folder" else "Change folder") }
         if (state.folderName != null) TextButton(onClick = folder::forget) { Text("Stop using it") }
     }
 }

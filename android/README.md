@@ -22,14 +22,18 @@ copied, edited, re-transcribed and rolled back through its revision history.
   connection. It also points at the **Model folder** option below, so a
   reinstall can restore the models instead of downloading them again.
 - **Where models come from**: speech models, voices and the speaker model
-  download from GitHub Releases (k2-fsa/sherpa-onnx); translation packs
-  from Google ML Kit. Each downloads once, into VoicePad's own storage,
-  which Android deletes on uninstall. **Model folder** (Settings): choose a
-  folder (e.g. in Download) and every installed model is copied there; a
-  model missing after a reinstall is copied back from it instead of
-  downloaded, which also skips unpacking the archive on the phone. (An
-  access token wouldn't speed downloads up: GitHub serves public release
-  files from its CDN the same either way.)
+  download from GitHub Releases (k2-fsa/sherpa-onnx), LLM models from
+  Hugging Face; translation packs from Google ML Kit. Each downloads once,
+  into VoicePad's own storage, which Android deletes on uninstall. **Model
+  folder** (Settings): choose a folder (e.g. in Download) and everything
+  installed is copied there — speech models, voices (Kitten, MeloTTS), the
+  speaker model, LLM files and every ML Kit translation pack (with the
+  hashes ML Kit uses to tell a pack is there). A model missing after a
+  reinstall is copied back from it instead of downloaded, which also skips
+  unpacking the archive on the phone. The folder is synced at launch, so
+  packs downloaded later are picked up too. (An access token wouldn't speed
+  downloads up: GitHub serves public release files from its CDN the same
+  either way.)
 - **Quick model switcher**: tap the model name (top left) to switch between
   models already on the phone, e.g. Auto: Western ↔ Auto: Asian + English.
 - **Background voices** (ear button, top bar; also in Settings and the
@@ -204,7 +208,8 @@ copied, edited, re-transcribed and rolled back through its revision history.
   upright — plus **pinyin with tone marks** for Mandarin (with corrections
   for common words ICU reads character-by-character, e.g. 银行 *yín háng*)
   and Latin transliteration for other non-Latin scripts. Translation runs on
-  the phone with Google ML Kit; each language's pack (~30 MB) downloads once.
+  the phone with Google ML Kit; each language's pack (~30 MB) downloads once,
+  and is kept in the model folder like the rest when one is chosen.
   Translations are saved per revision, redone when the text is edited,
   retried like transcriptions if they fail, and included in search.
   For Mandarin use SenseVoice or a multilingual Whisper — Parakeet doesn't
