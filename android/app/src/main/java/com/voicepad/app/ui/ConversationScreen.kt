@@ -635,42 +635,32 @@ private fun MicButton(
     motion: Boolean,
     hold: ConversationController.Hold?, refilled: Boolean, holdColor: Color,
 ) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .size(60.dp)
-                // Listening is hands-free: rings keep spreading from the button even in
-                // silence, so it reads as "on and listening", not "press to talk".
-                .then(if (listening) Modifier.listeningRings(RecordingRed, motion) else Modifier)
-                .clip(CircleShape)
-                .clickable(onClick = onClick)
-                .semantics {
-                    contentDescription = if (listening) {
-                        "Listening hands-free: just talk. Tap to pause listening."
-                    } else {
-                        "Paused. Tap to start listening."
-                    }
-                },
-        ) {
-            if (listening) {
-                Box(Modifier.size(60.dp).scale(0.8f + level * 0.4f).background(RecordingRed.copy(alpha = 0.22f), CircleShape))
-                Box(Modifier.size(48.dp).background(RecordingRed, CircleShape))
-                Icon(Icons.Default.Mic, contentDescription = null, tint = Color.White)
-                HoldRing(hold, refilled, holdColor, Modifier.size(60.dp))
-            } else {
-                Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape))
-                Icon(Icons.Default.MicOff, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(60.dp)
+            // Listening is hands-free: rings keep spreading from the button even in
+            // silence, so it reads as "on and listening", not "press to talk".
+            .then(if (listening) Modifier.listeningRings(RecordingRed, motion) else Modifier)
+            .clip(CircleShape)
+            .clickable(onClick = onClick)
+            .semantics {
+                contentDescription = if (listening) {
+                    "Listening hands-free: just talk. Tap to pause listening."
+                } else {
+                    "Paused. Tap to start listening."
+                }
+            },
+    ) {
+        if (listening) {
+            Box(Modifier.size(60.dp).scale(0.8f + level * 0.4f).background(RecordingRed.copy(alpha = 0.22f), CircleShape))
+            Box(Modifier.size(48.dp).background(RecordingRed, CircleShape))
+            Icon(Icons.Default.Mic, contentDescription = null, tint = Color.White)
+            HoldRing(hold, refilled, holdColor, Modifier.size(60.dp))
+        } else {
+            Box(Modifier.size(48.dp).background(MaterialTheme.colorScheme.surfaceVariant, CircleShape))
+            Icon(Icons.Default.MicOff, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Text(
-            if (listening) "Just talk" else "Tap to listen",
-            style = MaterialTheme.typography.labelSmall,
-            color = if (listening) RecordingRed else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            // Clear of the rings, which spread a little past the button.
-            modifier = Modifier.padding(top = 4.dp),
-        )
     }
 }
 
