@@ -496,6 +496,10 @@ private fun CleanupDialog(controller: RecordingController, onDismiss: () -> Unit
                         NoteCleanup.Action.COMPRESS -> "Includes pinned notes. Each file is checked before the original is removed."
                         NoteCleanup.Action.DELETE_EMPTY -> "Pinned notes and recordings still waiting for transcription are kept."
                         else -> "Pinned notes are never touched."
+                    } + if (action == NoteCleanup.Action.COMPRESS || action == NoteCleanup.Action.DELETE_EMPTY) {
+                        " To do this automatically, see Settings \u2192 Automatic clean-up."
+                    } else {
+                        ""
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
