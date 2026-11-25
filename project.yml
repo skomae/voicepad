@@ -80,6 +80,7 @@ targets:
     sources:
       - VoicePadTests
       - VoicePad/Models
+      - VoicePad/Resources/zh_dict.dat
       - VoicePad/Audio/WavFile.swift
       - VoicePad/Translation/LanguageTags.swift
       - VoicePad/Translation/Romanizer.swift

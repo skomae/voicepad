@@ -150,13 +150,13 @@ enum BundledChineseDictionary {
     private static var loading = false
 
     /// The bundled dictionary, or nil when this build doesn't include it.
-    /// Parsed once, on a background queue: a tap must not block the screen.
-    static func load() -> ZhDictionary? {
+    /// Parsed once; call it off the main thread (a tap must not block the screen).
+    static func load(bundle: Bundle = .main) -> ZhDictionary? {
         if let cached { return cached }
         guard !loading else { return nil }
         loading = true
         defer { loading = false }
-        guard let url = Bundle.main.url(forResource: "zh_dict", withExtension: "dat"),
+        guard let url = bundle.url(forResource: "zh_dict", withExtension: "dat"),
               let data = gunzip(url), let text = String(data: data, encoding: .utf8) else {
             return nil
         }

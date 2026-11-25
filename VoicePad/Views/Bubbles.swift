@@ -22,6 +22,7 @@ struct NoteBubble: View {
     var onTranslate: () -> Void = {}
     var onCopyText: (String) -> Void = { _ in }
     var onArchive: () -> Void = {}
+    var onBreakdown: () -> Void = {}
 
     private var hasText: Bool { !note.currentText.isEmpty }
     private var working: Bool { note.status == .inProgress }
@@ -90,6 +91,9 @@ struct NoteBubble: View {
             }
         } else if hasText {
             Button("Translate to English", systemImage: "translate", action: onTranslate)
+        }
+        if hasText, MandarinPinyin.of(bodyText, language: note.currentTranslation?.language) != nil {
+            Button("Word breakdown", systemImage: "character.book.closed", action: onBreakdown)
         }
         Button(note.pinned ? "Unpin" : "Pin", systemImage: note.pinned ? "pin.slash" : "pin", action: onTogglePin)
         Button("Edit", systemImage: "pencil", action: onEdit)
@@ -294,8 +298,25 @@ struct TextWithTranslation: View {
                 }
             }
         } else {
-            Text(highlight(text)).foregroundStyle(color)
+            VStack(alignment: .leading, spacing: 2) {
+                if let pinyin { pinyinLine(pinyin) }
+                Text(highlight(text)).foregroundStyle(color)
+            }
         }
+    }
+
+    /// Mandarin always gets its pinyin, sitting above the characters it reads:
+    /// the translation's when there is one, else worked out here (no
+    /// translation yet, translation off, or still live) — as on Android (#22).
+    private var pinyin: String? {
+        translation?.romanization ?? MandarinPinyin.of(text, language: translation?.language)
+    }
+
+    private func pinyinLine(_ pinyin: String) -> some View {
+        Text(highlight(pinyin))
+            .font(.callout)
+            .italic()
+            .foregroundStyle(color.opacity(0.85))
     }
 
     private func original(_ translation: NoteTranslation) -> some View {
@@ -303,14 +324,8 @@ struct TextWithTranslation: View {
             if let language = translation.language {
                 LanguageLabel(name: LanguageTags.displayName(language), color: color)
             }
+            if let pinyin { pinyinLine(pinyin) }
             Text(highlight(text)).foregroundStyle(color)
-            if let romanization = translation.romanization {
-                Text(highlight(romanization))
-                    .font(.callout)
-                    .italic()
-                    .foregroundStyle(color.opacity(0.85))
-                    .padding(.top, 2)
-            }
         }
     }
 

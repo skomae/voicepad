@@ -204,3 +204,31 @@ final class WordBreakdownTests: XCTestCase {
             tappedTranslation: false, offset: 0))
     }
 }
+
+/// The real bundled dictionary: it must ship, unzip and parse, and answer a
+/// breakdown for a sentence. Guards against a build that silently drops the
+/// resource (Android #25 shipped an APK without it).
+final class BundledChineseDictionaryTests: XCTestCase {
+    func testTheBundledDictionaryLoadsAndBreaksDownASentence() throws {
+        let bundle = Bundle(for: BundledChineseDictionaryTests.self)
+        let dictionary = try XCTUnwrap(BundledChineseDictionary.load(bundle: bundle),
+                                       "zh_dict.dat is missing from this build")
+        XCTAssertGreaterThan(dictionary.size, 100_000)
+
+        let breakdown = WordBreakdown(dictionary: dictionary,
+                                      usualReading: ChineseSegmenter.usualReading,
+                                      segmenter: ChineseSegmenter())
+        let result = breakdown.analyse("我昨天去银行", translation: "Yesterday I went to the bank.")
+        let bank = try XCTUnwrap(result.cards.first { $0.text == "银行" })
+        XCTAssertEqual(bank.pinyin, "yín háng")
+        XCTAssertEqual(bank.best?.gloss, "bank")
+        XCTAssertTrue(bank.best?.matched ?? false)
+        XCTAssertEqual(result.cards.first { $0.text == "昨天" }?.pinyin, "zuó tiān")
+    }
+
+    func testVeryCommonWordsAreKnown() throws {
+        let dictionary = try XCTUnwrap(BundledChineseDictionary.load(bundle: Bundle(for: Self.self)))
+        XCTAssertTrue(dictionary.lookup("你").contains { $0.definitions.contains { $0.contains("you") } })
+        XCTAssertGreaterThan(dictionary.frequency("的"), 0)
+    }
+}

@@ -22,6 +22,7 @@ struct ConversationView: View {
     @Environment(RecordingController.self) private var notes
     @State private var showSettings = false
     @State private var picking: Side?
+    @State private var breakdown: BreakdownRequest?
 
     var body: some View {
         let settings = conversation.settings
@@ -73,6 +74,9 @@ struct ConversationView: View {
             }
         }
         .sheet(isPresented: $showSettings) { ConversationSettings(onPick: { picking = $0 }) }
+        .sheet(item: $breakdown) { request in WordBreakdownSheet(request: request) }
+        // Let any turn's dictionary button open the breakdown for it.
+        .environment(\.openBreakdown) { request in breakdown = request }
     }
 
     private func controls(_ level: CGFloat) -> some View {
@@ -291,6 +295,7 @@ private struct Hero: View {
                     if motion, phase == .working { ProgressView().controlSize(.small) }
                     if motion, phase == .holding { ThinkingDots(color: color) }
                     if phase != .speaking, phase != .holding { SpeakButton(turn: turn, language: language, tint: color) }
+                    BreakdownButton(turn: turn, tint: color)
                 }
                 if original {
                     SpokenText(turn: turn, phase: phase, size: size)
@@ -403,6 +408,7 @@ private struct HistoryTurn: View {
                 .lineLimit(6)
             Spacer(minLength: 0)
             SpeakButton(turn: turn, language: language, tint: speakerColor(turn.speaker).opacity(0.8))
+            BreakdownButton(turn: turn, tint: speakerColor(turn.speaker).opacity(0.8))
         }
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -429,6 +435,24 @@ private struct SpeakButton: View {
         .tint(tint)
         .font(.callout)
         .accessibilityLabel(speaking ? (preparing ? "Generating the voice, tap to stop" : "Stop reading") : "Read aloud")
+    }
+}
+
+/// Dictionary button: the word breakdown of a turn with a Chinese side.
+private struct BreakdownButton: View {
+    let turn: Turn
+    let tint: Color
+    @Environment(\.openBreakdown) private var open
+
+    var body: some View {
+        if let open, let request = BreakdownRequest.forTurn(turn, tappedTranslation: false, offset: nil) {
+            Button { open(request) } label: {
+                Image(systemName: "character.book.closed")
+            }
+            .tint(tint)
+            .font(.callout)
+            .accessibilityLabel("Word breakdown")
+        }
     }
 }
 

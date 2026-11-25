@@ -8,6 +8,7 @@ struct ContentView: View {
     @State private var editingNoteID: Note.ID?
     @State private var editedNote: (id: Note.ID, before: String)?
     @State private var wordsToSave: PendingWords?
+    @State private var breakdown: BreakdownRequest?
     @State private var historyNoteID: Note.ID?
     @State private var confirmDeleteID: Note.ID?
     @State private var shareItem: ShareItem?
@@ -72,6 +73,7 @@ struct ContentView: View {
                 EditNoteView(noteID: id) { previous in editedNote = (id, previous) }
             }
             .sheet(item: $wordsToSave) { pending in SaveWordsSheet(words: pending.words) }
+            .sheet(item: $breakdown) { request in WordBreakdownSheet(request: request) }
             .sheet(item: $historyNoteID) { id in HistoryView(noteID: id, onCopy: copy) }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showArchive) { ArchivedNotesView(actions: bubbleActions, player: player) }
@@ -105,6 +107,15 @@ struct ContentView: View {
             }
         }
         .background { TranslationHost(translator: controller.translator) }
+        #if DEBUG
+        // For screenshots and UI checks: `-VoicePadOpenBreakdown 我去银行`.
+        .onAppear {
+            if breakdown == nil, let text = UserDefaults.standard.string(forKey: "VoicePadOpenBreakdown"), !text.isEmpty {
+                breakdown = BreakdownRequest(chinese: text, translation: UserDefaults.standard.string(forKey: "VoicePadOpenBreakdownTranslation"),
+                                             translationLanguage: "en", focus: nil)
+            }
+        }
+        #endif
     }
 
     private var bubbleActions: BubbleActions {
@@ -129,7 +140,16 @@ struct ContentView: View {
             delete: { confirmDeleteID = $0.id },
             archive: { note in note.archived ? controller.unarchive(note.id) : controller.archive([note.id]) },
             translate: { controller.translateNow($0.id) },
-            copyText: { copy($0) }
+            copyText: { copy($0) },
+            breakdown: { note in
+                let translation = note.currentTranslation
+                breakdown = BreakdownRequest(
+                    chinese: note.currentText,
+                    translation: translation?.english,
+                    translationLanguage: translation?.language,
+                    focus: nil
+                )
+            }
         )
     }
 
@@ -174,6 +194,7 @@ struct BubbleActions {
     let archive: (Note) -> Void
     let translate: (Note) -> Void
     let copyText: (String) -> Void
+    let breakdown: (Note) -> Void
 }
 
 /// The scrolling list: search results, or the Pinned and All notes sections
@@ -275,7 +296,8 @@ private struct NotesList: View {
             onDelete: { a.delete(note) },
             onTranslate: { a.translate(note) },
             onCopyText: a.copyText,
-            onArchive: { a.archive(note) }
+            onArchive: { a.archive(note) },
+            onBreakdown: { a.breakdown(note) }
         )
     }
 }
