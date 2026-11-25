@@ -518,8 +518,6 @@ class RecordingController(
                 // A broken download should not stick around.
                 models.discard(choice)
                 setStatus(EngineStatus.Failed(e.message ?: e.toString()))
-                // No queue pass is coming: don't leave auto-record waiting on one.
-                startDeferredRecording(engineFailed = true)
             }
         }
     }
@@ -565,51 +563,19 @@ class RecordingController(
 
     /** Called whenever the app comes to the foreground. */
     fun appBecameActive() {
-        translationTried.clear()
-        processTranslations()
         // First launch with no models: the setup sheet takes over. Don't
         // quietly start downloading the active model or recording under it.
         if (_state.value.showSetup) return
-        if (engine == null && loadJob?.isActive != true) loadEngine() else processQueue()
+        // Recording first: opening the app to record is the latency that matters, so
+        // nothing below runs until the microphone is live. Everything else here —
+        // translations, the model, the queue for saved audio — can wait for it.
         val s = _state.value
         val canRecord = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
-        if (s.autoRecordOnOpen && !s.isRecording && !conversationActive && canRecord) {
-            // Saved audio comes first. The queue can only run while nothing is
-            // recording, so opening the app into an instant recording — which is what
-            // auto-record does — starves it: the notes wait for the next stop, and if
-            // the app is killed mid-recording, for the stop after that.
-            if (backlog() > 0) {
-                autoRecordDeferred = true
-                // The scope is Main.immediate, so the pass started above may already have
-                // finished (every pick returned without suspending) before the flag was
-                // set; without this nothing would come back for the recording.
-                if (queueJob?.isActive != true) startDeferredRecording()
-            } else {
-                start()
-            }
-        }
-    }
-
-    /** Notes the queue would take (a note out of attempts waits for a manual retry). */
-    private fun backlog(): Int = store.notes.value.count { it.needsTranscription && it.attempts < MAX_AUTO_ATTEMPTS }
-
-    /**
-     * Starts the recording that auto-record put off while saved audio was transcribed.
-     * Called after a queue pass that actually ran (the engine was ready), or with
-     * [engineFailed] when the model couldn't load and no pass is coming. It doesn't wait
-     * for the backlog to reach zero: a note whose attempt failed still counts towards it
-     * until its retries run out, and holding the recording back for it would mean
-     * auto-record silently never starting.
-     */
-    private fun startDeferredRecording(engineFailed: Boolean = false) {
-        if (!autoRecordDeferred) return
-        if (!engineFailed && !engineReady) return // the pass didn't run; the load will run it
-        val canRecord = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-            PackageManager.PERMISSION_GRANTED
-        if (!canRecord || _state.value.isRecording || conversationActive) return
-        autoRecordDeferred = false
-        start()
+        if (s.autoRecordOnOpen && !s.isRecording && !conversationActive && canRecord) start()
+        translationTried.clear()
+        processTranslations()
+        if (engine == null && loadJob?.isActive != true) loadEngine() else processQueue()
     }
 
     fun toggle() {
@@ -619,7 +585,6 @@ class RecordingController(
     fun start() {
         val s = _state.value
         if (s.isRecording || conversationActive) return
-        autoRecordDeferred = false
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             showError("Microphone access is needed to record.")
             return
@@ -637,6 +602,7 @@ class RecordingController(
         RecordingService.start(context)
         beginNote(fileName, origin = 0, part = 1)
         _state.update { it.copy(isRecording = true, errorMessage = null) }
+        android.util.Log.i(TAG, "start: recording from ${s.selectedInputKey ?: "default input"}")
         liveJob = scope.launch {
             while (isActive) {
                 delay(TICK_MS)
@@ -1060,8 +1026,6 @@ class RecordingController(
 
     /** True while conversation mode has the microphone and the model; notes don't record meanwhile. */
     private var conversationActive = false
-    /** Set when auto-record was put off for saved audio; cleared when it starts. */
-    @Volatile private var autoRecordDeferred = false
     private var resumeAfterConversation = false
 
     /** Hands the microphone and the model to conversation mode, saving any note being recorded. */
@@ -1140,7 +1104,6 @@ class RecordingController(
                 transcribeSaved(next.id)
             }
             android.util.Log.i(TAG, "processQueue: done (engineReady=${engineReady} isRecording=${_state.value.isRecording} conversation=$conversationActive)")
-            startDeferredRecording()
         }
     }
 
