@@ -1,6 +1,7 @@
 package com.voicepad.app.glasses
 
 import android.icu.text.Transliterator
+import android.os.Build
 import com.voicepad.app.conversation.Stage
 import com.voicepad.app.conversation.Turn
 import com.voicepad.app.transcription.LanguageTags
@@ -38,8 +39,18 @@ object GlassesScreen {
     /** Marks a turn of your own. */
     private const val ME = "- "
 
-    /** ICU transliterator: converts Chinese characters to pinyin with tone marks. */
-    private val hanToPinyin by lazy { Transliterator.getInstance("Han-Latin") }
+    /**
+     * ICU transliterator: converts Chinese characters to pinyin with tone marks.
+     * Null below API 29, where the class doesn't exist — the glasses then show the
+     * characters without pinyin rather than the app crashing on launch.
+     */
+    private val hanToPinyin: Transliterator? by lazy {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            runCatching { Transliterator.getInstance("Han-Latin") }.getOrNull()
+        } else {
+            null
+        }
+    }
 
     /** True if [language] is a Chinese variety. */
     private fun isChinese(language: String): Boolean =
@@ -50,7 +61,13 @@ object GlassesScreen {
      * Non-Chinese text (English, numbers, punctuation) passes through unchanged.
      */
     private fun toPinyin(text: String): String {
-        val raw = hanToPinyin.transliterate(text)
+        // Inline SDK check: the transliterator only exists from API 29.
+        val raw = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val transliterator = hanToPinyin ?: return text
+            transliterator.transliterate(text)
+        } else {
+            return text
+        }
         // ICU's Han-Latin output adds spaces between syllables but also between
         // words that were separated by punctuation. Normalise: trim the leading
         // space ICU puts before the first syllable, collapse multiple spaces.

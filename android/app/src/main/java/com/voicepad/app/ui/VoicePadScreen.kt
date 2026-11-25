@@ -5,7 +5,6 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
 import android.text.format.DateUtils
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.filled.DeleteSweep
@@ -96,6 +95,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -126,9 +127,12 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
     val player = remember { AudioPlayer() }
     DisposableEffect(Unit) { onDispose { player.stop() } }
 
-    // Pop-up / split-screen / small windows get a tighter layout.
-    val config = LocalConfiguration.current
-    val compact = config.screenWidthDp < 420 || config.screenHeightDp < 560
+    // Pop-up / split-screen / small windows get a tighter layout. Measured from the
+    // window rather than the screen, so a freeform window is sized as it appears.
+    val container = LocalWindowInfo.current.containerSize
+    val compact = with(LocalDensity.current) {
+        container.width.toDp() < 420.dp || container.height.toDp() < 560.dp
+    }
     var searchActive by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     val searching = searchActive && query.isNotBlank()

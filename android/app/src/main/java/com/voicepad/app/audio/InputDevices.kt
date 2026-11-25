@@ -49,6 +49,14 @@ object InputDeviceNaming {
     fun key(type: Int, address: String): String = "$type:$address"
 
     /**
+     * The device's address where the platform exposes one (API 28+). Below that
+     * the address isn't part of the public API at all, so devices of the same
+     * type share a key — which is right: they can't be told apart on 26/27.
+     */
+    fun addressOf(device: AudioDeviceInfo): String =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) device.address else ""
+
+    /**
      * Channels a mic can record, from what Android reports: channel counts,
      * index masks (numbered channels) and position masks (bit counts). Mics
      * that report nothing are assumed to manage stereo, as most phones do.
@@ -111,9 +119,10 @@ class AudioInputs(context: Context) {
 
     private fun scan(): List<InputDevice> = inputs()
         .map {
+            val address = InputDeviceNaming.addressOf(it)
             InputDevice(
-                key = InputDeviceNaming.key(it.type, it.address),
-                name = InputDeviceNaming.name(it.type, it.productName?.toString().orEmpty(), it.address),
+                key = InputDeviceNaming.key(it.type, address),
+                name = InputDeviceNaming.name(it.type, it.productName?.toString().orEmpty(), address),
                 kind = InputDeviceNaming.kind(it.type)!!,
                 isBluetooth = InputDeviceNaming.isBluetooth(it.type),
                 maxChannels = InputDeviceNaming.maxChannels(it.type, it.channelCounts, it.channelIndexMasks, it.channelMasks),
@@ -123,7 +132,7 @@ class AudioInputs(context: Context) {
         .sortedWith(compareBy({ it.kind != "Built-in microphone" }, { it.name }))
 
     fun find(key: String?): AudioDeviceInfo? =
-        key?.let { k -> inputs().firstOrNull { InputDeviceNaming.key(it.type, it.address) == k } }
+        key?.let { k -> inputs().firstOrNull { InputDeviceNaming.key(it.type, InputDeviceNaming.addressOf(it)) == k } }
 
     /** Device to pass to the recorder for [key], switching a Bluetooth headset into call mode if needed. */
     fun beginRecording(key: String?): AudioDeviceInfo? {

@@ -298,7 +298,7 @@ private fun TranslatedText(
         tailLength = if (phase == Phase.HOLDING) 0 else (expected - shown.length).coerceIn(3, 28)
     } else {
         val full = translation ?: turn.text
-        val k = (reveal.value * full.length).toInt().coerceIn(0, full.length)
+        val k = (reveal.floatValue * full.length).toInt().coerceIn(0, full.length)
         shown = full.take(k)
         tailLength = (full.length - k).coerceAtMost(28)
     }
@@ -311,7 +311,7 @@ private fun TranslatedText(
     Text(
         buildAnnotatedString {
             // Just landed: the words arrive in the speaker's colour and settle to the normal one.
-            withStyle(SpanStyle(color = if (pending) ink.copy(alpha = 0.75f) else lerp(color, ink, reveal.value))) { append(shown) }
+            withStyle(SpanStyle(color = if (pending) ink.copy(alpha = 0.75f) else lerp(color, ink, reveal.floatValue))) { append(shown) }
             if (tail.isNotEmpty()) {
                 if (shown.isNotEmpty() && !Glyphs.isDense(language)) append(' ')
                 withStyle(SpanStyle(color = color.copy(alpha = if (phase == Phase.SPEAKING) 0.4f else 0.85f))) { append(tail) }

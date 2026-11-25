@@ -273,6 +273,16 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
         prefs.edit { putString(KNOWN_HOSTS, KnownHosts.encode(known)) }
     }
 
+    /**
+     * The device's major class, or null when reading it isn't allowed (API 31+
+     * needs BLUETOOTH_CONNECT; the user can refuse it).
+     */
+    private fun majorClassOf(device: BluetoothDevice): Int? = try {
+        device.bluetoothClass?.majorDeviceClass
+    } catch (_: SecurityException) {
+        null
+    }
+
     /** The device's Bluetooth name, else the name we remembered, else its address. */
     private fun nameOf(address: String): String {
         val device = try {
@@ -313,7 +323,7 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
             KeyboardHost(
                 address = d.address,
                 name = nameOf(d.address),
-                isComputer = d.bluetoothClass?.majorDeviceClass == BluetoothClass.Device.Major.COMPUTER,
+                isComputer = majorClassOf(d) == BluetoothClass.Device.Major.COMPUTER,
                 isLast = d.address == last,
                 isKnown = d.address in knownByAddress,
             )
@@ -428,7 +438,7 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
         if (device.address in bondedAddresses()) return
         @Suppress("DEPRECATION")
         val major = intent.getParcelableExtra<BluetoothClass>(BluetoothDevice.EXTRA_CLASS)?.majorDeviceClass
-            ?: device.bluetoothClass?.majorDeviceClass
+            ?: majorClassOf(device)
         val host = KeyboardHost(
             address = device.address,
             name = name,
