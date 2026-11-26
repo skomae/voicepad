@@ -1,6 +1,29 @@
 # VoicePad — WASM version plan
 
-Status: draft (planning only, no code yet).
+Status: **spike shipped** — see [`web/`](../web/README.md). A working
+browser/PWA demo now runs the full record → live text → split → notes flow with
+Whisper tiny.en (~41 MB, int8) through transformers.js, the same Silero VAD
+file as Android (`silero_vad.onnx`), the same utterance rules (0.25 s pause,
+0.25 s padding, 20 s cut) and the same 1.2 s live-preview tick.
+
+What the spike settled:
+
+- **TypeScript app, not Kotlin/Wasm**, for the demo: sherpa-onnx has no
+  prebuilt browser ASR bundle (the WASM target bakes one model in at link
+  time), so the pipeline had to be rebuilt in JS anyway. `src/asr.ts` keeps a
+  `SpeechEngine`-shaped seam for a future sherpa WASM build.
+- **Smallest English model:** whisper-tiny.en q8 (encoder 10 MB + decoder
+  31 MB). ~17 s of speech transcribes in ~3.4 s on one WASM thread.
+- **OPFS was not needed** for the demo: IndexedDB notes + WAV blobs are enough
+  at demo scale; the recovery-writes-in-progress part of this plan is still
+  open.
+- **WebGPU is not a win by default**: without fp16 it falls back to WASM, so
+  the demo defaults to WASM + q8 and keeps the download small.
+
+Still open from this plan: translation, romanisation, OPFS streaming with torn
+header recovery, the full `RecordingController` retry/revision state machine,
+background-tab recording, and (if it matters) a hand-built sherpa-onnx WASM
+bundle of Parakeet/SenseVoice for parity with the Android models.
 
 ## Goal
 
