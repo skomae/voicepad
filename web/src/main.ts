@@ -573,14 +573,17 @@ function renderStatus() {
 
 function renderBubbles() {
   const current = session?.note ?? null;
-  const saved = sortNotes(notes).filter((n) => !current || n.id !== current.id);
-  const list = current ? [current, ...saved] : saved;
+  // Chat order: the welcome message is the oldest thing in the thread, each
+  // new note lands underneath it, so the message scrolls up as you use it.
+  const saved = notes
+    .filter((n) => !current || n.id !== current.id)
+    .sort((a, b) => a.createdAt - b.createdAt);
+  const list = current ? [...saved, current] : saved;
 
-  // The introduction stays as the first message in the thread; the notes below
-  // it are the history, newest first.
+  const nearBottom =
+    el.transcript.scrollHeight - el.transcript.scrollTop - el.transcript.clientHeight < 160;
+
   el.introWrap.hidden = false;
-  // With history below it, the welcome message folds to its first lines; tap
-  // it to read the whole thing again.
   el.introWrap.classList.toggle('compact', list.length > 0 && !introExpanded);
   el.firstHint.hidden = list.length > 0;
   el.liveBubble.remove();
@@ -593,22 +596,29 @@ function renderBubbles() {
     const head = document.createElement('button');
     head.className = 'note-group-head';
     head.type = 'button';
-    head.innerHTML = `<span>${formatDate(note.createdAt)}</span><span>${formatDuration(note.durationSeconds)}${
-      note.pinned ? ' · pinned' : ''
-    }</span>`;
+    const when = formatDate(note.createdAt);
+    const length = note.durationSeconds >= 1 ? formatDuration(note.durationSeconds) : '';
+    head.innerHTML = `<span>${escapeHtml(when)}</span><span>${[length, note.pinned ? 'pinned' : '']
+      .filter(Boolean)
+      .join(' · ')}</span>`;
     head.addEventListener('click', () => openNote(note));
     group.append(head);
 
     for (const seg of segmentsOf(note)) {
       const b = document.createElement('div');
       b.className = 'bubble';
-      const meta = document.createElement('span');
-      meta.className = 'bubble-meta';
-      meta.textContent = formatDuration(seg.start);
+      // A timestamp that only says 0:00 is noise — show it once there is
+      // something to count from.
+      if (seg.start >= 0.5) {
+        const meta = document.createElement('span');
+        meta.className = 'bubble-meta';
+        meta.textContent = formatDuration(seg.start);
+        b.append(meta);
+      }
       const p = document.createElement('p');
       p.textContent = seg.text;
       p.addEventListener('click', () => selectText(p));
-      b.append(meta, p);
+      b.append(p);
       group.append(b);
     }
 
@@ -616,7 +626,7 @@ function renderBubbles() {
     el.bubbles.append(group);
   }
 
-  if (list.length > 0) el.transcript.scrollTop = 0;
+  if (list.length > 0 && nearBottom) el.transcript.scrollTop = el.transcript.scrollHeight;
 }
 
 function renderLive() {
