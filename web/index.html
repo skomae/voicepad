@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="description" content="VoicePad web demo — on-device transcription in the browser." />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="VoicePad" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <title>VoicePad — web demo</title>
+  </head>
+  <body>
+    <div class="app" id="app" data-state="idle">
+      <header class="topbar">
+        <div class="brand">
+          <span class="dot" id="statusDot" aria-hidden="true"></span>
+          <div class="brand-text">
+            <h1>VoicePad</h1>
+            <p id="statusLine">Starting…</p>
+          </div>
+        </div>
+        <div class="top-actions">
+          <button class="proof-badge" id="proofBtn" title="Proof: nothing is uploaded">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.4 3 8.4 7 9.5 4-1.1 7-5.1 7-9.5V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg>
+            <span id="proofLabel">0 B sent</span>
+          </button>
+          <button class="icon-btn" id="installBtn" title="Install app" hidden>Install</button>
+          <div class="search-wrap" id="searchWrap">
+            <button class="icon-btn" id="searchBtn" title="Search notes" aria-label="Search notes">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+            </button>
+            <input id="searchInput" class="search-input" type="search" placeholder="Search notes" autocomplete="off" spellcheck="false" hidden />
+          </div>
+          <button class="icon-btn" id="settingsBtn" title="Settings" aria-label="Settings">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5"/></svg>
+          </button>
+        </div>
+      </header>
+      <div class="progress-strip" id="modelStrip" hidden>
+        <div class="progress-bar" id="modelBar"></div>
+        <span id="modelLabel">Downloading model…</span>
+      </div>
+
+      <main class="transcript" id="transcript">
+        <div class="intro" id="introWrap">
+          <div class="intro-bubble">
+            <p class="intro-text" id="introText">Hey there, welcome to Voice Pad. Using Voice Pad, you get entirely on-device local transcription and translation, with spoken translated voice — without being connected to the internet, and no subscription fees.</p>
+            <a class="intro-repo" id="repoLink" href="#" target="_blank" rel="noopener">github.com/skomae/voicepad</a>
+            <div class="intro-actions" id="introActions" hidden>
+              <a class="intro-store" id="storeLink" href="#" hidden></a>
+            </div>
+            <p class="intro-foot" id="introFoot">Full app for iPhone &amp; Android — in the app stores soon.</p>
+          </div>
+        </div>
+        <p class="first-hint" id="firstHint">Tap the red button and start talking.</p>
+        <div id="bubbles" class="bubbles"></div>
+        <div id="liveBubble" class="bubble live" hidden>
+          <span class="caret"></span>
+        </div>
+      </main>
+
+      <footer class="recordbar">
+        <div class="rec-status" id="recStatus">Not recording</div>
+        <div class="controls">
+          <span class="side-spacer" aria-hidden="true"></span>
+          <button class="record-btn" id="recordBtn" aria-label="Start recording">
+            <span class="ring" id="levelRing"></span>
+            <span class="glyph" id="recordGlyph"><span class="reddot"></span></span>
+          </button>
+          <button class="side-btn" id="splitBtn" title="Split — end this note, keep recording" aria-label="Split">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="6.5" cy="7" r="2.6"/><circle cx="6.5" cy="17" r="2.6"/><path d="M8.7 8.7 20 19M8.7 15.3 20 5"/></svg>
+          </button>
+        </div>
+        <div class="rec-meta" id="recMeta"></div>
+      </footer>
+    </div>
+
+    <!-- Notes drawer -->
+    <div class="sheet" id="notesSheet" hidden>
+      <div class="sheet-head">
+        <h2>Notes</h2>
+        <div class="sheet-head-actions">
+          <span class="subtle" id="notesCount"></span>
+          <button class="icon-btn" data-close="notesSheet" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="notes-search">
+        <input id="notesSearch" type="search" placeholder="Search notes" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="sheet-body" id="notesList"></div>
+    </div>
+
+    <!-- Single note view -->
+    <div class="sheet" id="noteSheet" hidden>
+      <div class="sheet-head">
+        <h2 id="noteTitle">Note</h2>
+        <div class="sheet-head-actions">
+          <button class="icon-btn" data-close="noteSheet" aria-label="Close">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="sheet-body" id="noteBody"></div>
+      <div class="sheet-foot" id="noteActions"></div>
+    </div>
+
+    <!-- Privacy proof -->
+    <div class="sheet" id="privacySheet" hidden>
+      <div class="sheet-head">
+        <h2>Nothing leaves this device</h2>
+        <button class="icon-btn" data-close="privacySheet" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="sheet-body" id="privacyBody"></div>
+    </div>
+
+    <!-- Settings -->
+    <div class="sheet" id="settingsSheet" hidden>
+      <div class="sheet-head">
+        <h2>Settings</h2>
+        <button class="icon-btn" data-close="settingsSheet" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="sheet-body" id="settingsBody">
+        <section class="setting">
+          <h3>Transcription model</h3>
+          <p class="setting-value" id="modelName">Whisper Tiny (English)</p>
+          <p class="subtle" id="modelDetail">~41 MB one-time download · runs entirely in this browser</p>
+        </section>
+        <section class="setting">
+          <h3>Compute</h3>
+          <p class="setting-value" id="deviceName">WASM</p>
+          <p class="subtle" id="deviceDetail">Detected automatically. WebGPU is faster where the browser supports it.</p>
+        </section>
+        <section class="setting">
+          <h3>Voice activity</h3>
+          <p class="setting-value" id="vadName">Silero VAD · 0.25 s pause</p>
+          <p class="subtle">Same detector and settings as the Android app. Silence is never sent to the model.</p>
+        </section>
+        <section class="setting">
+          <h3>Storage</h3>
+          <p class="subtle" id="storageDetail">Notes are kept in this browser.</p>
+          <p class="subtle">The export is one JSON file with every note's text, timing and pin state. Audio stays on the device — download a note's WAV from the note itself.</p>
+          <div class="row-actions">
+            <button class="text-btn" id="exportAllBtn">Export all notes (JSON)</button>
+            <button class="text-btn danger" id="clearAllBtn">Delete all notes</button>
+          </div>
+        </section>
+        <p class="subtle foot">VoicePad web demo · transcription only. Translation, romanisation and speaker handling come later.</p>
+      </div>
+    </div>
+
+    <div class="scrim" id="scrim" hidden></div>
+    <div class="toast" id="toast" hidden></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,29 @@
+{
+  "name": "voicepad-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/fetch-assets.mjs && vite",
+    "build": "node scripts/fetch-assets.mjs && tsc --noEmit && vite build && node scripts/clean-dist.mjs",
+    "preview": "vite preview",
+    "fetch-assets": "node scripts/fetch-assets.mjs",
+    "postinstall": "node scripts/fetch-assets.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "vite-plugin-pwa": "^2.0.0"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.3.2",
+    "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0"
+  },
+  "pnpm": {
+    "ignoredBuiltDependencies": [
+      "onnxruntime-node",
+      "protobufjs",
+      "sharp"
+    ]
+  }
+}
