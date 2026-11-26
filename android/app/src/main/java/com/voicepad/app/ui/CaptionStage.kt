@@ -74,7 +74,8 @@ fun CaptionStage(
         val past = earlier.flatMap { CaptionLines.parse(it.currentText) } + lines.dropLast(1)
         past.asReversed().take(40)
     }
-    val accent = RecordingRed
+    // Red while recording, blue in keyboard mode, like the rest of the recording screen.
+    val accent = recordingColor(state)
     val heroColor = hero?.speaker?.let { SpeakerColors[it % SpeakerColors.size] } ?: accent
 
     var level by remember { mutableFloatStateOf(0f) }
