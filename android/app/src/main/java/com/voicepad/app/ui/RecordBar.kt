@@ -96,7 +96,7 @@ fun RecordBar(controller: RecordingController, state: RecordingController.UiStat
                             "--:--"
                         },
                         style = MaterialTheme.typography.titleMedium.copy(fontFeatureSettings = "tnum"),
-                        color = if (state.isRecording) RecordingRed else MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (state.isRecording) recordingColor(state) else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     LevelMeter(if (state.isRecording) level else 0f, Modifier.padding(top = 4.dp))
                 }
@@ -114,14 +114,14 @@ fun RecordBar(controller: RecordingController, state: RecordingController.UiStat
                             Modifier
                                 .size(button)
                                 .scale(1f + level * 0.3f)
-                                .background(RecordingRed.copy(alpha = 0.22f), CircleShape)
+                                .background(recordingColor(state).copy(alpha = 0.22f), CircleShape)
                         )
-                        Box(Modifier.size(inner).background(RecordingRed, CircleShape))
+                        Box(Modifier.size(inner).background(recordingColor(state), CircleShape))
                         Box(Modifier.size(inner * 0.38f).background(Color.White, RoundedCornerShape(5.dp)))
                     } else {
                         // Idle looks clearly different: an outlined ring with a red dot, like a camera.
                         Box(Modifier.size(inner).border(4.dp, MaterialTheme.colorScheme.outline, CircleShape))
-                        Box(Modifier.size(inner * 0.7f).background(RecordingRed, CircleShape))
+                        Box(Modifier.size(inner * 0.7f).background(recordingColor(state), CircleShape))
                     }
                 }
 
@@ -132,16 +132,16 @@ fun RecordBar(controller: RecordingController, state: RecordingController.UiStat
             Text(
                 when {
                     state.isRecording && compact ->
-                        "Recording" + (if (auto != null) " · $auto auto" else "") + (if (state.backgroundVoices) " · bg voices" else "")
+                        (if (state.keyboardMode) "Recording \u2192 keyboard" else "Recording") + (if (auto != null) " · $auto auto" else "") + (if (state.backgroundVoices) " · bg voices" else "")
                     state.isRecording ->
-                        "Recording" + (if (state.partNumber > 1) " · part ${state.partNumber}" else "") +
+                        (if (state.keyboardMode) "Recording \u2192 keyboard" else "Recording") + (if (state.partNumber > 1) " · part ${state.partNumber}" else "") +
                             (if (state.backgroundVoices) " · background voices" else "") +
                             (if (auto != null) " · auto-split $auto" else "") + " — tap ■ to stop"
                     compact -> "Not recording"
                     else -> "Not recording — tap ● to start"
                 },
                 style = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
-                color = if (state.isRecording) RecordingRed else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (state.isRecording) recordingColor(state) else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = if (compact) 2.dp else 6.dp, start = 12.dp, end = 12.dp),
@@ -151,6 +151,12 @@ fun RecordBar(controller: RecordingController, state: RecordingController.UiStat
 }
 
 val RecordingRed = Color(0xFFD32F2F)
+
+/** Recording in keyboard mode: what's said goes to a computer, so it gets its own colour. */
+val KeyboardBlue = Color(0xFF1565C0)
+
+/** The colour of "recording now": red, or blue in keyboard mode. */
+fun recordingColor(state: RecordingController.UiState): Color = if (state.keyboardMode) KeyboardBlue else RecordingRed
 
 /** A red dot that pulses, for "recording now". */
 @Composable

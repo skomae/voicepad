@@ -15,15 +15,34 @@ class LlmPromptTest {
     }
 
     @Test
-    fun blankInstructionFallsBackToCleanup() {
-        assertTrue(LlmPrompt.system("  ").contains(LlmPrompt.CLEANUP.instruction))
+    fun blankInstructionFallsBackToCleanDictation() {
+        assertTrue(LlmPrompt.system("  ").contains(LlmPrompt.DICTATION.instruction))
     }
 
     @Test
     fun twoDistinctPresets() {
         assertEquals(2, LlmPrompt.PRESETS.size)
-        assertEquals(LlmPrompt.POLISH, LlmPrompt.presetFor(LlmPrompt.POLISH.instruction))
+        assertEquals(LlmPrompt.CASUAL, LlmPrompt.presetFor(LlmPrompt.CASUAL.instruction))
         assertNull(LlmPrompt.presetFor("something else"))
+    }
+
+    @Test
+    fun retiredPresetsMigrateToTheirReplacements() {
+        assertEquals(
+            LlmPrompt.DICTATION.instruction,
+            LlmPrompt.migrate(
+                "Fix speech-recognition mistakes, punctuation and capitalisation. " +
+                    "Keep the wording, meaning and language; don't add or remove information.",
+            ),
+        )
+        assertEquals(
+            LlmPrompt.CASUAL.instruction,
+            LlmPrompt.migrate(
+                "Turn this dictation into clear written text: remove filler words, false starts and repetitions, " +
+                    "fix grammar, and split it into sentences and paragraphs. Keep the meaning, tone and language.",
+            ),
+        )
+        assertEquals("my own prompt", LlmPrompt.migrate("my own prompt"))
     }
 
     @Test
@@ -38,7 +57,7 @@ class LlmPromptTest {
     @Test
     fun rememberSkipsPresetsAndBlanks() {
         val recent = listOf("mine")
-        assertEquals(recent, LlmPrompt.remember(recent, LlmPrompt.CLEANUP.instruction))
+        assertEquals(recent, LlmPrompt.remember(recent, LlmPrompt.DICTATION.instruction))
         assertEquals(recent, LlmPrompt.remember(recent, "   "))
     }
 

@@ -529,12 +529,16 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
         if (strokes.isEmpty()) return
         val hid = profile ?: return
         val device = connected ?: return
+        // Phones (an iPhone above all) drop keystrokes at computer speed: give them time.
+        val phone = majorClassOf(device) == BluetoothClass.Device.Major.PHONE
+        val downUp = if (phone) PHONE_DOWN_UP_MS else DOWN_UP_MS
+        val between = if (phone) PHONE_KEY_MS else KEY_MS
         try {
             for (stroke in strokes) {
                 if (!send(hid, device, stroke)) return
-                delay(DOWN_UP_MS)
+                delay(downUp)
                 if (!send(hid, device, null)) return
-                delay(KEY_MS)
+                delay(between)
             }
         } finally {
             // Never leave a key held down on the host (it would auto-repeat),
@@ -561,8 +565,17 @@ class BluetoothKeyboardSink(context: Context) : KeyboardSink {
         /** BluetoothProfile.HID_DEVICE (19), kept as a literal for minSdk 26 builds. */
         private const val HID_DEVICE = 19
         private const val REPORT_LEN = 8
+        /** Computers: about 75 keys a second. */
         private const val DOWN_UP_MS = 5L
         private const val KEY_MS = 8L
+        /**
+         * Phones (by Bluetooth device class): about 22 keys a second. An iPhone as host
+         * dropped characters at the computer pace, most likely because it polls on a
+         * longer connection interval than a computer, so a key-down and its key-up a few
+         * milliseconds apart can fall into one interval and a keystroke is lost.
+         */
+        private const val PHONE_DOWN_UP_MS = 20L
+        private const val PHONE_KEY_MS = 25L
         private const val REGISTRATION_TIMEOUT_MS = 10_000L
         private const val KNOWN_HOSTS = "knownHosts"
         private const val CONNECT_TIMEOUT_MS = 15_000L

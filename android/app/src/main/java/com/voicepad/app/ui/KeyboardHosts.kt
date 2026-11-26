@@ -38,6 +38,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -93,13 +94,28 @@ fun HostSheet(
     }
     fun startScan() = if (context.hasScanPermissions()) scanNow() else permissions.launch(scanPermissions)
 
-    // Close once connected; never leave discovery running behind a closed sheet.
-    LaunchedEffect(state.transmitStatus) {
-        if (state.transmitStatus == SinkStatus.CONNECTED) onDismiss()
+    // Close once a computer picked here has connected. Not merely because the keyboard
+    // is connected: it usually already is when you come here to switch, and the
+    // automatic reconnect to the last computer shouldn't close a picker you opened to
+    // choose a different one.
+    var picked by remember { mutableStateOf<String?>(null) }
+    // The connection dropped after the pick (switching computers, or a new pairing
+    // whose name only settles once paired), so the next one is the picked computer.
+    var droppedSincePick by remember { mutableStateOf(false) }
+    LaunchedEffect(state.transmitStatus, state.transmitHost) {
+        if (picked == null) return@LaunchedEffect
+        if (state.transmitStatus != SinkStatus.CONNECTED) {
+            droppedSincePick = true
+        } else if (state.transmitHost == picked || droppedSincePick) {
+            onDismiss()
+        }
     }
+    // Never leave discovery running behind a closed sheet.
     DisposableEffect(Unit) { onDispose { controller.stopKeyboardScan() } }
 
     fun connect(host: KeyboardHost) {
+        picked = host.name
+        droppedSincePick = state.transmitStatus != SinkStatus.CONNECTED
         when {
             !host.isBonded -> if (controller.pairKeyboardHost(host.address)) {
                 toast("Pairing with ${host.name}: confirm the code on both devices.")
