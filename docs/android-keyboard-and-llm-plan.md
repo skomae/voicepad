@@ -372,11 +372,22 @@ Style presets only change the system instruction (e.g. *Formal email* adds
 
 ## As built (keyboard mode UX)
 
-- **Sending:** while a host is connected, double-tap any note bubble or
-  conversation turn, use a note's "Type on paired device" menu item, or
-  "Type latest note" in the keyboard menu. Anything the app copies to the clipboard
-  (Copy, copy translation, copy from history, auto-copy when a recording
-  finishes) is also typed.
+- **Keyboard mode** is its own mode: on from the keyboard icon's tap until the
+  next tap. While it's on, a blue band under the top bar says where text goes
+  ("Keyboard mode · MacBook · tap a note to type it, hold for rewrites"), the
+  keyboard icon is a solid blue disc (a dot when connected, a ring while
+  connecting, a pulsing dot while typing), and recording turns **blue instead
+  of red** (top bar, record button, live bubble, laptop-mode REC).
+- **Notes in keyboard mode:** tap a note to type it again on the computer
+  (the way auto-send would: rewritten with prompt 1 when auto-send is "after LLM"). Hold it for
+  the rewrites first (*As dictated*, the two active prompts, the other presets,
+  your recent prompts), then the usual note actions below them (copy, edit,
+  play, share, re-transcribe and so on).
+- **Sending otherwise:** while a host is connected, double-tap any note bubble
+  (outside keyboard mode) or conversation turn, use a note's "Type on paired
+  device" menu item, or "Type latest note" in the keyboard menu. Anything the
+  app copies to the clipboard (Copy, copy translation, copy from history,
+  auto-copy when a recording finishes) is also typed.
 - **Keyboard icon:** tap toggles keyboard mode. Turning it on reconnects
   the last computer it typed on (a toast says which, and another when it's
   connected); with none remembered it offers the paired devices. Tap again to
@@ -385,13 +396,13 @@ Style presets only change the system instruction (e.g. *Formal email* adds
   on one to connect or switch to it; also "Pair or pick another…" and
   "Keyboard settings…"). Long-press opens the keyboard menu: connection
   controls, the LLM rewrite toggle and the prompt.
-- **Prompts:** two presets, *Clean up* (fix recognition, punctuation and
-  capitalisation; keep wording) and *Polish* (drop filler words and false
-  starts, fix grammar, split into sentences and paragraphs), plus your own
-  prompts; the last 8 you used are remembered. These replace the fixed style
-  presets above.
-- **Icon colours:** tertiary while waiting for a host, primary (with a dot)
-  when connected, filled while typing. Never red, which is the recording colour.
+- **Prompts:** two presets. *Clean dictation*, like a good dictation
+  secretary: takes out filler sounds (um, uh, filler "like"/"you know"),
+  stutters, accidental repeated words and abandoned false starts, and leaves
+  every other word as spoken. *Casual*: a relaxed chat message, mostly
+  lowercase, minimal punctuation, contractions. Plus your own prompts; the
+  last 8 you used are remembered. Settings saved with the earlier *Clean up*
+  and *Polish* presets move to *Clean dictation* and *Casual*.
 
 ### Laptop mode (half-folded)
 

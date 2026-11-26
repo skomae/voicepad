@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Box
@@ -20,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -101,6 +103,8 @@ fun KeyboardButton(
     controller: RecordingController,
     state: RecordingController.UiState,
     onTypeLatest: () -> Unit,
+    /** Sits on the recording top bar, which is already blue in keyboard mode: draw the disc white. */
+    onRecordingBar: Boolean = false,
 ) {
     val context = LocalContext.current
     fun toast(text: String, long: Boolean = false) =
@@ -222,6 +226,14 @@ fun KeyboardButton(
 
     val colors = MaterialTheme.colorScheme
     val typing = state.transmitStatus == SinkStatus.CONNECTED && state.isTyping
+    // Keyboard mode is its own mode: a solid disc you can't miss. On the recording
+    // bar (already blue in keyboard mode) the disc flips to white.
+    val disc = when {
+        !state.keyboardMode -> Color.Transparent
+        onRecordingBar -> Color.White
+        else -> KeyboardBlue
+    }
+    val onDisc = if (onRecordingBar) KeyboardBlue else Color.White
     val view = LocalView.current
     val stepPx = with(LocalDensity.current) { QUICK_STEP.toPx() }
 
@@ -267,7 +279,7 @@ fun KeyboardButton(
             modifier = Modifier
                 .size(48.dp)
                 .clip(CircleShape)
-                .background(if (typing) colors.primaryContainer else Color.Transparent, CircleShape)
+                .background(disc, CircleShape)
                 .semantics {
                     role = Role.Button
                     contentDescription = label
@@ -320,21 +332,29 @@ fun KeyboardButton(
             Icon(
                 Icons.Default.Keyboard,
                 contentDescription = null,
-                tint = when (state.transmitStatus) {
-                    SinkStatus.CONNECTED -> if (typing) colors.onPrimaryContainer else colors.primary
-                    SinkStatus.ADVERTISING, SinkStatus.REGISTERING -> colors.tertiary
-                    else -> colors.onSurface
-                },
+                // Off: the bar's own icon colour (white on the recording bar, as before).
+                tint = if (state.keyboardMode) onDisc else LocalContentColor.current,
             )
-            if (state.transmitStatus == SinkStatus.CONNECTED && !typing) {
-                // A small dot so "connected" reads at a glance, even in monochrome themes.
-                Box(
+            when {
+                // Typing right now: a pulsing dot.
+                typing -> PulsingDot(Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 6.dp), color = onDisc, size = 8.dp)
+                // Connected: a steady dot, so it reads at a glance even in monochrome themes.
+                state.transmitStatus == SinkStatus.CONNECTED -> Box(
                     Modifier
                         .align(Alignment.TopEnd)
-                        .padding(top = 10.dp, end = 10.dp)
-                        .size(7.dp)
-                        .background(colors.primary, CircleShape),
+                        .padding(top = 6.dp, end = 6.dp)
+                        .size(8.dp)
+                        .background(onDisc, CircleShape),
                 )
+                // On but not connected yet: a ring instead of a dot.
+                state.keyboardMode -> Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 6.dp, end = 6.dp)
+                        .size(8.dp)
+                        .border(1.5.dp, onDisc, CircleShape),
+                )
+                else -> {}
             }
         }
 
@@ -390,6 +410,41 @@ fun KeyboardButton(
                 }
             }
         }
+    }
+}
+
+/**
+ * A full-width band under the top bar while keyboard mode is on, so it's never
+ * mistaken for normal note-taking: says where the text goes and what a tap on a
+ * note does now.
+ */
+@Composable
+fun KeyboardModeStrip(state: RecordingController.UiState) {
+    if (!state.keyboardMode) return
+    val text = when {
+        state.isTyping -> "Typing on ${state.transmitHost ?: "the computer"}\u2026"
+        state.transmitStatus == SinkStatus.CONNECTED ->
+            "Keyboard mode \u00b7 ${state.transmitHost ?: "connected"} \u00b7 tap a note to type it, hold for rewrites"
+        state.transmitStatus == SinkStatus.REGISTERING -> "Keyboard mode \u00b7 starting\u2026"
+        else -> "Keyboard mode \u00b7 connecting \u2014 drag the keyboard icon down to pick a computer"
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(KeyboardBlue)
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .semantics { contentDescription = text },
+    ) {
+        Icon(Icons.Default.Keyboard, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text,
+            color = Color.White,
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
