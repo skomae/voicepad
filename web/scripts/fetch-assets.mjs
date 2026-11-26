@@ -22,7 +22,16 @@ if (existsSync(vadSrc)) {
   console.warn('Android silero_vad.onnx not found — leaving existing copy');
 }
 
-// 2. onnxruntime-web WASM runtime (glue + binaries).
+// 2. Bergamot translator worker (model files come from scripts/fetch-models.mjs).
+const bergamotSrc = join(root, 'node_modules/@browsermt/bergamot-translator/worker');
+if (existsSync(bergamotSrc)) {
+  const dst = join(root, 'bergamot');
+  mkdirSync(dst, { recursive: true });
+  for (const f of readdirSync(bergamotSrc)) copyFileSync(join(bergamotSrc, f), join(dst, f));
+  console.log('copied bergamot worker to bergamot/');
+}
+
+// 3. onnxruntime-web WASM runtime (glue + binaries).
 const ortDist = join(root, 'node_modules/onnxruntime-web/dist');
 if (existsSync(ortDist)) {
   let n = 0;

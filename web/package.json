@@ -20,6 +20,10 @@
     "onnxruntime-web": "1.31.0-dev.20260914-8d85527a0"
   },
   "pnpm": {
-    "ignoredBuiltDependencies": ["onnxruntime-node", "protobufjs", "sharp"]
+    "ignoredBuiltDependencies": [
+      "onnxruntime-node",
+      "protobufjs",
+      "sharp"
+    ]
   }
 }

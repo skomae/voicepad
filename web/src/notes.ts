@@ -12,6 +12,8 @@ export interface Segment {
   start: number;
   end: number;
   text: string;
+  /** Spanish, when the demo's translate toggle was on for this segment. */
+  translation?: string;
 }
 
 export type NoteStatus = 'recording' | 'done' | 'failed';
@@ -117,7 +119,12 @@ export function notesToJson(notes: Note[]): Blob {
       status: n.status,
       source: n.source,
       text: noteText(n),
-      segments: n.segments.map((s) => ({ start: s.start, end: s.end, text: s.text })),
+      segments: n.segments.map((s) => ({
+        start: s.start,
+        end: s.end,
+        text: s.text,
+        translation: s.translation ?? null,
+      })),
     })),
   };
   return new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });

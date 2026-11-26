@@ -10,6 +10,7 @@ const MIME: Record<string, string> = {
   '.wasm': 'application/wasm',
   '.mjs': 'text/javascript',
   '.js': 'text/javascript',
+  '.json': 'application/json',
 };
 
 /**
@@ -19,6 +20,16 @@ const MIME: Record<string, string> = {
  * kept in a plain directory, served by middleware in dev and copied into
  * dist/ort at build time.
  */
+function copyDir(from: string, to: string) {
+  if (!existsSync(from)) return;
+  mkdirSync(to, { recursive: true });
+  for (const f of readdirSync(from)) {
+    const src = join(from, f);
+    if (statSync(src).isDirectory()) copyDir(src, join(to, f));
+    else copyFileSync(src, join(to, f));
+  }
+}
+
 function ortRuntime() {
   const serve = (req: any, res: any, next: any) => {
     const url: string = req.url ?? '';
@@ -47,10 +58,7 @@ function ortRuntime() {
       server.middlewares.use(serve);
     },
     closeBundle() {
-      if (!existsSync(ORT_DIR)) return;
-      const dest = join(ROOT, 'dist/ort');
-      mkdirSync(dest, { recursive: true });
-      for (const f of readdirSync(ORT_DIR)) copyFileSync(join(ORT_DIR, f), join(dest, f));
+      copyDir(ORT_DIR, join(ROOT, 'dist/ort'));
     },
   };
 }

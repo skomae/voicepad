@@ -28,10 +28,11 @@ const el = {
   recordBtn: $<HTMLButtonElement>('recordBtn'),
   recordGlyph: $('recordGlyph'),
   splitBtn: $<HTMLButtonElement>('splitBtn'),
-  importBtn: $<HTMLButtonElement>('importBtn'),
   recStatus: $('recStatus'),
   recMeta: $('recMeta'),
-  notesBtn: $('notesBtn'),
+  searchWrap: $('searchWrap'),
+  searchBtn: $<HTMLButtonElement>('searchBtn'),
+  searchInput: $<HTMLInputElement>('searchInput'),
   settingsBtn: $('settingsBtn'),
   notesSheet: $('notesSheet'),
   notesList: $('notesList'),
@@ -53,7 +54,6 @@ const el = {
   clearAllBtn: $<HTMLButtonElement>('clearAllBtn'),
   scrim: $('scrim'),
   toast: $('toast'),
-  fileInput: $<HTMLInputElement>('fileInput'),
   installBtn: $<HTMLButtonElement>('installBtn'),
 };
 
@@ -213,6 +213,7 @@ let session: Session | null = null;
 /** Bumped whenever a preview must be invalidated (utterance committed). */
 let previewSeq = 0;
 let introExpanded = false;
+let searchQuery = '';
 
 function segmentsOf(note: Note): Segment[] {
   return [...note.segments].sort((a, b) => a.start - b.start);
@@ -436,77 +437,6 @@ async function splitNote() {
 
 // ---------------------------------------------------------------- import
 
-async function importFile(file: File) {
-  if (ui.phase === 'recording' || ui.phase === 'importing') return;
-  const name = file.name || 'audio';
-  setPhase('importing');
-  el.recStatus.textContent = `Transcribing ${name}…`;
-  try {
-    const detector = await ensureVad();
-    detector.reset();
-    const samples = await decodeAudioFile(file);
-    if (samples.length === 0) throw new Error('No audio in that file.');
-
-    const note = newNote('file');
-    displayed = note;
-    renderBubbles();
-    renderLive();
-    await noteStore.put(note);
-
-    const ring = new SampleRing(60);
-    const tracker = new UtteranceTracker();
-    const pause = () => new Promise((r) => setTimeout(r, 0));
-
-    for (let at = 0; at < samples.length; at += FRAME) {
-      const chunk = samples.subarray(at, Math.min(at + FRAME, samples.length));
-      const frame = new Float32Array(FRAME);
-      frame.set(chunk);
-      ring.push(chunk);
-      const p = await detector.prob(frame);
-      const spans = tracker.push(p);
-      for (const span of spans) {
-        const audio = ring.slice(span.start, Math.min(span.end, ring.total));
-        const text = audio.length < 0.35 * SAMPLE ? '' : await runEngine(() => engine!.transcribe(audio));
-        if (text) {
-          note.segments.push({
-            id: crypto.randomUUID(),
-            start: Math.max(0, span.start / SAMPLE),
-            end: Math.max(0, span.end / SAMPLE),
-            text,
-          });
-        }
-      }
-      if (at % (FRAME * 160) === 0) {
-        const pct = Math.round((at / samples.length) * 100);
-        el.recStatus.textContent = `Transcribing ${name}… ${pct}%`;
-        await pause();
-      }
-    }
-    for (const span of tracker.flush()) {
-      const audio = ring.slice(span.start, Math.min(span.end, ring.total));
-      const text = audio.length < 0.35 * SAMPLE ? '' : await runEngine(() => engine!.transcribe(audio));
-      if (text) {
-        note.segments.push({ id: crypto.randomUUID(), start: span.start / SAMPLE, end: span.end / SAMPLE, text });
-      }
-    }
-
-    note.durationSeconds = samples.length / SAMPLE;
-    note.status = note.segments.length ? 'done' : 'failed';
-    note.audio = encodeWav([toInt16(samples)]);
-    await noteStore.put(note);
-    notes = [note, ...notes.filter((n) => n.id !== note.id)];
-    setPhase('ready');
-    el.recStatus.textContent = 'Not recording';
-    renderBubbles();
-    renderNotes();
-    toast(note.segments.length ? `Transcribed ${name}` : 'Nothing speech-like in that file.');
-  } catch (err: any) {
-    setPhase('ready');
-    el.recStatus.textContent = 'Not recording';
-    toast(err?.message ?? 'Could not read that file.');
-  }
-}
-
 // ---------------------------------------------------------------- render
 
 function renderStatus() {
@@ -568,24 +498,37 @@ function renderStatus() {
       : '<span class="reddot"></span>';
   el.recordBtn.setAttribute('aria-label', ui.phase === 'recording' ? 'Stop recording' : 'Start recording');
   el.splitBtn.disabled = ui.phase !== 'recording';
-  el.importBtn.disabled = ui.phase === 'recording' || ui.phase === 'importing';
 }
 
 function renderBubbles() {
   const current = session?.note ?? null;
   // Chat order: the welcome message is the oldest thing in the thread, each
   // new note lands underneath it, so the message scrolls up as you use it.
-  const saved = notes
+  const q = searchQuery.trim().toLowerCase();
+  let saved = notes
     .filter((n) => !current || n.id !== current.id)
     .sort((a, b) => a.createdAt - b.createdAt);
-  const list = current ? [...saved, current] : saved;
+  if (q) {
+    saved = saved.filter((n) =>
+      `${noteText(n)} ${n.segments.map((s) => s.translation ?? '').join(' ')} ${formatDate(n.createdAt)}`
+        .toLowerCase()
+        .includes(q),
+    );
+  }
+  const list = current && !q ? [...saved, current] : saved;
 
   const nearBottom =
     el.transcript.scrollHeight - el.transcript.scrollTop - el.transcript.clientHeight < 160;
 
-  el.introWrap.hidden = false;
+  el.introWrap.hidden = !!q;
   el.introWrap.classList.toggle('compact', list.length > 0 && !introExpanded);
-  el.firstHint.hidden = list.length > 0;
+  if (q && list.length === 0) {
+    el.firstHint.hidden = false;
+    el.firstHint.textContent = `No notes match “${searchQuery.trim()}”.`;
+  } else if (!q) {
+    el.firstHint.textContent = 'Tap the red button and start talking.';
+  }
+  el.firstHint.hidden = !!q ? list.length > 0 : list.length > 0;
   el.liveBubble.remove();
   el.bubbles.innerHTML = '';
 
@@ -838,12 +781,6 @@ async function boot() {
     else void startRecording();
   });
   el.splitBtn.addEventListener('click', () => void splitNote());
-  el.importBtn.addEventListener('click', () => el.fileInput.click());
-  el.fileInput.addEventListener('change', () => {
-    const file = el.fileInput.files?.[0];
-    if (file) void importFile(file);
-    el.fileInput.value = '';
-  });
   el.introWrap.addEventListener('click', (e) => {
     if (!el.introWrap.classList.contains('compact') && !introExpanded) return;
     if ((e.target as HTMLElement).closest('a')) return;
@@ -858,10 +795,28 @@ async function boot() {
     vad = null;
     ensureEngine().catch(() => {});
   });
-  el.notesBtn.addEventListener('click', async () => {
-    notes = await noteStore.list();
-    renderNotes();
-    openSheet('notesSheet');
+  const openSearch = () => {
+    el.searchBtn.hidden = true;
+    el.searchInput.hidden = false;
+    el.searchInput.focus();
+  };
+  const closeSearch = () => {
+    el.searchInput.hidden = true;
+    el.searchBtn.hidden = false;
+    el.searchInput.value = '';
+    searchQuery = '';
+    renderBubbles();
+  };
+  el.searchBtn.addEventListener('click', openSearch);
+  el.searchInput.addEventListener('input', () => {
+    searchQuery = el.searchInput.value;
+    renderBubbles();
+  });
+  el.searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeSearch();
+  });
+  el.searchInput.addEventListener('blur', () => {
+    if (!el.searchInput.value) closeSearch();
   });
   el.settingsBtn.addEventListener('click', () => {
     renderSettings();

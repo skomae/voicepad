@@ -384,10 +384,16 @@ button {
 }
 
 .controls {
-  display: flex;
+  display: grid;
+  grid-template-columns: 46px 84px 46px;
   align-items: center;
   justify-content: center;
   gap: 34px;
+}
+
+.side-spacer {
+  width: 46px;
+  height: 46px;
 }
 
 .side-btn {

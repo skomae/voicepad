@@ -35,9 +35,8 @@ pnpm build        # dist/, then served by the voicepad-web container
   all notes*), with text, per-segment timing, duration, pin state and status —
   the shape the app can import. Audio stays on the device; per-note WAV
   download covers that.
-- **Import audio** (button next to the record button) runs the same
-  VAD → commit → ASR pipeline over a file — handy on desktops without a
-  microphone. The demo ships no sample clip of its own.
+- **No sample or upload button**: the demo records, nothing else. Test clips
+  stay out of the product surface (see *Testing without a microphone*).
 - **Introduction bubble**: the grey, left-aligned message a new visitor sees,
   plus the app-store funnel line. Its copy lives in one place — `INTRO_TEXT` in
   `src/main.ts` — and `STORE_URL` there turns the "in the app stores soon" line
@@ -146,6 +145,8 @@ part of a build.
 - Whisper tiny.en is the demo's accuracy ceiling — noticeably weaker than
   Parakeet on accents and noisy rooms.
 - No translation, romanisation, conversation mode, speaker handling, revision
-  history or archive yet.
+  history or archive yet. Translation was prototyped with Bergamot (en→es,
+  ~35 MB) and pulled: it works on desktop, but on iOS it takes the page's WASM
+  memory and kills dictation. It needs a model-swap design first.
 - The first load downloads ~43 MB of model plus ~27 MB of WASM runtime, then
   serves both from cache, offline included.
