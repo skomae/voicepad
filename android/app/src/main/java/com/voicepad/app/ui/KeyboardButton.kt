@@ -88,13 +88,12 @@ private fun Context.hasBluetoothPermissions() = bluetoothPermissions.all {
 /**
  * Top-bar "type as keyboard" control.
  *
- * - Idle: asks for Bluetooth permission if needed and registers as a
- *   keyboard, then reconnects the last host or offers the paired devices.
- * - Advertising: tap picks a paired device to connect to, pairs a new one
- *   (the only case that asks to make the phone discoverable), or stops.
- * - Connected: tap types the latest note (tap again to stop mid-way).
- * - Drag down or long-press: the keyboard menu (connection, LLM rewrite
- *   toggle and prompt).
+ * - Tap toggles keyboard mode. Turning it on asks for Bluetooth permission if
+ *   needed, registers as a keyboard and reconnects the last computer it typed
+ *   on (with a toast), or offers the paired devices when there's none. Turning
+ *   it off disconnects. While text is being typed, a tap stops the typing first.
+ * - Drag down: quick-pick a computer. Long-press: the keyboard menu
+ *   (connection, type latest note, LLM rewrite toggle and prompt).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -112,10 +111,21 @@ fun KeyboardButton(
     var showMenu by remember { mutableStateOf(false) }
     // Open the host picker once registration finishes after a tap to start.
     var pickAfterStart by remember { mutableStateOf(false) }
+    // Turned on from here: say so once it connects.
+    var announceConnect by remember { mutableStateOf(false) }
 
     fun start() {
         pickAfterStart = true
+        announceConnect = true
         controller.toggleKeyboard()
+    }
+
+    /** Tap on an idle keyboard: turn it on, saying where it will reconnect. */
+    fun turnOn() {
+        // The computer the sink reconnects to on registration: the most recent remembered one that's still paired.
+        val last = controller.keyboardHosts().firstOrNull { it.isKnown && it.isBonded }
+        start()
+        toast(if (last != null) "Keyboard on \u2014 reconnecting to ${last.name}\u2026" else "Keyboard on \u2014 pick a computer to type on.")
     }
 
     LaunchedEffect(state.transmitStatus) {
@@ -130,16 +140,21 @@ fun KeyboardButton(
             }
             SinkStatus.CONNECTED -> {
                 showHosts = false
+                if (announceConnect) {
+                    announceConnect = false
+                    toast(state.transmitHost?.let { "Keyboard connected to $it." } ?: "Keyboard connected.")
+                }
             }
             SinkStatus.REGISTERING -> {}
             else -> {
                 pickAfterStart = false
+                announceConnect = false
             }
         }
     }
 
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-        if (result.values.all { it }) start() else toast("VoicePad needs Nearby devices permission to act as a keyboard.", long = true)
+        if (result.values.all { it }) turnOn() else toast("VoicePad needs Nearby devices permission to act as a keyboard.", long = true)
     }
 
     if (showHosts) {
@@ -169,32 +184,29 @@ fun KeyboardButton(
         state.transmitError?.let { toast(it, long = true) }
     }
 
+    // Tap is an on/off switch for keyboard mode.
     val handleClick: () -> Unit = {
         when (state.transmitStatus) {
-            SinkStatus.CONNECTED -> if (state.isTyping) {
+            SinkStatus.CONNECTED, SinkStatus.ADVERTISING, SinkStatus.REGISTERING -> if (state.isTyping) {
+                // Stop the runaway typing first; a second tap turns the keyboard off.
                 controller.stopTyping()
                 toast("Stopped typing.")
             } else {
-                onTypeLatest()
-            }
-            SinkStatus.ADVERTISING -> {
-                showHosts = true
-            }
-            SinkStatus.REGISTERING -> {
+                showHosts = false
+                announceConnect = false
                 controller.stopKeyboard()
-                toast("Keyboard stopped.")
+                toast("Keyboard off.")
             }
             SinkStatus.UNAVAILABLE -> toast("This phone can't act as a Bluetooth keyboard.", long = true)
             SinkStatus.IDLE, SinkStatus.FAILED ->
-                if (context.hasBluetoothPermissions()) start() else permissions.launch(bluetoothPermissions)
+                if (context.hasBluetoothPermissions()) turnOn() else permissions.launch(bluetoothPermissions)
         }
     }
 
     val label = when (state.transmitStatus) {
-        SinkStatus.CONNECTED -> if (state.isTyping) "Stop typing" else "Type latest note on the paired device"
-        SinkStatus.ADVERTISING -> "Connect keyboard to a device"
-        SinkStatus.REGISTERING -> "Stop keyboard mode"
-        else -> "Type as keyboard"
+        SinkStatus.CONNECTED -> if (state.isTyping) "Stop typing" else "Turn keyboard off (connected to ${state.transmitHost ?: "a device"})"
+        SinkStatus.ADVERTISING, SinkStatus.REGISTERING -> "Turn keyboard off"
+        else -> "Turn keyboard on"
     }
 
     if (showMenu) {
@@ -246,7 +258,7 @@ fun KeyboardButton(
     val latestClick by rememberUpdatedState(handleClick)
     val latestPick by rememberUpdatedState<(QuickItem) -> Unit> { pick(it) }
 
-    // Sized and shaped like an IconButton. Tap: see [handleClick]; long-press:
+    // Sized and shaped like an IconButton. Tap: toggle (see [handleClick]); long-press:
     // keyboard menu; pull down: quick-pick a computer. Deliberately never
     // red: that's the recording colour.
     Box {

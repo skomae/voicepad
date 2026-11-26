@@ -1564,7 +1564,7 @@ class RecordingController(
     }
 
     /**
-     * Types [text] on the connected computer (double-tap, the keyboard icon,
+     * Types [text] on the connected computer (double-tap, "Type latest note",
      * "Type on paired device"). With auto-send "after LLM" it's rewritten with
      * prompt 1 first. Ignored while a previous text is still being typed; use
      * [stopTyping] to abandon that one.
