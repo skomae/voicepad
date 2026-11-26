@@ -33,6 +33,7 @@ const el = {
   introText: $('introText'),
   introFoot: $('introFoot'),
   storeLink: $<HTMLAnchorElement>('storeLink'),
+  repoLink: $<HTMLAnchorElement>('repoLink'),
   introActions: $('introActions'),
   bubbles: $('bubbles'),
   transcript: $('transcript'),
@@ -78,13 +79,16 @@ const VAD_URL = '/silero_vad.onnx';
  * Copy for the introduction bubble — the one message the demo "says" to a new
  * visitor. Keep it in one place so it can be edited without touching markup.
  */
-const INTRO_TEXT = `Hey there, welcome to Voice Pad. Using Voice Pad, you get entirely on-device local transcription and translation, with spoken translated voice — without being connected to the internet, and no subscription fees. I made this app because I'm tired of typing, and the tech companies want you to pay a subscription for something that you should be able to do for free. What you're looking at right now is a web demo that is running using a real ML model right inside your browser. It's much smaller, so it's not as good or accurate as the full app, but it should give you a good idea of the experience you'll have when using it.`;
+const INTRO_TEXT = `Hey there, welcome to Voice Pad. Using Voice Pad, you get entirely on-device local transcription and translation, with spoken translated voice — without being connected to the internet, and no subscription fees. Your data never, ever leaves your phone. I made this app because I'm tired of typing, and the tech companies want you to pay a subscription for something that you should be able to do for free. What you're looking at right now is a web demo that is running using a real ML model right inside your browser. It's much smaller, so it's not as good or accurate as the full app, but it should give you a good idea of the experience you'll have when using it.`;
 
 /**
  * Store listing for the full app. Leave empty until it is live: the intro then
  * says "in the app stores soon" instead of showing a dead link.
  */
 const STORE_URL = '';
+
+/** The demo is open source; the intro links to it so the claim can be checked. */
+const REPO_URL = 'https://github.com/skomae/voicepad';
 const SAMPLE = SAMPLE_RATE;
 
 // ---------------------------------------------------------------- state
@@ -810,7 +814,8 @@ function renderPrivacy() {
     <p class="subtle">Turn on airplane mode, reload this page, then record. The words still appear —
     the model was downloaded once, the microphone never leaves the browser.</p>
     <p class="subtle">The audio is kept in this browser's storage with the note, so you can reopen
-    a recording without the network. Delete the note and the audio goes with it.</p>`;
+    a recording without the network. Delete the note and the audio goes with it.</p>
+    <p class="subtle">The source is public — <a class="inline-link" href="${REPO_URL}" target="_blank" rel="noopener">${REPO_URL.replace('https://', '')}</a> — so the network code that backs this panel can be read.</p>`;
   el.privacyBody.append(section);
 
   openSheet('privacySheet');
@@ -930,6 +935,8 @@ async function boot() {
   });
 
   el.introText.textContent = INTRO_TEXT;
+  el.repoLink.href = REPO_URL;
+  el.repoLink.textContent = REPO_URL.replace('https://', '');
   el.transcript.scrollTop = 0;
   if (STORE_URL) {
     el.storeLink.href = STORE_URL;
