@@ -345,6 +345,26 @@ fun SettingsSheet(
                 Spacer(Modifier.width(12.dp))
                 Switch(checked = state.backgroundVoices, onCheckedChange = controller::setBackgroundVoices)
             }
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Separate speakers")
+                    Text(
+                        "Tell voices apart in notes, like conversation mode does: when a second person talks, " +
+                            "the note is split into paragraphs labelled Speaker 1, Speaker 2… A note with one voice " +
+                            "stays as it is. Uses the ${com.voicepad.app.conversation.SpeakerEmbedder.SIZE_LABEL} voice " +
+                            "model (downloads once, runs on the phone). Applies from the next note; re-transcribe an " +
+                            "older note to separate it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (state.separateSpeakers) state.speakerModelStatus?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = state.separateSpeakers, onCheckedChange = controller::setSeparateSpeakers)
+            }
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             AutoCleanupSection(state, controller)
             HorizontalDivider(Modifier.padding(vertical = 12.dp))

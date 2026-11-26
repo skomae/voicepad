@@ -14,6 +14,8 @@ import com.voicepad.app.audio.AudioRecorder
 import com.voicepad.app.audio.InputDevice
 import com.voicepad.app.audio.RecordingService
 import com.voicepad.app.audio.WavFile
+import com.voicepad.app.conversation.SpeakerEmbedder
+import com.voicepad.app.conversation.SpeakerTranscript
 import com.voicepad.app.data.AutoSplit
 import com.voicepad.app.data.DictionaryStore
 import com.voicepad.app.data.Note
@@ -147,6 +149,10 @@ class RecordingController(
         val autoTranslate: Boolean = true,
         /** Hold the detected language for the whole sentence (Auto models). */
         val stableLanguage: Boolean = true,
+        /** Tell voices apart in notes: a new "Speaker N:" paragraph when someone else talks. */
+        val separateSpeakers: Boolean = false,
+        /** The voice model behind [separateSpeakers], while it downloads/loads or if it failed; null once ready or unused. */
+        val speakerModelStatus: String? = null,
         /** Preview with the fast SenseVoice-only pass; route fully at commit. */
         val quickPreview: Boolean = true,
         /** First launch with no models yet: offer to pre-download them now. */
@@ -246,6 +252,7 @@ class RecordingController(
                 ?.let { runCatching { NoteCleanup.AutoAge.valueOf(it) }.getOrNull() } ?: NoteCleanup.AutoAge.OFF,
             stableLanguage = prefs.getBoolean("stableLanguage", true),
             quickPreview = prefs.getBoolean("quickPreview", true),
+            separateSpeakers = prefs.getBoolean("separateSpeakers", false),
             inputDevices = inputs.devices.value,
             selectedInputKey = prefs.getString("inputDevice", null),
             llmEnabled = prefs.getBoolean("llmEnabled", false),
@@ -322,6 +329,8 @@ class RecordingController(
         var latchedLanguage: String? = null
         /** [quietAt] last time we checked, to detect a new utterance. */
         var lastQuietAt = origin
+        /** Speakers told apart for this note (null: the option was off when it started). */
+        val speakers: SpeakerTranscript? = if (_state.value.separateSpeakers) SpeakerTranscript() else null
     }
 
     private var session: LiveSession? = null
@@ -443,6 +452,24 @@ class RecordingController(
         _state.update { it.copy(quickPreview = enabled) }
     }
 
+    /**
+     * Separate speakers in notes. Takes effect from the next note (the one being
+     * recorded keeps how it started); re-transcribe an older note to label it.
+     */
+    fun setSeparateSpeakers(enabled: Boolean) {
+        prefs.edit { putBoolean("separateSpeakers", enabled) }
+        _state.update { it.copy(separateSpeakers = enabled, speakerModelStatus = null) }
+        if (enabled) {
+            ensureSpeakerModel()
+        } else {
+            speakerJob?.cancel()
+            val model = speakerEmbedder
+            speakerEmbedder = null
+            // Release under the lock so an embedding in flight finishes first.
+            if (model != null) scope.launch { speakerMutex.withLock { model.release() } }
+        }
+    }
+
     /** Closes the first-run setup and continues with the normal start-up. */
     fun dismissSetup() {
         preloadJob?.cancel()
@@ -536,7 +563,13 @@ class RecordingController(
     private fun newDetector(): SpeechDetector? =
         runCatching { SpeechDetector(context.assets) }.getOrNull()
 
-    private val grouping get() = engine?.grouping ?: ChunkPlanner.Grouping.UTTERANCES
+    /**
+     * One utterance per model call when separating speakers, so every piece of text
+     * has a single voice to fingerprint (Whisper would otherwise pack several).
+     */
+    private val grouping get() =
+        if (_state.value.separateSpeakers) ChunkPlanner.Grouping.UTTERANCES
+        else engine?.grouping ?: ChunkPlanner.Grouping.UTTERANCES
 
     private fun setStatus(status: EngineStatus) = _state.update { it.copy(engineStatus = status) }
 
@@ -600,6 +633,7 @@ class RecordingController(
             return
         }
         RecordingService.start(context)
+        if (s.separateSpeakers) ensureSpeakerModel()
         beginNote(fileName, origin = 0, part = 1)
         _state.update { it.copy(isRecording = true, errorMessage = null) }
         android.util.Log.i(TAG, "start: recording from ${s.selectedInputKey ?: "default input"}")
@@ -883,7 +917,12 @@ class RecordingController(
             // Padding never reaches into the previous note's audio.
             val audio = join(chunk.map { recorder.samples(maxOf(it.start, s.origin), it.end) })
             val result = transcribe(audio)
-            s.committedText = join(s.committedText, result.text)
+            val speakers = s.speakers
+            s.committedText = if (speakers != null) {
+                speakers.add(result.text, if (result.text.isNotBlank()) embedSpeaker(audio) else null, result.language)
+            } else {
+                join(s.committedText, result.text)
+            }
             result.language?.let { s.languages += it }
             result.engine?.let { s.engines += it }
             if (result.text.isNotBlank()) {
@@ -1160,10 +1199,22 @@ class RecordingController(
             var text = ""
             val languages = mutableListOf<String>()
             val engines = mutableListOf<String>()
+            // Saved audio can wait for the voice model, so the note comes out labelled.
+            val speakers = if (_state.value.separateSpeakers) {
+                ensureSpeakerModel()
+                speakerJob?.join()
+                SpeakerTranscript()
+            } else {
+                null
+            }
             for (chunk in chunks) {
                 val audio = withContext(Dispatchers.IO) { join(chunk.map { WavFile.readRange(file, it.start, it.end) }) }
                 val result = transcribe(audio, normalize = note.backgroundVoices)
-                text = join(text, result.text)
+                text = if (speakers != null) {
+                    speakers.add(result.text, if (result.text.isNotBlank()) embedSpeaker(audio) else null, result.language)
+                } else {
+                    join(text, result.text)
+                }
                 result.language?.let { languages += it }
                 result.engine?.let { engines += it }
             }
@@ -1190,6 +1241,61 @@ class RecordingController(
         } finally {
             decoded?.delete()
         }
+    }
+
+    // endregion
+
+    // region Speakers
+
+    private var speakerEmbedder: SpeakerEmbedder? = null
+    private var speakerJob: Job? = null
+    /** The embedder isn't thread-safe: one fingerprint at a time. */
+    private val speakerMutex = Mutex()
+
+    /** Downloads (once) and loads the voice model for separating speakers. */
+    private fun ensureSpeakerModel() {
+        if (speakerEmbedder != null || speakerJob?.isActive == true) return
+        // It crashed the app last time and the user hasn't said to keep it: don't load it unasked.
+        if (CrashGuard.Risky.VOICE_ID in CrashGuard.crashedDuring) {
+            _state.update { it.copy(speakerModelStatus = "Held back: the app closed while telling voices apart last time.") }
+            return
+        }
+        speakerJob = scope.launch {
+            val downloading = !SpeakerEmbedder.isInstalled(context)
+            _state.update { it.copy(speakerModelStatus = if (downloading) "Downloading the voice model…" else "Loading the voice model…") }
+            try {
+                var lastPercent = -1
+                val loaded = SpeakerEmbedder.load(context) { p ->
+                    val percent = (p * 100).toInt()
+                    if (percent != lastPercent) {
+                        lastPercent = percent
+                        scope.launch { _state.update { it.copy(speakerModelStatus = "Downloading the voice model… $percent%") } }
+                    }
+                }
+                if (_state.value.separateSpeakers) {
+                    speakerEmbedder = loaded
+                    _state.update { it.copy(speakerModelStatus = null) }
+                } else {
+                    loaded.release() // turned off while it loaded
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                _state.update { it.copy(speakerModelStatus = "Couldn't load the voice model: ${e.message ?: e}") }
+            }
+        }
+    }
+
+    /** The voice fingerprint of [audio], or null without the model or when it's too short to tell. */
+    private suspend fun embedSpeaker(audio: FloatArray): FloatArray? {
+        val model = speakerEmbedder ?: return null
+        return runCatching {
+            speakerMutex.withLock {
+                // Released while waiting for the lock: the option was turned off.
+                if (speakerEmbedder !== model) return@withLock null
+                withContext(Dispatchers.Default) { CrashGuard.during(CrashGuard.Risky.VOICE_ID) { model.embed(audio) } }
+            }
+        }.getOrNull()
     }
 
     // endregion
