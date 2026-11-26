@@ -66,6 +66,7 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.voicepad.app.RecordingController
@@ -372,6 +373,40 @@ fun SettingsSheet(
                 }
                 Spacer(Modifier.width(12.dp))
                 Switch(checked = state.separateSpeakers, onCheckedChange = controller::setSeparateSpeakers)
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Caption view")
+                    Text(
+                        "While recording, show what's being said as large live captions, like conversation mode " +
+                            "but without translation: the newest words big and bright, earlier ones smaller above. " +
+                            "For reading speech, e.g. if you're hard of hearing. With Separate speakers on, each " +
+                            "speaker gets their own colour. Also in the \u22ee menu.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Switch(checked = state.captionView, onCheckedChange = controller::setCaptionView)
+            }
+            if (state.captionView) {
+                Text(
+                    "Caption size: ${state.captionTextSize}",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                androidx.compose.material3.Slider(
+                    value = state.captionTextSize.toFloat(),
+                    onValueChange = { controller.setCaptionTextSize(it.toInt()) },
+                    valueRange = RecordingController.CAPTION_SIZES.first.toFloat()..RecordingController.CAPTION_SIZES.last.toFloat(),
+                )
+                Text(
+                    "Aa \u2014 how captions look",
+                    fontSize = state.captionTextSize.sp,
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                    maxLines = 1,
+                )
             }
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             AutoCleanupSection(state, controller)

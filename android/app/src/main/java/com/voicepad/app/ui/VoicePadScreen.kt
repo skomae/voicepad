@@ -10,6 +10,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Delete
@@ -292,6 +293,12 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
                                     HorizontalDivider()
                                 }
                                 DropdownMenuItem(
+                                    text = { Text("Caption view") },
+                                    leadingIcon = { Icon(Icons.Default.ClosedCaption, contentDescription = null) },
+                                    trailingIcon = { Switch(checked = state.captionView, onCheckedChange = null) },
+                                    onClick = { controller.setCaptionView(!state.captionView) },
+                                )
+                                DropdownMenuItem(
                                     text = { Text("Archived notes (${archivedNotes.size})") },
                                     leadingIcon = { Icon(Icons.Default.Archive, contentDescription = null) },
                                     onClick = { overflowOpen = false; showArchive = true },
@@ -332,7 +339,15 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
                     modifier = Modifier.align(Alignment.Center).padding(32.dp),
                 )
             }
-            LazyColumn(
+            // Caption view: while recording, a teleprompter of the speech instead of the notes.
+            if (state.captionView && showLive && !searching) {
+                CaptionStage(
+                    controller = controller,
+                    state = state,
+                    earlier = otherNotes.filter { it.currentText.isNotBlank() }.sortedBy { it.createdAt }.takeLast(3),
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else LazyColumn(
                 state = listState,
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),

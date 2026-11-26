@@ -151,6 +151,14 @@ class RecordingController(
         val autoTranslate: Boolean = true,
         /** Hold the detected language for the whole sentence (Auto models). */
         val stableLanguage: Boolean = true,
+        /**
+         * Caption view: while recording, the notes give way to a full-screen
+         * teleprompter of what's being said (large text, newest words brightest),
+         * for reading speech rather than taking notes, e.g. for someone hard of hearing.
+         */
+        val captionView: Boolean = false,
+        /** Caption view's text size, in sp. */
+        val captionTextSize: Int = DEFAULT_CAPTION_SIZE,
         /** Tell voices apart in notes: a new "Speaker N:" paragraph when someone else talks. */
         val separateSpeakers: Boolean = false,
         /** The voice model behind [separateSpeakers], while it downloads/loads or if it failed; null once ready or unused. */
@@ -220,6 +228,8 @@ class RecordingController(
         const val MAX_AUTO_ATTEMPTS = 3
         /** Below this peak the microphone was hearing a room, not a voice: -40 dBFS. */
         private const val SILENT_PEAK = 0.01f
+        const val DEFAULT_CAPTION_SIZE = 34
+        val CAPTION_SIZES = 22..72
         private const val AUTO_CLEANUP_INTERVAL_MS = 15 * 60 * 1000L
         /**
          * Most robust to distant, noisy speech: in testing with echo and
@@ -267,6 +277,8 @@ class RecordingController(
             stableLanguage = prefs.getBoolean("stableLanguage", true),
             quickPreview = prefs.getBoolean("quickPreview", true),
             separateSpeakers = prefs.getBoolean("separateSpeakers", false),
+            captionView = prefs.getBoolean("captionView", false),
+            captionTextSize = prefs.getInt("captionTextSize", DEFAULT_CAPTION_SIZE),
             inputDevices = inputs.devices.value,
             selectedInputKey = prefs.getString("inputDevice", null),
             llmEnabled = prefs.getBoolean("llmEnabled", false),
@@ -464,6 +476,17 @@ class RecordingController(
     fun setQuickPreview(enabled: Boolean) {
         prefs.edit { putBoolean("quickPreview", enabled) }
         _state.update { it.copy(quickPreview = enabled) }
+    }
+
+    fun setCaptionView(enabled: Boolean) {
+        prefs.edit { putBoolean("captionView", enabled) }
+        _state.update { it.copy(captionView = enabled) }
+    }
+
+    fun setCaptionTextSize(size: Int) {
+        val clamped = size.coerceIn(CAPTION_SIZES)
+        prefs.edit { putInt("captionTextSize", clamped) }
+        _state.update { it.copy(captionTextSize = clamped) }
     }
 
     /**
