@@ -24,6 +24,10 @@
           </div>
         </div>
         <div class="top-actions">
+          <button class="proof-badge" id="proofBtn" title="Proof: nothing is uploaded">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 5 6v5c0 4.4 3 8.4 7 9.5 4-1.1 7-5.1 7-9.5V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg>
+            <span id="proofLabel">0 B sent</span>
+          </button>
           <button class="icon-btn" id="installBtn" title="Install app" hidden>Install</button>
           <div class="search-wrap" id="searchWrap">
             <button class="icon-btn" id="searchBtn" title="Search notes" aria-label="Search notes">
@@ -103,6 +107,17 @@
       </div>
       <div class="sheet-body" id="noteBody"></div>
       <div class="sheet-foot" id="noteActions"></div>
+    </div>
+
+    <!-- Privacy proof -->
+    <div class="sheet" id="privacySheet" hidden>
+      <div class="sheet-head">
+        <h2>Nothing leaves this device</h2>
+        <button class="icon-btn" data-close="privacySheet" aria-label="Close">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="sheet-body" id="privacyBody"></div>
     </div>
 
     <!-- Settings -->

@@ -104,6 +104,20 @@ deploy/nginx.conf   static config used by the voicepad-web container
 | Split | Split |
 | translation, romanisation, conversation mode, background voices | not in the demo |
 
+## Proving it stays on the device
+
+A green **0 B sent** badge sits in the header; tapping it opens *Nothing leaves
+this device*:
+
+- audio captured so far, bytes sent anywhere, and every network request the page
+  made, grouped by host (the model download from `huggingface.co` shows up once,
+  then comes from cache);
+- a red alarm if any request with a body is ever made **while recording** —
+  `fetch`, `XMLHttpRequest`, `sendBeacon` and `WebSocket` are all wrapped at boot
+  in `src/privacy.ts`, so the claim is measured, not asserted;
+- how to verify independently: airplane mode → reload → record; the words still
+  appear, because the model was downloaded once and the mic never leaves the tab.
+
 ## Deploying
 
 Built with `pnpm build`; the static `dist/` is served from **fr1** at

@@ -4,6 +4,18 @@ import { SileroVad, EnergyVad, UtteranceTracker, type Span, type VoiceActivity }
 import { SpeechEngine, MODEL, webgpuAvailable, type Device } from './asr';
 import { noteStore, newNote, noteText, sortNotes, notesToJson, downloadBlob, type Note, type Segment } from './notes';
 import { encodeWav, toInt16, formatDuration, formatDate } from './wav';
+import {
+  installNetworkWatch,
+  setRecordingState,
+  addAudioSamples,
+  sentBytes,
+  audioBytesCaptured,
+  requestEvents,
+  hostsSeen,
+  suspicious,
+} from './privacy';
+
+installNetworkWatch();
 
 // ---------------------------------------------------------------- elements
 
@@ -34,6 +46,9 @@ const el = {
   searchBtn: $<HTMLButtonElement>('searchBtn'),
   searchInput: $<HTMLInputElement>('searchInput'),
   settingsBtn: $('settingsBtn'),
+  proofBtn: $<HTMLButtonElement>('proofBtn'),
+  proofLabel: $('proofLabel'),
+  privacyBody: $('privacyBody'),
   notesSheet: $('notesSheet'),
   notesList: $('notesList'),
   notesCount: $('notesCount'),
@@ -244,6 +259,7 @@ async function startRecording() {
     ui.elapsed = 0;
     ui.error = null;
     setPhase('recording');
+    setRecordingState(true);
     renderBubbles();
     renderLive();
     startPreviewLoop();
@@ -266,6 +282,7 @@ function onFrame(frame: Float32Array) {
   if (!s) return;
   s.ring.push(frame);
   s.chunks.push(toInt16(frame));
+  addAudioSamples(frame.length);
   let energy = 0;
   for (let i = 0; i < frame.length; i++) energy += frame[i] * frame[i];
   s.capture?.pushLevel(Math.sqrt(energy / frame.length));
@@ -359,6 +376,7 @@ async function stopRecording() {
   el.recordBtn.style.setProperty('--level', '0');
   el.recStatus.textContent = 'Finishing transcript…';
   window.clearInterval(s.previewTimer);
+  setRecordingState(false);
   await s.capture?.stop();
   await s.chains.catch(() => {});
   const rest = s.tracker.flush();
@@ -733,6 +751,71 @@ function renderSettings() {
         : 'Detected automatically. WebGPU makes transcription faster where the browser supports it.';
 }
 
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} kB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function renderProof() {
+  const sent = sentBytes();
+  const flagged = suspicious().length;
+  el.proofLabel.textContent = `${formatBytes(sent)} sent`;
+  el.proofBtn.classList.toggle('alert', flagged > 0);
+}
+
+function renderPrivacy() {
+  const captured = audioBytesCaptured();
+  const sent = sentBytes();
+  const events = requestEvents();
+  const hosts = hostsSeen();
+  const flagged = suspicious();
+
+  el.privacyBody.innerHTML = '';
+
+  const stats = document.createElement('div');
+  stats.className = 'proof-stats';
+  stats.innerHTML = `
+    <div><strong>${formatBytes(captured)}</strong><span>audio captured</span></div>
+    <div><strong class="${sent === 0 ? 'good' : ''}">${formatBytes(sent)}</strong><span>sent anywhere</span></div>
+    <div><strong>${events.length}</strong><span>network requests</span></div>`;
+  el.privacyBody.append(stats);
+
+  const verdict = document.createElement('p');
+  verdict.className = flagged.length > 0 ? 'proof-verdict bad' : 'proof-verdict good';
+  verdict.textContent =
+    flagged.length > 0
+      ? `${flagged.length} request(s) left this page while recording.`
+      : sent === 0
+        ? 'Not one byte has been uploaded. The microphone feeds the model inside this tab.'
+        : 'No audio has been uploaded — the only traffic is the page fetching the model and its own files.';
+  el.privacyBody.append(verdict);
+
+  if (hosts.length > 0) {
+    const list = document.createElement('div');
+    list.className = 'proof-hosts';
+    for (const h of hosts) {
+      const row = document.createElement('div');
+      row.className = 'proof-host';
+      row.innerHTML = `<span>${escapeHtml(h.host)}</span><span>${h.count} × · ${formatBytes(h.bytes)}</span>`;
+      list.append(row);
+    }
+    el.privacyBody.append(list);
+  }
+
+  const section = document.createElement('section');
+  section.className = 'setting';
+  section.innerHTML = `
+    <h3>Check it yourself</h3>
+    <p class="subtle">Turn on airplane mode, reload this page, then record. The words still appear —
+    the model was downloaded once, the microphone never leaves the browser.</p>
+    <p class="subtle">The audio is kept in this browser's storage with the note, so you can reopen
+    a recording without the network. Delete the note and the audio goes with it.</p>`;
+  el.privacyBody.append(section);
+
+  openSheet('privacySheet');
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
@@ -817,6 +900,10 @@ async function boot() {
   });
   el.searchInput.addEventListener('blur', () => {
     if (!el.searchInput.value) closeSearch();
+  });
+  el.proofBtn.addEventListener('click', () => {
+    renderProof();
+    renderPrivacy();
   });
   el.settingsBtn.addEventListener('click', () => {
     renderSettings();
