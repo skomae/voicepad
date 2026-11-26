@@ -59,7 +59,7 @@ const VAD_URL = '/silero_vad.onnx';
  * Copy for the introduction bubble — the one message the demo "says" to a new
  * visitor. Keep it in one place so it can be edited without touching markup.
  */
-const INTRO_TEXT = `VoicePad turns speech into notes without sending a word off the device: tap record and talk, pauses become new bubbles, and every note is saved with its audio. The app adds translation, bigger models and background recording — this is the browser demo.`;
+const INTRO_TEXT = `Hey there, welcome to Voice Pad. I made this app because I'm tired of typing, and the tech companies want you to pay a subscription for something that you should be able to do for free. What you're looking at right now is a web demo that is running using a real ML model right inside your browser. It's much smaller, so it's not as good or accurate as the full app, but it should give you a good idea of the experience you'll have when using it.`;
 
 /**
  * Store listing for the full app. Leave empty until it is live: the intro then
@@ -761,6 +761,14 @@ async function boot() {
 
 function registerServiceWorker() {
   if (!('serviceWorker' in navigator) || !import.meta.env.PROD) return;
+  // A new build's worker takes over on the next load; reload once so the page
+  // and the shell are never out of step after a deploy.
+  let refreshing = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (refreshing) return;
+    refreshing = true;
+    location.reload();
+  });
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').catch(() => {});
   });

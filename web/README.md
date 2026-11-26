@@ -31,9 +31,13 @@ pnpm build        # dist/, then served by the voicepad-web container
   one without interrupting the stream.
 - **Notes** live in IndexedDB with their 16 kHz WAV: reopen, copy, download the
   WAV, delete.
-- **Import audio** (button next to the record button) and **"Or transcribe a
-  sample clip"** on the empty screen run the same VAD → commit → ASR pipeline
+- **Import audio** (button next to the record button) and **"Try it with a
+  sample clip"** in the intro bubble run the same VAD → commit → ASR pipeline
   over a file — handy on desktops without a microphone.
+- **Introduction bubble**: the grey, left-aligned message a new visitor sees,
+  plus the app-store funnel line. Its copy lives in one place — `INTRO_TEXT` in
+  `src/main.ts` — and `STORE_URL` there turns the "in the app stores soon" line
+  into a live *Get the app* link the moment the listing exists.
 - **PWA**: installable, app shell precached, model cached in the browser after
   first load, works offline.
 

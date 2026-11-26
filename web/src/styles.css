@@ -196,12 +196,12 @@ button {
   border: 1px solid #2c2c35;
   border-radius: 16px;
   border-bottom-left-radius: 6px;
-  padding: 12px 14px 13px;
+  padding: 11px 13px 12px;
 }
 .intro-text {
   margin: 0;
-  font-size: 14.5px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.45;
   color: #b9b9c4;
 }
 .intro-actions {
@@ -209,7 +209,7 @@ button {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-top: 11px;
+  margin-top: 10px;
 }
 .intro-btn {
   display: inline-flex;
@@ -233,7 +233,7 @@ button {
   padding: 8px 4px;
 }
 .intro-foot {
-  margin: 10px 0 0;
+  margin: 8px 0 0;
   font-size: 11.5px;
   color: #6e6e7a;
 }
