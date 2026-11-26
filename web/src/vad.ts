@@ -30,9 +30,12 @@ const PAD = Math.round(0.25 * SAMPLE_RATE);
 export interface VoiceActivity {
   prob(frame: Float32Array): Promise<number>;
   reset(): void;
+  /** Pause that ends an utterance, in seconds. */
+  readonly minSilenceSeconds: number;
 }
 
 export class SileroVad implements VoiceActivity {
+  readonly minSilenceSeconds = 0.25;
   private h = new Float32Array(2 * 1 * 64);
   private c = new Float32Array(2 * 1 * 64);
 
@@ -71,6 +74,11 @@ export class SileroVad implements VoiceActivity {
  * decoded file.
  */
 export class UtteranceTracker {
+  constructor(
+    private minSilence = MIN_SILENCE,
+    private minSpeech = MIN_SPEECH,
+  ) {}
+
   private frames = 0;
   private openStart: number | null = null;
   private lastSpeechFrame = 0;
@@ -112,7 +120,7 @@ export class UtteranceTracker {
     const isSpeech = p > NEG_THRESHOLD;
     this.silenceRun = isSpeech ? 0 : this.silenceRun + FRAME;
 
-    if (this.closeAtFrame === null && this.silenceRun >= MIN_SILENCE) {
+    if (this.closeAtFrame === null && this.silenceRun >= this.minSilence) {
       this.closeAtFrame = this.lastSpeechFrame;
     }
 
@@ -154,7 +162,7 @@ export class UtteranceTracker {
 
   private finish(startFrame: number, endFrame: number): Span | null {
     const length = (endFrame - startFrame) * FRAME;
-    if (length < MIN_SPEECH) return null;
+    if (length < this.minSpeech) return null;
     return {
       start: Math.max(0, startFrame * FRAME - PAD),
       end: endFrame * FRAME + PAD,
@@ -169,6 +177,12 @@ export class UtteranceTracker {
  * model gets the whole budget on iOS.
  */
 export class EnergyVad implements VoiceActivity {
+  /**
+   * Longer than Silero's 0.25 s on purpose: without a trained model, breaths
+   * and room noise look like the end of a sentence, so a shorter pause chops
+   * one sentence into "But…" / "I think…" bubbles.
+   */
+  readonly minSilenceSeconds = 0.7;
   private floor = 0.004;
 
   static async create(): Promise<EnergyVad> {

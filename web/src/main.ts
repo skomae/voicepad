@@ -209,6 +209,8 @@ interface Session {
 }
 
 let session: Session | null = null;
+/** Bumped whenever a preview must be invalidated (utterance committed). */
+let previewSeq = 0;
 
 function segmentsOf(note: Note): Segment[] {
   return [...note.segments].sort((a, b) => a.start - b.start);
@@ -224,7 +226,7 @@ async function startRecording() {
     session = {
       capture,
       ring: new SampleRing(60),
-      tracker: new UtteranceTracker(),
+      tracker: new UtteranceTracker(detector.minSilenceSeconds * SAMPLE),
       vad: detector,
       note,
       noteStart: 0,
@@ -294,6 +296,8 @@ function queueCommit(s: Session, span: Span) {
         text,
       });
       await noteStore.put(note);
+      previewSeq++;
+      ui.liveText = '';
       if (displayed?.id === note.id) {
         renderBubbles();
         renderLive();
@@ -307,16 +311,27 @@ function startPreviewLoop() {
   if (!s) return;
   s.previewTimer = window.setInterval(async () => {
     if (!session || session !== s || ui.phase !== 'recording') return;
-    if (!s.tracker.inSpeech || engineJobs > 0 || !engine) return;
+    if (!s.tracker.inSpeech) {
+      // Between utterances nothing is being said, so nothing may be shown.
+      if (ui.liveText) {
+        previewSeq++;
+        ui.liveText = '';
+        renderLive();
+      }
+      return;
+    }
+    if (engineJobs > 0 || !engine) return;
     const from = Math.max(s.tracker.openFrom! - 0.25 * SAMPLE, s.tracker.position - 20 * SAMPLE, s.noteStart);
     const audio = s.ring.slice(from, s.tracker.position);
     if (audio.length < 0.6 * SAMPLE) return;
+    const seq = ++previewSeq;
     try {
       const text = await runEngine(() => engine!.transcribe(audio));
-      if (session === s && ui.phase === 'recording') {
-        ui.liveText = text;
-        renderLive();
-      }
+      // A commit landed, or a newer preview started, while this was decoding.
+      if (seq !== previewSeq) return;
+      if (session !== s || ui.phase !== 'recording' || !s.tracker.inSpeech) return;
+      ui.liveText = text;
+      renderLive();
     } catch {
       /* previews are best effort */
     }
@@ -370,6 +385,8 @@ async function commitAndWait(s: Session, span: Span) {
       end: Math.max(0, (span.end - s.noteStart) / SAMPLE),
       text,
     });
+    previewSeq++;
+    ui.liveText = '';
   } catch {
     /* keep the audio; the note is still saved */
   }
@@ -889,7 +906,7 @@ if (import.meta.env.DEV) {
       const s: Session = {
         capture: null,
         ring: new SampleRing(60),
-        tracker: new UtteranceTracker(),
+        tracker: new UtteranceTracker(detector.minSilenceSeconds * SAMPLE),
         vad: detector,
         note,
         noteStart: 0,
