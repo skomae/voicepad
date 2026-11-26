@@ -211,6 +211,25 @@ button {
   line-height: 1.45;
   color: #b9b9c4;
 }
+.intro.compact .intro-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.intro.compact .intro-foot {
+  display: none;
+}
+.intro.compact {
+  cursor: pointer;
+}
+.intro.compact .intro-bubble::after {
+  content: 'Tap to read the introduction';
+  display: block;
+  margin-top: 8px;
+  font-size: 11px;
+  color: #5f5f6b;
+}
 .intro-actions {
   display: flex;
   flex-wrap: wrap;
@@ -249,6 +268,42 @@ button {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.first-hint {
+  margin: 6px 2px 2px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.note-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: bubble-in 0.2s ease-out;
+}
+.note-group + .note-group {
+  margin-top: 12px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.045);
+}
+.note-group-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 0 3px;
+  background: none;
+  border: 0;
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: left;
+}
+.note-group-head:hover {
+  color: var(--text);
+}
+.note-group.pinned .note-group-head span:first-child {
+  color: #ffd166;
 }
 
 .bubble {

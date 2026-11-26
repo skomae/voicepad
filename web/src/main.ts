@@ -17,6 +17,7 @@ const el = {
   modelBar: $('modelBar'),
   modelLabel: $('modelLabel'),
   introWrap: $('introWrap'),
+  firstHint: $('firstHint'),
   introText: $('introText'),
   introFoot: $('introFoot'),
   storeLink: $<HTMLAnchorElement>('storeLink'),
@@ -62,7 +63,7 @@ const VAD_URL = '/silero_vad.onnx';
  * Copy for the introduction bubble — the one message the demo "says" to a new
  * visitor. Keep it in one place so it can be edited without touching markup.
  */
-const INTRO_TEXT = `Hey there, welcome to Voice Pad. I made this app because I'm tired of typing, and the tech companies want you to pay a subscription for something that you should be able to do for free. What you're looking at right now is a web demo that is running using a real ML model right inside your browser. It's much smaller, so it's not as good or accurate as the full app, but it should give you a good idea of the experience you'll have when using it.`;
+const INTRO_TEXT = `Hey there, welcome to Voice Pad. Using Voice Pad, you get entirely on-device local transcription and translation, with spoken translated voice — without being connected to the internet, and no subscription fees. I made this app because I'm tired of typing, and the tech companies want you to pay a subscription for something that you should be able to do for free. What you're looking at right now is a web demo that is running using a real ML model right inside your browser. It's much smaller, so it's not as good or accurate as the full app, but it should give you a good idea of the experience you'll have when using it.`;
 
 /**
  * Store listing for the full app. Leave empty until it is live: the intro then
@@ -211,6 +212,7 @@ interface Session {
 let session: Session | null = null;
 /** Bumped whenever a preview must be invalidated (utterance committed). */
 let previewSeq = 0;
+let introExpanded = false;
 
 function segmentsOf(note: Note): Segment[] {
   return [...note.segments].sort((a, b) => a.start - b.start);
@@ -298,10 +300,8 @@ function queueCommit(s: Session, span: Span) {
       await noteStore.put(note);
       previewSeq++;
       ui.liveText = '';
-      if (displayed?.id === note.id) {
-        renderBubbles();
-        renderLive();
-      }
+      renderBubbles();
+      renderLive();
     })
     .catch(() => {});
 }
@@ -572,26 +572,51 @@ function renderStatus() {
 }
 
 function renderBubbles() {
-  const note = displayed;
-  const segs = note ? segmentsOf(note) : [];
-  el.introWrap.hidden = segs.length > 0;
+  const current = session?.note ?? null;
+  const saved = sortNotes(notes).filter((n) => !current || n.id !== current.id);
+  const list = current ? [current, ...saved] : saved;
+
+  // The introduction stays as the first message in the thread; the notes below
+  // it are the history, newest first.
+  el.introWrap.hidden = false;
+  // With history below it, the welcome message folds to its first lines; tap
+  // it to read the whole thing again.
+  el.introWrap.classList.toggle('compact', list.length > 0 && !introExpanded);
+  el.firstHint.hidden = list.length > 0;
+  el.liveBubble.remove();
   el.bubbles.innerHTML = '';
-  for (const seg of segs) {
-    const b = document.createElement('div');
-    b.className = 'bubble';
-    const meta = document.createElement('span');
-    meta.className = 'bubble-meta';
-    meta.textContent = formatDuration(seg.start);
-    const p = document.createElement('p');
-    p.textContent = seg.text;
-    p.addEventListener('click', () => selectText(p));
-    b.append(meta, p);
-    el.bubbles.append(b);
+
+  for (const note of list) {
+    const group = document.createElement('section');
+    group.className = 'note-group' + (note.pinned ? ' pinned' : '');
+
+    const head = document.createElement('button');
+    head.className = 'note-group-head';
+    head.type = 'button';
+    head.innerHTML = `<span>${formatDate(note.createdAt)}</span><span>${formatDuration(note.durationSeconds)}${
+      note.pinned ? ' · pinned' : ''
+    }</span>`;
+    head.addEventListener('click', () => openNote(note));
+    group.append(head);
+
+    for (const seg of segmentsOf(note)) {
+      const b = document.createElement('div');
+      b.className = 'bubble';
+      const meta = document.createElement('span');
+      meta.className = 'bubble-meta';
+      meta.textContent = formatDuration(seg.start);
+      const p = document.createElement('p');
+      p.textContent = seg.text;
+      p.addEventListener('click', () => selectText(p));
+      b.append(meta, p);
+      group.append(b);
+    }
+
+    if (note === current) group.append(el.liveBubble);
+    el.bubbles.append(group);
   }
-  if (segs.length > 0) {
-    el.bubbles.scrollTop = el.bubbles.scrollHeight;
-    el.transcript.scrollTop = el.transcript.scrollHeight;
-  }
+
+  if (list.length > 0) el.transcript.scrollTop = 0;
 }
 
 function renderLive() {
@@ -604,7 +629,7 @@ function renderLive() {
   el.liveBubble.hidden = false;
   el.liveBubble.innerHTML = '<span class="caret"></span>';
   el.liveBubble.append(document.createTextNode(ui.liveText));
-  el.liveBubble.scrollIntoView({ block: 'end', behavior: 'smooth' });
+  if (el.liveBubble.isConnected) el.liveBubble.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 function selectText(node: HTMLElement) {
@@ -808,6 +833,12 @@ async function boot() {
     const file = el.fileInput.files?.[0];
     if (file) void importFile(file);
     el.fileInput.value = '';
+  });
+  el.introWrap.addEventListener('click', (e) => {
+    if (!el.introWrap.classList.contains('compact') && !introExpanded) return;
+    if ((e.target as HTMLElement).closest('a')) return;
+    introExpanded = !introExpanded;
+    renderBubbles();
   });
   el.statusLine.addEventListener('click', () => {
     if (ui.phase !== 'error') return;
