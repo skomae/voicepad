@@ -475,7 +475,8 @@ private fun CleanupDialog(controller: RecordingController, onDismiss: () -> Unit
     val sizes = remember(matches, action) {
         if (action == NoteCleanup.Action.COMPRESS || action == NoteCleanup.Action.ARCHIVE) controller.audioSizes(matches) else null
     }
-    val destructive = action == NoteCleanup.Action.DELETE || action == NoteCleanup.Action.DELETE_EMPTY
+    val destructive = action == NoteCleanup.Action.DELETE || action == NoteCleanup.Action.DELETE_EMPTY ||
+        action == NoteCleanup.Action.DELETE_AUDIO
     val notes = "$count note${if (count == 1) "" else "s"}"
     fun mb(bytes: Long) = if (bytes >= 10_000_000) "${bytes / 1_000_000} MB" else "%.1f MB".format(bytes / 1_000_000.0)
 
@@ -495,7 +496,8 @@ private fun CleanupDialog(controller: RecordingController, onDismiss: () -> Unit
                 }
                 listOf(
                     listOf(NoteCleanup.Action.ARCHIVE to Icons.Default.Archive, NoteCleanup.Action.COMPRESS to Icons.Default.Compress),
-                    listOf(NoteCleanup.Action.DELETE_EMPTY to Icons.Default.DeleteSweep, NoteCleanup.Action.DELETE to Icons.Default.Delete),
+                    listOf(NoteCleanup.Action.DELETE_AUDIO to Icons.Default.MicOff, NoteCleanup.Action.DELETE_EMPTY to Icons.Default.DeleteSweep),
+                    listOf(NoteCleanup.Action.DELETE to Icons.Default.Delete),
                 ).forEach { row ->
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         row.forEach { (a, icon) ->
@@ -518,6 +520,8 @@ private fun CleanupDialog(controller: RecordingController, onDismiss: () -> Unit
                             "$notes will have their audio compressed and stay in the list."
                         action == NoteCleanup.Action.DELETE_EMPTY ->
                             "$notes with no speech (\u201cNo speech detected\u201d) and their audio will be permanently deleted."
+                        action == NoteCleanup.Action.DELETE_AUDIO ->
+                            "$notes will lose their recording permanently. The notes, their text and translations stay."
                         else -> "$notes and their audio will be permanently deleted."
                     },
                     color = if (destructive && count > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
@@ -533,8 +537,11 @@ private fun CleanupDialog(controller: RecordingController, onDismiss: () -> Unit
                     when (action) {
                         NoteCleanup.Action.COMPRESS -> "Includes pinned notes. Each file is checked before the original is removed."
                         NoteCleanup.Action.DELETE_EMPTY -> "Pinned notes and recordings still waiting for transcription are kept."
+                        NoteCleanup.Action.DELETE_AUDIO -> "Only notes that have their text; pinned notes keep their audio."
                         else -> "Pinned notes are never touched."
-                    } + if (action == NoteCleanup.Action.COMPRESS || action == NoteCleanup.Action.DELETE_EMPTY) {
+                    } + if (action == NoteCleanup.Action.COMPRESS || action == NoteCleanup.Action.DELETE_EMPTY ||
+                        action == NoteCleanup.Action.DELETE_AUDIO
+                    ) {
                         " To do this automatically, see Settings \u2192 Automatic clean-up."
                     } else {
                         ""
@@ -557,6 +564,7 @@ private fun CleanupDialog(controller: RecordingController, onDismiss: () -> Unit
                     when (action) {
                         NoteCleanup.Action.ARCHIVE -> "Archive $count"
                         NoteCleanup.Action.COMPRESS -> "Compress $count"
+                        NoteCleanup.Action.DELETE_AUDIO -> "Delete audio of $count"
                         else -> "Delete $count"
                     },
                     color = if (destructive && count > 0) MaterialTheme.colorScheme.error else Color.Unspecified,
