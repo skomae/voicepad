@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Archive
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Unarchive
@@ -108,6 +109,17 @@ fun NoteBubble(
     compact: Boolean = false,
     /** What a single tap does (Settings > "Tap a note to"). */
     tapAction: NoteTapAction = NoteTapAction.EDIT,
+    /**
+     * Keyboard mode: a tap types the note on the computer (overriding [tapAction]),
+     * and the long-press menu leads with the rewrites in [typePrompts].
+     */
+    keyboardMode: Boolean = false,
+    /** Rewrites offered in keyboard mode, as (label, instruction), most useful first. */
+    typePrompts: List<Pair<String, String>> = emptyList(),
+    /** Types the note as dictated (null) or rewritten with an instruction. */
+    onTypeWith: (String?) -> Unit = {},
+    /** Keyboard mode's tap: types the note the way auto-send would; defaults to as dictated. */
+    onKeyboardTap: (() -> Unit)? = null,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     var breakdown by remember { mutableStateOf<BreakdownRequest?>(null) }
@@ -130,7 +142,9 @@ fun NoteBubble(
             { breakdown = BreakdownRequest(bodyText, translated?.english, "en") }
         } else null
     // Same actions as the long-press menu; null where the action doesn't apply.
-    val onTap: (() -> Unit)? = when (tapAction) {
+    val onTap: (() -> Unit)? = if (keyboardMode) {
+        (onKeyboardTap ?: { onTypeWith(null) }).takeIf { hasText }
+    } else when (tapAction) {
         NoteTapAction.EDIT -> onEdit
         NoteTapAction.COPY -> onCopy
         NoteTapAction.TYPE -> onType?.takeIf { hasText }
@@ -155,12 +169,14 @@ fun NoteBubble(
                     .background(if (solid) colors.primary else colors.surfaceVariant, BubbleShape)
                     .then(if (failed) Modifier.border(1.5.dp, colors.error, BubbleShape) else Modifier)
                     .combinedClickable(
-                        onClickLabel = tapAction.label.takeIf { onTap != null },
+                        onClickLabel = (if (keyboardMode) "Type on the computer" else tapAction.label).takeIf { onTap != null },
                         onClick = { onTap?.invoke() },
+                        onLongClickLabel = if (keyboardMode) "Type with a rewrite" else null,
                         onLongClick = { menuOpen = true },
                         // Only while a keyboard is connected, so a single tap
                         // otherwise edits without waiting out a double-tap.
-                        onDoubleClick = onType?.takeIf { hasText },
+                        // Keyboard mode already types on a single tap.
+                        onDoubleClick = onType?.takeIf { hasText && !keyboardMode },
                     )
                     .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
@@ -189,8 +205,22 @@ fun NoteBubble(
                 }
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                // Keyboard mode: the rewrites come first; the usual actions follow below.
+                if (keyboardMode && hasText) {
+                    Text(
+                        "Type on the computer",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = KeyboardBlue,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                    )
+                    MenuItem("As dictated", Icons.Default.Keyboard) { menuOpen = false; onTypeWith(null) }
+                    typePrompts.forEach { (label, instruction) ->
+                        MenuItem(label, Icons.Default.AutoAwesome) { menuOpen = false; onTypeWith(instruction) }
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 4.dp))
+                }
                 MenuItem("Copy", Icons.Default.ContentCopy) { menuOpen = false; onCopy() }
-                if (onType != null && note.currentText.isNotBlank()) {
+                if (onType != null && note.currentText.isNotBlank() && !keyboardMode) {
                     MenuItem("Type on paired device", Icons.Default.Keyboard) { menuOpen = false; onType() }
                 }
                 if (copyTranslation != null) {
@@ -490,7 +520,7 @@ fun LiveBubble(state: RecordingController.UiState) {
         Box(
             Modifier
                 .background(colors.surfaceVariant, BubbleShape)
-                .border(1.5.dp, RecordingRed.copy(alpha = 0.6f), BubbleShape)
+                .border(1.5.dp, recordingColor(state).copy(alpha = 0.6f), BubbleShape)
                 .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
             if (state.liveText.isEmpty()) {
@@ -506,11 +536,12 @@ fun LiveBubble(state: RecordingController.UiState) {
             modifier = Modifier.padding(top = 6.dp),
         ) {
             if (state.isRecording) {
-                PulsingDot(size = 8.dp)
+                PulsingDot(size = 8.dp, color = recordingColor(state))
                 Text(
-                    "Live" + if (state.partNumber > 1) " · part ${state.partNumber}" else "",
+                    "Live" + (if (state.partNumber > 1) " · part ${state.partNumber}" else "") +
+                        (if (state.keyboardMode) " · keyboard mode" else ""),
                     style = MaterialTheme.typography.labelSmall,
-                    color = RecordingRed,
+                    color = recordingColor(state),
                 )
             } else {
                 CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)

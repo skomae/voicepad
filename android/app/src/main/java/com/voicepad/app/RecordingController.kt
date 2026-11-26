@@ -188,9 +188,9 @@ class RecordingController(
         val llmStatus: LlmStatus = LlmStatus.Idle,
         val llmChoice: LlmChoice = LlmChoice.QWEN_0_5B,
         /** Instruction the LLM follows before typing (a preset or the user's own). */
-        val typePrompt: String = LlmPrompt.CLEANUP.instruction,
+        val typePrompt: String = LlmPrompt.DICTATION.instruction,
         /** Prompt 2: the laptop pad's second rewrite button. */
-        val typePrompt2: String = LlmPrompt.POLISH.instruction,
+        val typePrompt2: String = LlmPrompt.CASUAL.instruction,
         /** What gets typed on the computer automatically. */
         val autoSend: AutoSend = AutoSend.ON_COPY,
         /** User-written prompts, most recent first (presets aren't included). */
@@ -202,6 +202,14 @@ class RecordingController(
     ) {
         /** The model actually in use: Whisper turbo while background voices is on. */
         val activeEngine: EngineChoice get() = if (backgroundVoices) BACKGROUND_ENGINE else engineChoice
+
+        /**
+         * Keyboard mode: Bluetooth keyboard turned on (connected or on its way). Recording
+         * turns blue instead of red, and tapping a note types it on the computer.
+         */
+        val keyboardMode: Boolean get() =
+            transmitStatus == SinkStatus.CONNECTED || transmitStatus == SinkStatus.ADVERTISING ||
+                transmitStatus == SinkStatus.REGISTERING
     }
 
     companion object {
@@ -270,10 +278,10 @@ class RecordingController(
             llmEnabled = prefs.getBoolean("llmEnabled", false),
             llmChoice = prefs.getString("llmChoice", null)
                 ?.let { runCatching { LlmChoice.valueOf(it) }.getOrNull() } ?: LlmChoice.QWEN_0_5B,
-            typePrompt = prefs.getString("typePrompt", null)?.takeIf { it.isNotBlank() }
-                ?: LlmPrompt.CLEANUP.instruction,
-            typePrompt2 = prefs.getString("typePrompt2", null)?.takeIf { it.isNotBlank() }
-                ?: LlmPrompt.POLISH.instruction,
+            typePrompt = prefs.getString("typePrompt", null)?.takeIf { it.isNotBlank() }?.let(LlmPrompt::migrate)
+                ?: LlmPrompt.DICTATION.instruction,
+            typePrompt2 = prefs.getString("typePrompt2", null)?.takeIf { it.isNotBlank() }?.let(LlmPrompt::migrate)
+                ?: LlmPrompt.CASUAL.instruction,
             autoSend = prefs.getString("autoSend", null)
                 ?.let { runCatching { AutoSend.valueOf(it) }.getOrNull() } ?: AutoSend.ON_COPY,
             recentPrompts = prefs.getString("recentPrompts", null)?.let { json ->
@@ -1587,7 +1595,7 @@ class RecordingController(
     }
 
     /**
-     * Types [text] on the connected computer (double-tap, the keyboard icon,
+     * Types [text] on the connected computer (double-tap, "Type latest note",
      * "Type on paired device"). With auto-send "after LLM" it's rewritten with
      * prompt 1 first. Ignored while a previous text is still being typed; use
      * [stopTyping] to abandon that one.
@@ -1639,6 +1647,23 @@ class RecordingController(
     private fun toast(message: String) = Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
 
     /** Types a note's current text, saving the LLM rewrite so it can be shown with the note. */
+    /**
+     * Keyboard mode's note actions: types the note again on the computer, as dictated
+     * ([prompt] null) or rewritten with [prompt]. Says so when no computer is connected yet.
+     */
+    fun typeNoteWith(noteId: String, prompt: String?): Boolean {
+        if (_state.value.transmitStatus != SinkStatus.CONNECTED) {
+            toast("No computer connected yet \u2014 drag the keyboard icon down to pick one.")
+            return false
+        }
+        val note = store.note(noteId) ?: return false
+        return send(note.currentText, prompt, copyIfDisconnected = false, noteId = noteId)
+    }
+
+    /** Keyboard mode's tap on a note: types it the way auto-send would (prompt 1 with "after LLM"). */
+    fun retypeNote(noteId: String): Boolean =
+        typeNoteWith(noteId, if (_state.value.autoSend == AutoSend.AFTER_LLM) _state.value.typePrompt else null)
+
     fun typeNote(noteId: String): Boolean {
         val note = store.note(noteId) ?: return false
         val prompt = if (_state.value.autoSend == AutoSend.AFTER_LLM) _state.value.typePrompt else null

@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Box
@@ -20,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -88,13 +90,12 @@ private fun Context.hasBluetoothPermissions() = bluetoothPermissions.all {
 /**
  * Top-bar "type as keyboard" control.
  *
- * - Idle: asks for Bluetooth permission if needed and registers as a
- *   keyboard, then reconnects the last host or offers the paired devices.
- * - Advertising: tap picks a paired device to connect to, pairs a new one
- *   (the only case that asks to make the phone discoverable), or stops.
- * - Connected: tap types the latest note (tap again to stop mid-way).
- * - Drag down or long-press: the keyboard menu (connection, LLM rewrite
- *   toggle and prompt).
+ * - Tap toggles keyboard mode. Turning it on asks for Bluetooth permission if
+ *   needed, registers as a keyboard and reconnects the last computer it typed
+ *   on (with a toast), or offers the paired devices when there's none. Turning
+ *   it off disconnects. While text is being typed, a tap stops the typing first.
+ * - Drag down: quick-pick a computer. Long-press: the keyboard menu
+ *   (connection, type latest note, LLM rewrite toggle and prompt).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -102,6 +103,8 @@ fun KeyboardButton(
     controller: RecordingController,
     state: RecordingController.UiState,
     onTypeLatest: () -> Unit,
+    /** Sits on the recording top bar, which is already blue in keyboard mode: draw the disc white. */
+    onRecordingBar: Boolean = false,
 ) {
     val context = LocalContext.current
     fun toast(text: String, long: Boolean = false) =
@@ -112,10 +115,21 @@ fun KeyboardButton(
     var showMenu by remember { mutableStateOf(false) }
     // Open the host picker once registration finishes after a tap to start.
     var pickAfterStart by remember { mutableStateOf(false) }
+    // Turned on from here: say so once it connects.
+    var announceConnect by remember { mutableStateOf(false) }
 
     fun start() {
         pickAfterStart = true
+        announceConnect = true
         controller.toggleKeyboard()
+    }
+
+    /** Tap on an idle keyboard: turn it on, saying where it will reconnect. */
+    fun turnOn() {
+        // The computer the sink reconnects to on registration: the most recent remembered one that's still paired.
+        val last = controller.keyboardHosts().firstOrNull { it.isKnown && it.isBonded }
+        start()
+        toast(if (last != null) "Keyboard on \u2014 reconnecting to ${last.name}\u2026" else "Keyboard on \u2014 pick a computer to type on.")
     }
 
     LaunchedEffect(state.transmitStatus) {
@@ -129,17 +143,22 @@ fun KeyboardButton(
                 }
             }
             SinkStatus.CONNECTED -> {
-                showHosts = false
+                // The host sheet closes itself once the computer picked in it connects.
+                if (announceConnect) {
+                    announceConnect = false
+                    toast(state.transmitHost?.let { "Keyboard connected to $it." } ?: "Keyboard connected.")
+                }
             }
             SinkStatus.REGISTERING -> {}
             else -> {
                 pickAfterStart = false
+                announceConnect = false
             }
         }
     }
 
     val permissions = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-        if (result.values.all { it }) start() else toast("VoicePad needs Nearby devices permission to act as a keyboard.", long = true)
+        if (result.values.all { it }) turnOn() else toast("VoicePad needs Nearby devices permission to act as a keyboard.", long = true)
     }
 
     if (showHosts) {
@@ -169,32 +188,29 @@ fun KeyboardButton(
         state.transmitError?.let { toast(it, long = true) }
     }
 
+    // Tap is an on/off switch for keyboard mode.
     val handleClick: () -> Unit = {
         when (state.transmitStatus) {
-            SinkStatus.CONNECTED -> if (state.isTyping) {
+            SinkStatus.CONNECTED, SinkStatus.ADVERTISING, SinkStatus.REGISTERING -> if (state.isTyping) {
+                // Stop the runaway typing first; a second tap turns the keyboard off.
                 controller.stopTyping()
                 toast("Stopped typing.")
             } else {
-                onTypeLatest()
-            }
-            SinkStatus.ADVERTISING -> {
-                showHosts = true
-            }
-            SinkStatus.REGISTERING -> {
+                showHosts = false
+                announceConnect = false
                 controller.stopKeyboard()
-                toast("Keyboard stopped.")
+                toast("Keyboard off.")
             }
             SinkStatus.UNAVAILABLE -> toast("This phone can't act as a Bluetooth keyboard.", long = true)
             SinkStatus.IDLE, SinkStatus.FAILED ->
-                if (context.hasBluetoothPermissions()) start() else permissions.launch(bluetoothPermissions)
+                if (context.hasBluetoothPermissions()) turnOn() else permissions.launch(bluetoothPermissions)
         }
     }
 
     val label = when (state.transmitStatus) {
-        SinkStatus.CONNECTED -> if (state.isTyping) "Stop typing" else "Type latest note on the paired device"
-        SinkStatus.ADVERTISING -> "Connect keyboard to a device"
-        SinkStatus.REGISTERING -> "Stop keyboard mode"
-        else -> "Type as keyboard"
+        SinkStatus.CONNECTED -> if (state.isTyping) "Stop typing" else "Turn keyboard off (connected to ${state.transmitHost ?: "a device"})"
+        SinkStatus.ADVERTISING, SinkStatus.REGISTERING -> "Turn keyboard off"
+        else -> "Turn keyboard on"
     }
 
     if (showMenu) {
@@ -210,6 +226,14 @@ fun KeyboardButton(
 
     val colors = MaterialTheme.colorScheme
     val typing = state.transmitStatus == SinkStatus.CONNECTED && state.isTyping
+    // Keyboard mode is its own mode: a solid disc you can't miss. On the recording
+    // bar (already blue in keyboard mode) the disc flips to white.
+    val disc = when {
+        !state.keyboardMode -> Color.Transparent
+        onRecordingBar -> Color.White
+        else -> KeyboardBlue
+    }
+    val onDisc = if (onRecordingBar) KeyboardBlue else Color.White
     val view = LocalView.current
     val stepPx = with(LocalDensity.current) { QUICK_STEP.toPx() }
 
@@ -246,7 +270,7 @@ fun KeyboardButton(
     val latestClick by rememberUpdatedState(handleClick)
     val latestPick by rememberUpdatedState<(QuickItem) -> Unit> { pick(it) }
 
-    // Sized and shaped like an IconButton. Tap: see [handleClick]; long-press:
+    // Sized and shaped like an IconButton. Tap: toggle (see [handleClick]); long-press:
     // keyboard menu; pull down: quick-pick a computer. Deliberately never
     // red: that's the recording colour.
     Box {
@@ -255,7 +279,7 @@ fun KeyboardButton(
             modifier = Modifier
                 .size(48.dp)
                 .clip(CircleShape)
-                .background(if (typing) colors.primaryContainer else Color.Transparent, CircleShape)
+                .background(disc, CircleShape)
                 .semantics {
                     role = Role.Button
                     contentDescription = label
@@ -308,21 +332,29 @@ fun KeyboardButton(
             Icon(
                 Icons.Default.Keyboard,
                 contentDescription = null,
-                tint = when (state.transmitStatus) {
-                    SinkStatus.CONNECTED -> if (typing) colors.onPrimaryContainer else colors.primary
-                    SinkStatus.ADVERTISING, SinkStatus.REGISTERING -> colors.tertiary
-                    else -> colors.onSurface
-                },
+                // Off: the bar's own icon colour (white on the recording bar, as before).
+                tint = if (state.keyboardMode) onDisc else LocalContentColor.current,
             )
-            if (state.transmitStatus == SinkStatus.CONNECTED && !typing) {
-                // A small dot so "connected" reads at a glance, even in monochrome themes.
-                Box(
+            when {
+                // Typing right now: a pulsing dot.
+                typing -> PulsingDot(Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 6.dp), color = onDisc, size = 8.dp)
+                // Connected: a steady dot, so it reads at a glance even in monochrome themes.
+                state.transmitStatus == SinkStatus.CONNECTED -> Box(
                     Modifier
                         .align(Alignment.TopEnd)
-                        .padding(top = 10.dp, end = 10.dp)
-                        .size(7.dp)
-                        .background(colors.primary, CircleShape),
+                        .padding(top = 6.dp, end = 6.dp)
+                        .size(8.dp)
+                        .background(onDisc, CircleShape),
                 )
+                // On but not connected yet: a ring instead of a dot.
+                state.keyboardMode -> Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 6.dp, end = 6.dp)
+                        .size(8.dp)
+                        .border(1.5.dp, onDisc, CircleShape),
+                )
+                else -> {}
             }
         }
 
@@ -378,6 +410,41 @@ fun KeyboardButton(
                 }
             }
         }
+    }
+}
+
+/**
+ * A full-width band under the top bar while keyboard mode is on, so it's never
+ * mistaken for normal note-taking: says where the text goes and what a tap on a
+ * note does now.
+ */
+@Composable
+fun KeyboardModeStrip(state: RecordingController.UiState) {
+    if (!state.keyboardMode) return
+    val text = when {
+        state.isTyping -> "Typing on ${state.transmitHost ?: "the computer"}\u2026"
+        state.transmitStatus == SinkStatus.CONNECTED ->
+            "Keyboard mode \u00b7 ${state.transmitHost ?: "connected"} \u00b7 tap a note to type it, hold for rewrites"
+        state.transmitStatus == SinkStatus.REGISTERING -> "Keyboard mode \u00b7 starting\u2026"
+        else -> "Keyboard mode \u00b7 connecting \u2014 drag the keyboard icon down to pick a computer"
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(KeyboardBlue)
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .semantics { contentDescription = text },
+    ) {
+        Icon(Icons.Default.Keyboard, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text,
+            color = Color.White,
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 

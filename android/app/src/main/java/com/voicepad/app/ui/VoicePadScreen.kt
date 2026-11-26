@@ -102,6 +102,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.voicepad.app.RecordingController
+import com.voicepad.app.llm.LlmPrompt
 import com.voicepad.app.RecordingController.EngineStatus
 import com.voicepad.app.conversation.ConversationController
 import com.voicepad.app.transmit.SinkStatus
@@ -169,6 +170,15 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
         }
     }
 
+    // Keyboard mode's hold-a-note rewrites: the two active prompts, the other presets, then the user's recent ones.
+    val typePrompts = remember(state.typePrompt, state.typePrompt2, state.recentPrompts) {
+        (listOf(state.typePrompt, state.typePrompt2) + LlmPrompt.PRESETS.map { it.instruction } + state.recentPrompts)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .map { promptLabel(it) to it }
+    }
+
     @Composable
     fun Bubble(note: Note, highlight: List<String> = emptyList(), matchedEarlier: Boolean = false) {
         NoteBubble(
@@ -195,11 +205,16 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
             } else {
                 null
             },
+            keyboardMode = state.keyboardMode,
+            typePrompts = typePrompts,
+            onTypeWith = { prompt -> controller.typeNoteWith(note.id, prompt) },
+            onKeyboardTap = { controller.retypeNote(note.id) },
         )
     }
 
     Scaffold(
         topBar = {
+          Column {
             if (searchActive) {
                 SearchBar(
                     query = query,
@@ -210,10 +225,10 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
                 val recording = state.isRecording
                 val onBar = if (recording) Color.White else MaterialTheme.colorScheme.onSurface
                 TopAppBar(
-                    // Unmistakable: the whole bar turns red while the mic is on.
+                    // Unmistakable: the whole bar turns red while the mic is on (blue in keyboard mode).
                     colors = if (recording) {
                         TopAppBarDefaults.topAppBarColors(
-                            containerColor = RecordingRed,
+                            containerColor = recordingColor(state),
                             titleContentColor = Color.White,
                             actionIconContentColor = Color.White,
                             navigationIconContentColor = Color.White,
@@ -240,7 +255,7 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
                         IconButton(onClick = { conversation.open() }) {
                             Icon(Icons.Default.Translate, contentDescription = "Conversation mode")
                         }
-                        KeyboardButton(controller, state, onTypeLatest = {
+                        KeyboardButton(controller, state, onRecordingBar = recording, onTypeLatest = {
                             val latest = notes.filter { !it.archived && it.currentText.isNotBlank() }
                                 .maxByOrNull { it.createdAt }
                             if (latest != null) {
@@ -303,6 +318,8 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
                     },
                 )
             }
+            KeyboardModeStrip(state)
+          }
         },
         bottomBar = { RecordBar(controller, state, compact) },
     ) { padding ->
@@ -310,7 +327,7 @@ fun VoicePadScreen(controller: RecordingController, conversation: ConversationCo
             Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .then(if (state.isRecording) Modifier.border(3.dp, RecordingRed.copy(alpha = 0.6f)) else Modifier)
+                .then(if (state.isRecording) Modifier.border(3.dp, recordingColor(state).copy(alpha = 0.6f)) else Modifier)
         ) {
             if (!searching && visibleNotes.isEmpty() && !showLive) {
                 EmptyState(Modifier.align(Alignment.Center))

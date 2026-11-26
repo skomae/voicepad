@@ -302,9 +302,9 @@ private fun StatusChip(state: RecordingController.UiState) {
     if (state.isRecording) {
         val elapsed = state.startedAt?.let { DateUtils.formatElapsedTime(((now - it) / 1000).coerceAtLeast(0)) }.orEmpty()
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(12.dp).background(RecordingRed, CircleShape))
+            Box(Modifier.size(12.dp).background(recordingColor(state), CircleShape))
             Spacer(Modifier.width(8.dp))
-            Text("REC $elapsed", color = RecordingRed, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            Text((if (state.keyboardMode) "REC \u2192 keyboard " else "REC ") + elapsed, color = recordingColor(state), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
         }
     } else {
         // Stopped is paused in laptop mode: say so, big.
