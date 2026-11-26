@@ -24,6 +24,9 @@ export interface Note {
   status: NoteStatus;
   source: 'mic' | 'file';
   audio?: Blob;
+  /** Pinned notes are listed first (newest pin first). */
+  pinned?: boolean;
+  pinnedAt?: number;
 }
 
 const DB_NAME = 'voicepad';
@@ -87,6 +90,50 @@ export const noteStore = {
   },
 };
 
+/** Pinned first, newest pin first, then newest note first. */
+export function sortNotes(list: Note[]): Note[] {
+  return [...list].sort((a, b) => {
+    const pa = a.pinned ? (a.pinnedAt ?? 0) : -1;
+    const pb = b.pinned ? (b.pinnedAt ?? 0) : -1;
+    if (pa !== pb) return pb - pa;
+    return b.createdAt - a.createdAt;
+  });
+}
+
+/** One JSON document for one note or all of them — the shape the app can import. */
+export function notesToJson(notes: Note[]): Blob {
+  const payload = {
+    app: 'VoicePad',
+    format: 'voicepad-notes',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    includesAudio: false,
+    notes: notes.map((n) => ({
+      id: n.id,
+      createdAt: n.createdAt,
+      durationSeconds: n.durationSeconds,
+      pinned: !!n.pinned,
+      pinnedAt: n.pinnedAt ?? null,
+      status: n.status,
+      source: n.source,
+      text: noteText(n),
+      segments: n.segments.map((s) => ({ start: s.start, end: s.end, text: s.text })),
+    })),
+  };
+  return new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+}
+
+export function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
 export function noteText(note: Note): string {
   return note.segments.map((s) => s.text).join(' ').replace(/\s+/g, ' ').trim();
 }
@@ -99,5 +146,6 @@ export function newNote(source: 'mic' | 'file'): Note {
     segments: [],
     status: 'recording',
     source,
+    pinned: false,
   };
 }

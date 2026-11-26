@@ -93,6 +93,9 @@
           </button>
         </div>
       </div>
+      <div class="notes-search">
+        <input id="notesSearch" type="search" placeholder="Search notes" autocomplete="off" spellcheck="false" />
+      </div>
       <div class="sheet-body" id="notesList"></div>
     </div>
 
@@ -131,13 +134,15 @@
         </section>
         <section class="setting">
           <h3>Voice activity</h3>
-          <p class="setting-value">Silero VAD · 0.25 s pause</p>
+          <p class="setting-value" id="vadName">Silero VAD · 0.25 s pause</p>
           <p class="subtle">Same detector and settings as the Android app. Silence is never sent to the model.</p>
         </section>
         <section class="setting">
           <h3>Storage</h3>
           <p class="subtle" id="storageDetail">Notes are kept in this browser.</p>
+          <p class="subtle">The export is one JSON file with every note's text, timing and pin state. Audio stays on the device — download a note's WAV from the note itself.</p>
           <div class="row-actions">
+            <button class="text-btn" id="exportAllBtn">Export all notes (JSON)</button>
             <button class="text-btn danger" id="clearAllBtn">Delete all notes</button>
           </div>
         </section>

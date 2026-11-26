@@ -28,6 +28,19 @@ const { env, pipeline } = await import('@huggingface/transformers');
 env.allowLocalModels = false;
 env.useBrowserCache = true;
 
+// One thread and no memory arena keeps the WASM heap small — the difference
+// between loading and "RangeError: Out of memory" on an iPhone.
+try {
+  const wasm: any = (env.backends.onnx as any)?.wasm;
+  if (wasm) {
+    wasm.numThreads = 1;
+    wasm.proxy = false;
+    if (!wasm.wasmPaths) wasm.wasmPaths = '/ort/';
+  }
+} catch {
+  /* older transformers builds: nothing to configure */
+}
+
 export interface ModelInfo {
   id: string;
   label: string;
@@ -79,6 +92,12 @@ export class SpeechEngine {
     const pipe = await pipeline('automatic-speech-recognition', MODEL.id, {
       device,
       dtype,
+      // Smaller peak heap while the sessions are built.
+      session_options: {
+        enableCpuMemArena: false,
+        enableMemPattern: false,
+        executionMode: 'sequential',
+      },
       progress_callback: (event: any) => {
         if (event?.status === 'progress' && event.file) {
           report(event.file, event.loaded ?? 0, event.total ?? 0);

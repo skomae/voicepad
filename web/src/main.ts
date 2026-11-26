@@ -1,8 +1,8 @@
 import './styles.css';
 import { MicCapture, SampleRing, decodeAudioFile, SAMPLE_RATE, FRAME } from './audio';
-import { SileroVad, UtteranceTracker, type Span } from './vad';
+import { SileroVad, EnergyVad, UtteranceTracker, type Span, type VoiceActivity } from './vad';
 import { SpeechEngine, MODEL, webgpuAvailable, type Device } from './asr';
-import { noteStore, newNote, noteText, type Note, type Segment } from './notes';
+import { noteStore, newNote, noteText, sortNotes, notesToJson, downloadBlob, type Note, type Segment } from './notes';
 import { encodeWav, toInt16, formatDuration, formatDate } from './wav';
 
 // ---------------------------------------------------------------- elements
@@ -35,6 +35,8 @@ const el = {
   notesSheet: $('notesSheet'),
   notesList: $('notesList'),
   notesCount: $('notesCount'),
+  notesSearch: $<HTMLInputElement>('notesSearch'),
+  exportAllBtn: $<HTMLButtonElement>('exportAllBtn'),
   noteSheet: $('noteSheet'),
   noteTitle: $('noteTitle'),
   noteBody: $('noteBody'),
@@ -45,6 +47,7 @@ const el = {
   modelDetail: $('modelDetail'),
   deviceName: $('deviceName'),
   deviceDetail: $('deviceDetail'),
+  vadName: $('vadName'),
   storageDetail: $('storageDetail'),
   clearAllBtn: $<HTMLButtonElement>('clearAllBtn'),
   scrim: $('scrim'),
@@ -94,7 +97,7 @@ const ui: UiState = {
 
 let engine: SpeechEngine | null = null;
 let enginePromise: Promise<SpeechEngine> | null = null;
-let vad: SileroVad | null = null;
+let vad: VoiceActivity | null = null;
 let notes: Note[] = [];
 let displayed: Note | null = null;
 
@@ -167,9 +170,26 @@ async function ensureEngine(): Promise<SpeechEngine> {
   return enginePromise;
 }
 
-async function ensureVad(): Promise<SileroVad> {
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+/**
+ * Detection is Silero where the browser can afford a second WASM runtime, and
+ * the zero-model energy detector on iOS, where holding both runtimes plus the
+ * speech model runs the tab out of memory before the model even loads.
+ */
+async function ensureVad(): Promise<VoiceActivity> {
   if (vad) return vad;
-  vad = await SileroVad.create(VAD_URL);
+  if (!IS_IOS) {
+    try {
+      vad = await SileroVad.create(VAD_URL);
+      el.vadName.textContent = 'Silero VAD · 0.25 s pause';
+      return vad;
+    } catch {
+      /* fall through to the detector that cannot fail */
+    }
+  }
+  vad = await EnergyVad.create();
+  el.vadName.textContent = 'Energy detector · low-memory fallback · 0.25 s pause';
   return vad;
 }
 
@@ -179,7 +199,7 @@ interface Session {
   capture: MicCapture | null;
   ring: SampleRing;
   tracker: UtteranceTracker;
-  vad: SileroVad;
+  vad: VoiceActivity;
   note: Note;
   noteStart: number; // absolute sample index where the current note begins
   chunks: Int16Array[];
@@ -498,10 +518,16 @@ function renderStatus() {
       dot.classList.add('busy');
       el.statusLine.textContent = 'Transcribing file…';
       break;
-    case 'error':
+    case 'error': {
       dot.classList.add('err');
-      el.statusLine.textContent = ui.error ? `Model failed — ${ui.error.slice(0, 60)}` : 'Model failed';
+      const oom = /out of memory|no available backend/i.test(ui.error ?? '');
+      el.statusLine.textContent = oom
+        ? 'Model could not start — tap to retry'
+        : ui.error
+          ? `Model failed — ${ui.error.slice(0, 50)}`
+          : 'Model failed — tap to retry';
       break;
+    }
   }
 
   el.recStatus.textContent =
@@ -573,25 +599,64 @@ function selectText(node: HTMLElement) {
 }
 
 function renderNotes() {
-  el.notesCount.textContent = notes.length === 0 ? '' : `${notes.length} note${notes.length === 1 ? '' : 's'}`;
+  const q = (el.notesSearch?.value ?? '').trim().toLowerCase();
+  const all = sortNotes(notes);
+  const list = q
+    ? all.filter((n) => `${noteText(n)} ${formatDate(n.createdAt)}`.toLowerCase().includes(q))
+    : all;
+
+  el.notesCount.textContent = all.length === 0 ? '' : `${all.length} note${all.length === 1 ? '' : 's'}`;
   el.notesList.innerHTML = '';
-  if (notes.length === 0) {
+
+  if (all.length === 0) {
     el.notesList.innerHTML = '<p class="subtle pad">Nothing here yet. Record something and it will be saved on this device.</p>';
     return;
   }
-  for (const note of notes) {
-    const row = document.createElement('button');
-    row.className = 'note-row';
+  if (list.length === 0) {
+    const p = document.createElement('p');
+    p.className = 'subtle pad';
+    p.textContent = `No notes match “${el.notesSearch.value.trim()}”.`;
+    el.notesList.append(p);
+    return;
+  }
+
+  for (const note of list) {
+    const row = document.createElement('div');
+    row.className = 'note-row' + (note.pinned ? ' pinned' : '');
+
+    const main = document.createElement('button');
+    main.className = 'note-main';
     const text = noteText(note);
-    row.innerHTML = `
-      <div class="note-row-top">
+    main.innerHTML = `
+      <span class="note-row-top">
         <span class="note-date">${formatDate(note.createdAt)}</span>
         <span class="note-meta">${formatDuration(note.durationSeconds)}${note.status === 'failed' ? ' · no speech' : ''}</span>
-      </div>
-      <p class="note-excerpt">${escapeHtml(text || 'No text')}</p>`;
-    row.addEventListener('click', () => openNote(note));
+      </span>
+      <span class="note-excerpt">${escapeHtml(text || 'No text')}</span>`;
+    main.addEventListener('click', () => openNote(note));
+
+    const pin = document.createElement('button');
+    pin.className = 'pin-btn' + (note.pinned ? ' on' : '');
+    pin.setAttribute('aria-label', note.pinned ? 'Unpin note' : 'Pin note');
+    pin.setAttribute('aria-pressed', String(!!note.pinned));
+    pin.innerHTML = '<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6l-1 6 3 3v2H7v-2l3-3-1-6Z"/><path d="M12 15v5"/></svg>';
+    pin.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void togglePin(note);
+    });
+
+    row.append(main, pin);
     el.notesList.append(row);
   }
+}
+
+async function togglePin(note: Note) {
+  note.pinned = !note.pinned;
+  note.pinnedAt = note.pinned ? Date.now() : undefined;
+  await noteStore.put(note);
+  renderNotes();
+  if (!el.noteSheet.hidden) openNote(note);
+  toast(note.pinned ? 'Pinned' : 'Unpinned');
 }
 
 function openNote(note: Note) {
@@ -608,6 +673,13 @@ function openNote(note: Note) {
     el.noteBody.append(b);
   }
   el.noteActions.innerHTML = '';
+
+  const pin = document.createElement('button');
+  pin.className = 'text-btn';
+  pin.textContent = note.pinned ? 'Unpin' : 'Pin';
+  pin.onclick = () => void togglePin(note);
+  el.noteActions.append(pin);
+
   const copy = document.createElement('button');
   copy.className = 'text-btn';
   copy.textContent = 'Copy text';
@@ -616,6 +688,15 @@ function openNote(note: Note) {
     toast('Copied');
   };
   el.noteActions.append(copy);
+
+  const exp = document.createElement('button');
+  exp.className = 'text-btn';
+  exp.textContent = 'Export JSON';
+  exp.onclick = () => {
+    downloadBlob(notesToJson([note]), `voicepad-note-${new Date(note.createdAt).toISOString().slice(0, 10)}.json`);
+    toast('Exported');
+  };
+  el.noteActions.append(exp);
 
   if (note.audio) {
     const dl = document.createElement('a');
@@ -717,6 +798,14 @@ async function boot() {
     if (file) void importFile(file);
     el.fileInput.value = '';
   });
+  el.statusLine.addEventListener('click', () => {
+    if (ui.phase !== 'error') return;
+    ui.error = null;
+    engine = null;
+    enginePromise = null;
+    vad = null;
+    ensureEngine().catch(() => {});
+  });
   el.notesBtn.addEventListener('click', async () => {
     notes = await noteStore.list();
     renderNotes();
@@ -726,6 +815,16 @@ async function boot() {
     renderSettings();
     renderStorage();
     openSheet('settingsSheet');
+  });
+  el.notesSearch.addEventListener('input', () => renderNotes());
+  el.exportAllBtn.addEventListener('click', () => {
+    if (notes.length === 0) {
+      toast('No notes to export');
+      return;
+    }
+    const day = new Date().toISOString().slice(0, 10);
+    downloadBlob(notesToJson(sortNotes(notes)), `voicepad-notes-${day}.json`);
+    toast(`Exported ${notes.length} note${notes.length === 1 ? '' : 's'}`);
   });
   el.clearAllBtn.addEventListener('click', async () => {
     await noteStore.clear();
@@ -752,7 +851,6 @@ async function boot() {
   displayed = notes[0] ?? null;
   renderBubbles();
 
-  ensureVad().catch(() => {});
   void ensureEngine().catch(() => {});
   registerServiceWorker();
 

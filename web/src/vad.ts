@@ -26,7 +26,13 @@ const MIN_SILENCE = Math.round(0.25 * SAMPLE_RATE);
 const MAX_SPEECH = Math.round(20 * SAMPLE_RATE);
 const PAD = Math.round(0.25 * SAMPLE_RATE);
 
-export class SileroVad {
+/** What the session needs from a detector: one probability per 512-sample frame. */
+export interface VoiceActivity {
+  prob(frame: Float32Array): Promise<number>;
+  reset(): void;
+}
+
+export class SileroVad implements VoiceActivity {
   private h = new Float32Array(2 * 1 * 64);
   private c = new Float32Array(2 * 1 * 64);
 
@@ -153,5 +159,35 @@ export class UtteranceTracker {
       start: Math.max(0, startFrame * FRAME - PAD),
       end: endFrame * FRAME + PAD,
     };
+  }
+}
+
+/**
+ * Zero-model detector for browsers that cannot hold a second WASM runtime:
+ * an adaptive noise floor plus a fixed hysteresis. Coarser than Silero — it
+ * likes quiet rooms and steady voices — but it costs no memory, so the speech
+ * model gets the whole budget on iOS.
+ */
+export class EnergyVad implements VoiceActivity {
+  private floor = 0.004;
+
+  static async create(): Promise<EnergyVad> {
+    return new EnergyVad();
+  }
+
+  async prob(frame: Float32Array): Promise<number> {
+    let sum = 0;
+    for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
+    const rms = Math.sqrt(sum / frame.length);
+
+    // Floor follows quiet quickly and loud slowly, so a fan or a road does not
+    // lift the threshold and speech still opens it.
+    this.floor = rms < this.floor ? this.floor * 0.7 + rms * 0.3 : this.floor * 0.9995 + rms * 0.0005;
+    const open = Math.max(0.006, this.floor * 2.2);
+    return rms > open ? 0.95 : 0.02;
+  }
+
+  reset() {
+    this.floor = 0.004;
   }
 }

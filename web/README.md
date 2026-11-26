@@ -30,7 +30,11 @@ pnpm build        # dist/, then served by the voicepad-web container
 - **Split** ends the current note at the instant of the tap and starts a new
   one without interrupting the stream.
 - **Notes** live in IndexedDB with their 16 kHz WAV: reopen, copy, download the
-  WAV, delete.
+  WAV, delete, **pin** (pinned sort first) and **search** across text and date.
+- **Export**: one JSON document for a note or all of them (Settings → *Export
+  all notes*), with text, per-segment timing, duration, pin state and status —
+  the shape the app can import. Audio stays on the device; per-note WAV
+  download covers that.
 - **Import audio** (button next to the record button) and **"Try it with a
   sample clip"** in the intro bubble run the same VAD → commit → ASR pipeline
   over a file — handy on desktops without a microphone.
