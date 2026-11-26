@@ -70,6 +70,15 @@ class NoteStore(baseDir: File) {
         mutate { list -> list.filterNot { it.id == id } }
     }
 
+    /** Deletes the audio of these notes and keeps their text: the recording is gone, the words aren't. */
+    fun deleteAudio(ids: Collection<String>) {
+        val set = ids.toSet()
+        val withAudio = _notes.value.filter { it.id in set && it.audioFileName != null }
+        if (withAudio.isEmpty()) return
+        withAudio.forEach { audioFile(it)?.delete() }
+        mutate { list -> list.map { if (it.id in set) it.copy(audioFileName = null) else it } }
+    }
+
     /**
      * Run once at startup, before anything records or transcribes. Repairs
      * whatever an unexpected exit left behind:

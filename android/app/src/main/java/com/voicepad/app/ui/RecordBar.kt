@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -126,7 +127,13 @@ fun RecordBar(controller: RecordingController, state: RecordingController.UiStat
                 }
 
                 // Split: tap for a new note now; drag up or long-press for auto-split.
-                SplitButton(controller, state)
+                // Sits on the same baseline as the level meter, so the scissors and the
+                // bars read as one row of controls either side of the button.
+                SplitButton(
+                    controller,
+                    state,
+                    Modifier.align(Alignment.Bottom).offset(y = if (compact) 4.dp else 6.dp),
+                )
             }
             val auto = state.autoSplit.badge
             Text(

@@ -22,6 +22,7 @@ import com.voicepad.app.data.Note
 import com.voicepad.app.data.NoteCleanup
 import com.voicepad.app.data.NoteRewrite
 import com.voicepad.app.data.NoteStore
+import com.voicepad.app.data.NoSpeechText
 import com.voicepad.app.data.NoteTranslation
 import com.voicepad.app.data.RevisionSource
 import com.voicepad.app.data.TranscriptionStatus
@@ -143,6 +144,7 @@ class RecordingController(
         val autoDeleteEmpty: NoteCleanup.AutoAge = NoteCleanup.AutoAge.OFF,
         /** Compress notes' audio (WAV → AAC) once they are this old. */
         val autoCompress: NoteCleanup.AutoAge = NoteCleanup.AutoAge.OFF,
+        val autoDeleteAudio: NoteCleanup.AutoAge = NoteCleanup.AutoAge.OFF,
         /** Models already on the phone, for the quick switcher. */
         val installedEngines: Set<EngineChoice> = emptySet(),
         val autoRecordOnOpen: Boolean = true,
@@ -224,6 +226,8 @@ class RecordingController(
         private val PAD = (PAD_SECONDS * AudioRecorder.SAMPLE_RATE).toInt()
         private const val TICK_MS = 1200L
         const val MAX_AUTO_ATTEMPTS = 3
+        /** Below this peak the microphone was hearing a room, not a voice: -40 dBFS. */
+        private const val SILENT_PEAK = 0.01f
         const val DEFAULT_CAPTION_SIZE = 34
         val CAPTION_SIZES = 22..72
         private const val AUTO_CLEANUP_INTERVAL_MS = 15 * 60 * 1000L
@@ -267,6 +271,8 @@ class RecordingController(
             autoDeleteEmpty = prefs.getString("autoDeleteEmpty", null)
                 ?.let { runCatching { NoteCleanup.AutoAge.valueOf(it) }.getOrNull() } ?: NoteCleanup.AutoAge.OFF,
             autoCompress = prefs.getString("autoCompress", null)
+                ?.let { runCatching { NoteCleanup.AutoAge.valueOf(it) }.getOrNull() } ?: NoteCleanup.AutoAge.OFF,
+            autoDeleteAudio = prefs.getString("autoDeleteAudio", null)
                 ?.let { runCatching { NoteCleanup.AutoAge.valueOf(it) }.getOrNull() } ?: NoteCleanup.AutoAge.OFF,
             stableLanguage = prefs.getBoolean("stableLanguage", true),
             quickPreview = prefs.getBoolean("quickPreview", true),
@@ -785,6 +791,7 @@ class RecordingController(
             }
             // Every finished part is copied: after Stop, a manual split or an auto-split.
             if (error == null) copyWhenDone(noteId)
+            dropAudioIfImmediate(noteId)
         } finally {
             s.detector?.release()
             unmarkFinishing(s)
@@ -1174,7 +1181,92 @@ class RecordingController(
                 transcribeSaved(next.id)
             }
             android.util.Log.i(TAG, "processQueue: done (engineReady=${engineReady} isRecording=${_state.value.isRecording} conversation=$conversationActive)")
+            // Notes left at "No speech detected" get their second opinion while the
+            // app is idle: a few per pass, never while anything is being recorded.
+            sweepEmptyNotes()
         }
+    }
+
+    /**
+     * A note the detector heard nothing in gets the loudest parts of its audio sent
+     * straight to the model, without the detector in the way. If words come back the
+     * note gets them; if they don't, nothing in the audio was worth keeping and the
+     * note goes, audio included. Two independent opinions, then gone.
+     */
+    private suspend fun settleEmptyNote(note: Note): Boolean {
+        val file = store.audioFile(note)?.takeIf { it.exists() } ?: return false
+        val total = withContext(Dispatchers.IO) { runCatching { WavFile.sampleCount(file) }.getOrDefault(0) }
+        if (total <= 0) return false
+        val block = 20 * AudioRecorder.SAMPLE_RATE
+        val blocks = (total + block - 1) / block
+        // Loudest few blocks: a bang at the start shouldn't hide speech later on.
+        val loudest = withContext(Dispatchers.Default) {
+            (0 until blocks).map { i ->
+                val from = i * block
+                val s = runCatching { WavFile.readRange(file, from, minOf(total, from + block)) }.getOrDefault(FloatArray(0))
+                val energy = if (s.isEmpty()) 0.0 else s.sumOf { (it * it).toDouble() } / s.size
+                i to energy
+            }.sortedByDescending { it.second }.take(3).map { it.first to it.second }
+        }
+        // Below this the microphone was hearing the room, not a voice: measured on this
+        // phone, clean speech stops being detected around -46 dBFS peak, and the model
+        // asked to transcribe silence answers with "." or "Yeah." rather than nothing.
+        val loudestPeak = withContext(Dispatchers.Default) {
+            loudest.maxOfOrNull { (i, _) ->
+                val from = i * block
+                val s = runCatching { WavFile.readRange(file, from, minOf(total, from + block)) }.getOrDefault(FloatArray(0))
+                s.maxOfOrNull { kotlin.math.abs(it) } ?: 0f
+            } ?: 0f
+        }
+        if (loudestPeak < SILENT_PEAK) return false
+        var text = ""
+        for ((i, _) in loudest) {
+            val from = i * block
+            val samples = withContext(Dispatchers.Default) {
+                runCatching { WavFile.readRange(file, from, minOf(total, from + block)) }.getOrDefault(FloatArray(0))
+            }
+            if (samples.isEmpty()) continue
+            val result = runCatching { transcribe(samples) }.getOrNull() ?: continue
+            text = join(text, result.text)
+        }
+        // Silence makes the model answer with fillers; only words count as proof.
+        if (!NoSpeechText.isSubstantive(text)) return false
+        store.update(note.id) { it.withTranscription(text, RevisionSource.TRANSCRIPTION, engineLabel(emptyList()), null) }
+        android.util.Log.i(TAG, "settleEmptyNote: \"no speech\" was wrong for ${note.id}; kept \"${text.take(40)}\"")
+        return true
+    }
+
+    /** Notes already given their second opinion in this process, so idle passes don't repeat it. */
+    private val settledEmpty = mutableSetOf<String>()
+
+    /** Settles "No speech detected" notes while the app is idle, all of them, one batch at a time. */
+    private suspend fun sweepEmptyNotes(limit: Int = 6) {
+        var kept = 0
+        var dropped = 0
+        val tried = mutableSetOf<String>()
+        val first = store.notes.value.count { note ->
+            note.id !in settledEmpty && !note.pinned && note.audioFileName != null &&
+                (NoteCleanup.isEmpty(note) || !NoSpeechText.isSubstantive(note.currentText))
+        }
+        android.util.Log.i(TAG, "sweepEmptyNotes: $first to settle (engineReady=$engineReady recording=${_state.value.isRecording})")
+        while (true) {
+            val candidates = store.notes.value
+                .filter { note ->
+                    note.id !in tried && note.id !in settledEmpty && !note.pinned && note.audioFileName != null &&
+                        note.status == TranscriptionStatus.DONE &&
+                        (NoteCleanup.isEmpty(note) || note.currentText.none { it.isLetter() })
+                }
+                .take(limit)
+            if (candidates.isEmpty()) break
+            for (note in candidates) {
+                if (!engineReady || _state.value.isRecording || conversationActive) return
+                if (engineMutex.isLocked) return // a live pass is using the model
+                tried += note.id
+                settledEmpty += note.id
+                if (settleEmptyNote(note)) kept++ else { delete(listOf(note.id)); dropped++ }
+            }
+        }
+        if (kept + dropped > 0) android.util.Log.i(TAG, "sweepEmptyNotes: kept $kept, deleted $dropped")
     }
 
     private suspend fun transcribeSaved(noteId: String, userRequested: Boolean = false) {
@@ -1261,6 +1353,7 @@ class RecordingController(
                     durationSeconds = if (it.durationSeconds > 0) it.durationSeconds else total / WavFile.SAMPLE_RATE.toDouble(),
                 )
             }
+            dropAudioIfImmediate(noteId)
         } catch (e: Throwable) {
             val message = if (e is CancellationException) "Transcription was interrupted." else e.message ?: e.toString()
             // A failed re-transcription keeps the existing text as current.
@@ -1440,6 +1533,7 @@ class RecordingController(
         when (action) {
             NoteCleanup.Action.ARCHIVE -> archive(ids)
             NoteCleanup.Action.COMPRESS -> compress(ids)
+            NoteCleanup.Action.DELETE_AUDIO -> deleteAudio(ids)
             NoteCleanup.Action.DELETE_EMPTY, NoteCleanup.Action.DELETE -> delete(ids)
         }
     }
@@ -1456,6 +1550,37 @@ class RecordingController(
         scope.launch { runAutoCleanup() }
     }
 
+    fun setAutoDeleteAudio(age: NoteCleanup.AutoAge) {
+        prefs.edit { putString("autoDeleteAudio", age.name) }
+        _state.update { it.copy(autoDeleteAudio = age) }
+        scope.launch { runAutoCleanup() }
+    }
+
+    /** Deletes the audio of [ids], keeping the notes and their text. Pinned notes are never touched here. */
+    fun deleteAudio(ids: Collection<String>) {
+        val keep = ids.filterNot { it in busyIds() }
+        if (keep.isNotEmpty()) store.deleteAudio(keep)
+    }
+
+    /**
+     * "Delete audio: immediately" — a note that just got its text loses its recording now,
+     * rather than at the next 15-minute clean-up. Pinned notes keep their audio.
+     */
+    private fun dropAudioIfImmediate(noteId: String) {
+        val setting = _state.value.autoDeleteAudio
+        if (setting != NoteCleanup.AutoAge.NOW) return
+        val note = store.note(noteId) ?: return
+        // Only once there are words to keep. A note with no text keeps its audio so the
+        // second opinion can still be given, and so "no speech" stays explainable.
+        if (note.pinned || note.status != TranscriptionStatus.DONE) {
+            android.util.Log.i(TAG, "dropAudioIfImmediate: skipped ${note.id} (status ${note.status})")
+            return
+        }
+        if (note.audioFileName == null || note.currentText.isBlank()) return
+        android.util.Log.i(TAG, "dropAudioIfImmediate: deleting audio of ${note.id}")
+        store.deleteAudio(listOf(noteId))
+    }
+
     /**
      * Deletes empty notes and compresses audio older than the chosen ages.
      * Runs quietly: a note that can't be compressed is left as it was and
@@ -1465,11 +1590,20 @@ class RecordingController(
     private fun runAutoCleanup() {
         if (autoCleanupJob?.isActive == true) return
         val s = _state.value
-        if (s.autoDeleteEmpty == NoteCleanup.AutoAge.OFF && s.autoCompress == NoteCleanup.AutoAge.OFF) return
+        if (s.autoDeleteEmpty == NoteCleanup.AutoAge.OFF && s.autoCompress == NoteCleanup.AutoAge.OFF &&
+            s.autoDeleteAudio == NoteCleanup.AutoAge.OFF
+        ) return
         autoCleanupJob = scope.launch {
             val now = System.currentTimeMillis()
             val empty = NoteCleanup.autoSelect(store.notes.value, NoteCleanup.Action.DELETE_EMPTY, s.autoDeleteEmpty, now, busyIds())
             if (empty.isNotEmpty()) delete(empty.map { it.id })
+            // Audio of notes that already have their text. Age-based only: "Immediately"
+            // is handled the moment a note gets its text, so turning it on doesn't wipe
+            // the audio of the whole library in one sweep.
+            if (s.autoDeleteAudio != NoteCleanup.AutoAge.OFF && s.autoDeleteAudio != NoteCleanup.AutoAge.NOW) {
+                val silent = NoteCleanup.autoSelect(store.notes.value, NoteCleanup.Action.DELETE_AUDIO, s.autoDeleteAudio, now, busyIds())
+                if (silent.isNotEmpty()) deleteAudio(silent.map { it.id })
+            }
             if (_state.value.isRecording) return@launch
             val toCompress = NoteCleanup.autoSelect(store.notes.value, NoteCleanup.Action.COMPRESS, s.autoCompress, now, busyIds())
                 .filterNot { it.id in autoCompressFailed }
