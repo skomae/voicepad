@@ -143,7 +143,7 @@ fun KeyboardButton(
                 }
             }
             SinkStatus.CONNECTED -> {
-                showHosts = false
+                // The host sheet closes itself once the computer picked in it connects.
                 if (announceConnect) {
                     announceConnect = false
                     toast(state.transmitHost?.let { "Keyboard connected to $it." } ?: "Keyboard connected.")
