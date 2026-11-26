@@ -16,7 +16,10 @@ const el = {
   modelStrip: $('modelStrip'),
   modelBar: $('modelBar'),
   modelLabel: $('modelLabel'),
-  emptyState: $('emptyState'),
+  introWrap: $('introWrap'),
+  introText: $('introText'),
+  introFoot: $('introFoot'),
+  storeLink: $<HTMLAnchorElement>('storeLink'),
   sampleBtn: $<HTMLButtonElement>('sampleBtn'),
   bubbles: $('bubbles'),
   transcript: $('transcript'),
@@ -51,6 +54,18 @@ const el = {
 };
 
 const VAD_URL = '/silero_vad.onnx';
+
+/**
+ * Copy for the introduction bubble — the one message the demo "says" to a new
+ * visitor. Keep it in one place so it can be edited without touching markup.
+ */
+const INTRO_TEXT = `VoicePad turns speech into notes without sending a word off the device: tap record and talk, pauses become new bubbles, and every note is saved with its audio. The app adds translation, bigger models and background recording — this is the browser demo.`;
+
+/**
+ * Store listing for the full app. Leave empty until it is live: the intro then
+ * says "in the app stores soon" instead of showing a dead link.
+ */
+const STORE_URL = '';
 const SAMPLE = SAMPLE_RATE;
 
 // ---------------------------------------------------------------- state
@@ -516,7 +531,7 @@ function renderStatus() {
 function renderBubbles() {
   const note = displayed;
   const segs = note ? segmentsOf(note) : [];
-  el.emptyState.hidden = segs.length > 0 || ui.phase === 'recording';
+  el.introWrap.hidden = segs.length > 0;
   el.bubbles.innerHTML = '';
   for (const seg of segs) {
     const b = document.createElement('div');
@@ -530,8 +545,10 @@ function renderBubbles() {
     b.append(meta, p);
     el.bubbles.append(b);
   }
-  el.bubbles.scrollTop = el.bubbles.scrollHeight;
-  el.transcript.scrollTop = el.transcript.scrollHeight;
+  if (segs.length > 0) {
+    el.bubbles.scrollTop = el.bubbles.scrollHeight;
+    el.transcript.scrollTop = el.transcript.scrollHeight;
+  }
 }
 
 function renderLive() {
@@ -719,6 +736,14 @@ async function boot() {
     toast('All notes deleted');
   });
 
+  el.introText.textContent = INTRO_TEXT;
+  el.transcript.scrollTop = 0;
+  if (STORE_URL) {
+    el.storeLink.href = STORE_URL;
+    el.storeLink.textContent = 'Get the app';
+    el.storeLink.hidden = false;
+    el.introFoot.hidden = true;
+  }
   el.modelName.textContent = MODEL.label;
   setPhase('boot');
   renderBubbles();
