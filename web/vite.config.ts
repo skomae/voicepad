@@ -33,6 +33,15 @@ function ortRuntime() {
     name: 'voicepad-ort-runtime',
     configureServer(server: any) {
       server.middlewares.use(serve);
+      // Test clips for the dev harness; never shipped in a build.
+      server.middlewares.use((req: any, res: any, next: any) => {
+        const url: string = req.url ?? '';
+        if (!url.startsWith('/fixtures/')) return next();
+        const file = join(ROOT, 'dev-fixtures', url.slice(10).split('?')[0]);
+        if (!existsSync(file)) return next();
+        res.setHeader('Content-Type', 'audio/wav');
+        createReadStream(file).pipe(res);
+      });
     },
     configurePreviewServer(server: any) {
       server.middlewares.use(serve);
@@ -72,7 +81,7 @@ export default defineConfig({
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,png,svg,onnx,json,webmanifest,wav}'],
+        globPatterns: ['**/*.{js,css,html,png,svg,onnx,json,webmanifest}'],
         globIgnores: ['**/ort-wasm-*', '**/sw.js', '**/workbox-*.js'],
         navigateFallback: '/index.html',
         runtimeCaching: [

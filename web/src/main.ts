@@ -20,7 +20,7 @@ const el = {
   introText: $('introText'),
   introFoot: $('introFoot'),
   storeLink: $<HTMLAnchorElement>('storeLink'),
-  sampleBtn: $<HTMLButtonElement>('sampleBtn'),
+  introActions: $('introActions'),
   bubbles: $('bubbles'),
   transcript: $('transcript'),
   liveBubble: $('liveBubble'),
@@ -804,12 +804,6 @@ async function boot() {
   });
   el.splitBtn.addEventListener('click', () => void splitNote());
   el.importBtn.addEventListener('click', () => el.fileInput.click());
-  el.sampleBtn.addEventListener('click', async () => {
-    const res = await fetch('/fixtures/speech.wav');
-    if (!res.ok) return;
-    const blob = await res.blob();
-    void importFile(new File([blob], 'sample.wav', { type: 'audio/wav' }));
-  });
   el.fileInput.addEventListener('change', () => {
     const file = el.fileInput.files?.[0];
     if (file) void importFile(file);
@@ -858,6 +852,7 @@ async function boot() {
     el.storeLink.href = STORE_URL;
     el.storeLink.textContent = 'Get the app';
     el.storeLink.hidden = false;
+    el.introActions.hidden = false;
     el.introFoot.hidden = true;
   }
   el.modelName.textContent = MODEL.label;

@@ -35,9 +35,9 @@ pnpm build        # dist/, then served by the voicepad-web container
   all notes*), with text, per-segment timing, duration, pin state and status —
   the shape the app can import. Audio stays on the device; per-note WAV
   download covers that.
-- **Import audio** (button next to the record button) and **"Try it with a
-  sample clip"** in the intro bubble run the same VAD → commit → ASR pipeline
-  over a file — handy on desktops without a microphone.
+- **Import audio** (button next to the record button) runs the same
+  VAD → commit → ASR pipeline over a file — handy on desktops without a
+  microphone. The demo ships no sample clip of its own.
 - **Introduction bubble**: the grey, left-aligned message a new visitor sees,
   plus the app-store funnel line. Its copy lives in one place — `INTRO_TEXT` in
   `src/main.ts` — and `STORE_URL` there turns the "in the app stores soon" line
@@ -135,8 +135,9 @@ the exact live path (frames → VAD → commits → note → WAV):
 await window.__vp.feed('/fixtures/speech.wav')   // → Note with segments
 ```
 
-Fixtures are Moonshine's `test_wavs`, whose reference text is in
-`public/fixtures/` (see the sample clip).
+Test clips live in `dev-fixtures/` and are served at `/fixtures/` by a
+dev-only middleware (the harness uses Moonshine's `test_wavs`); they are never
+part of a build.
 
 ## Known limits
 
