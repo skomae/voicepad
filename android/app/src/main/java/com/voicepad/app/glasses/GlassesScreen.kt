@@ -12,6 +12,15 @@ enum class GlassesScope(val label: String, val description: String) {
     THEM("Them", "Only the other person's speech, translated into your language."),
     /** Both sides, in your language: the whole conversation as it happens. */
     BOTH("Both", "Everything said, in your language, marked with who said it."),
+    /**
+     * The other person's speech twice: what it means, then their own words with
+     * each character's pinyin beside it — for learning the language you're hearing.
+     */
+    LEARNING(
+        "Learning",
+        "Everything said, twice: what it means, then it again with the pinyin of every character " +
+            "(晚上好 → 晚wǎn 上shàng 好hǎo). For learning, and for checking the translation caught it.",
+    ),
 }
 
 /**
@@ -85,14 +94,17 @@ object GlassesScreen {
         theirLanguage: String,
         scope: GlassesScope,
         listening: Boolean,
+        /** Pinyin for one character, when the turn has no romanisation of its own. */
+        syllable: (Char) -> String? = ::icuSyllable,
     ): List<String> {
         val turns = stage.history + listOfNotNull(stage.turn)
         val shown = when (scope) {
+            // Learning has both sides in both languages, so it has everything.
             GlassesScope.THEM -> turns.filter { it.language != myLanguage }
-            GlassesScope.BOTH -> turns
+            GlassesScope.BOTH, GlassesScope.LEARNING -> turns
         }
         if (shown.isEmpty()) return idle(myLanguage, theirLanguage, listening)
-        val lines = shown.flatMap { block(it, myLanguage, scope) }
+        val lines = shown.flatMap { block(it, myLanguage, scope, syllable) }
         val page = lines.takeLast(LINES)
         return List(LINES - page.size) { "" } + page
     }
@@ -106,7 +118,14 @@ object GlassesScreen {
     private fun short(language: String) = language.uppercase()
 
     /** One turn as [myLanguage]'s reader sees it, wrapped and marked. */
-    private fun block(turn: Turn, myLanguage: String, scope: GlassesScope): List<String> {
+    private fun block(
+        turn: Turn,
+        myLanguage: String,
+        scope: GlassesScope,
+        syllable: (Char) -> String?,
+    ): List<String> {
+        if (scope == GlassesScope.LEARNING) return learning(turn, myLanguage, syllable)
+
         val spoken = turn.language == myLanguage
         val gutter = when {
             scope == GlassesScope.THEM -> ""
@@ -126,6 +145,102 @@ object GlassesScreen {
         val pinyin = toPinyin(text)
         val pinyinLines = mark(gutter, wrap(pinyin, COLUMNS - gutter.length))
         return lines + pinyinLines
+    }
+
+    /**
+     * Learning: what the turn means, then the same words again with each
+     * character's pinyin beside it. "晚上好" translated as "Good evening" reads
+     *
+     *     > Good evening
+     *       晚wǎn 上shàng 好hǎo
+     *
+     * The pinyin comes from the turn's own romanisation when it has one, which
+     * was produced for this sentence (so 银行 is háng here, not xíng); otherwise
+     * each character is looked up on its own.
+     */
+    /**
+     * Learning: each turn twice, both languages — what it means, then the same
+     * words in the language they were said in with every Chinese character's
+     * pinyin beside it. "晚上好", said to an English reader, reads
+     *
+     *     > Good evening
+     *       晚wǎn 上shàng 好hǎo
+     *
+     * Your own turns get the same treatment, so you can see what the translation
+     * made of them. The pinyin of a turn is the romanisation made for it (银行 is
+     * háng here, not xíng); a turn without one is looked up character by character.
+     */
+    private fun learning(turn: Turn, myLanguage: String, syllable: (Char) -> String?): List<String> {
+        val spoken = turn.language == myLanguage
+        val gutter = if (spoken) ME else THEM
+        val indent = " ".repeat(gutter.length)
+
+        // The two renderings of the turn: the reader's language, then the one it
+        // was said in. Either can be the Chinese one — the pinyin goes there.
+        val understood = turn.textIn(myLanguage)
+        val understoodRomanization = if (spoken) turn.romanization else turn.translationRomanization
+        val original = if (spoken) turn.translation else turn.text
+        val originalRomanization = if (spoken) turn.translationRomanization else turn.romanization
+
+        val lines = ArrayList<String>(4)
+        if (understood != null) {
+            lines += mark(gutter, wrap(annotate(understood, understoodRomanization, syllable), COLUMNS - gutter.length))
+        } else if (turn.translationFailed) {
+            lines += mark(gutter, wrap(annotate(turn.text, turn.romanization, syllable), COLUMNS - gutter.length))
+        } else {
+            lines += gutter + "…"
+        }
+        if (original != null && original != understood) {
+            lines += mark(indent, wrap(annotate(original, originalRomanization, syllable), COLUMNS - indent.length))
+        }
+        return lines
+    }
+
+    /**
+     * [text] with every Chinese character followed by its pinyin:
+     * "晚上好！" → "晚wǎn 上shàng 好hǎo！". Latin words, numbers and punctuation
+     * are left alone, and punctuation keeps hugging the pair before it.
+     */
+    private fun annotate(text: String, romanization: String?, syllable: (Char) -> String?): String {
+        val han = text.count { isHan(it) }
+        val tokens = romanization.orEmpty().split(' ').filter { it.isNotBlank() }
+        // One syllable per character is the only alignment we can trust.
+        val aligned = tokens.takeIf { han > 0 && it.size == han }
+
+        val out = StringBuilder(text.length * 3)
+        var seen = 0
+        var space = false
+        var paired = false
+        for (c in text) {
+            if (c.isWhitespace()) {
+                space = true
+                continue
+            }
+            val closes = c in ANNOTATION_CLOSERS
+            val wide = isHan(c)
+            if (out.isNotEmpty() && !closes && (space || paired || wide)) out.append(' ')
+            space = false
+            if (wide) {
+                out.append(c)
+                val pinyin = aligned?.getOrNull(seen) ?: syllable(c)
+                if (!pinyin.isNullOrEmpty()) out.append(pinyin)
+                seen++
+                paired = true
+            } else {
+                out.append(c)
+                paired = false
+            }
+        }
+        return out.toString()
+    }
+
+    private fun isHan(c: Char): Boolean = LanguageTags.containsHan(c.toString())
+
+    /** Pinyin for one character from ICU, cached: a page annotates dozens of them. */
+    private val syllables = HashMap<Char, String>()
+
+    private fun icuSyllable(c: Char): String? = synchronized(syllables) {
+        syllables.getOrPut(c) { toPinyin(c.toString()) }.takeIf { it.isNotEmpty() && it != c.toString() }
     }
 
     /** Puts [gutter] at the start of a turn's first line; later lines line up under it. */
@@ -250,6 +365,9 @@ object GlassesScreen {
 
     /** Punctuation that may not start a line. */
     private const val CLOSERS = "，。！？、；：）」』】》〉’””%"
+
+    /** Same, for the annotated line: it also keeps hugging ASCII punctuation. */
+    private const val ANNOTATION_CLOSERS = CLOSERS + ".,!?;:)]}\"'"
 
     private val WHITESPACE = Regex("\\s+")
 
