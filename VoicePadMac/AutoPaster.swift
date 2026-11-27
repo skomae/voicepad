@@ -31,6 +31,7 @@ final class AutoPaster {
         let key = text.trimmingCharacters(in: .whitespacesAndNewlines)
         recentTexts.removeAll { Date.now.timeIntervalSince($0.at) > 30 * 60 }
         guard !pastedNotes.contains(noteID), !recentTexts.contains(where: { $0.text == key }) else {
+            Diagnostics.log("auto-paste skipped: note \(noteID) already pasted")
             onNotice?("Copied — already pasted, so not pasted again")
             return
         }
@@ -68,6 +69,7 @@ final class AutoPaster {
         }
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == target.processIdentifier else { return }
         Self.pressCommandV()
+        Diagnostics.log("auto-paste: \(text.count) chars into \(target.bundleIdentifier ?? target.localizedName ?? "?")")
         onNotice?("Pasted into \(target.localizedName ?? "the app in front")")
         // The clipboard keeps the transcript itself, without the joining space.
         if let plain, plain != text {
