@@ -1159,7 +1159,10 @@ class RecordingController(
     /**
      * Works through notes that still need text, oldest first. Skips ones that
      * already failed [MAX_AUTO_ATTEMPTS] times; those wait for a manual retry.
-     * Runs only while not recording, so live text stays responsive.
+     * Runs while recording too: VoicePad records from the moment it opens, so
+     * waiting for the microphone to stop left recordings without text for as
+     * long as the app stayed open. Model calls take turns with the live text
+     * ([engineMutex]).
      */
     private fun processQueue() {
         if (queueJob?.isActive == true) return
@@ -1171,7 +1174,7 @@ class RecordingController(
             // Each note gets at most one attempt per pass; the next pass comes
             // with the next app launch, model load or finished recording.
             val tried = mutableSetOf<String>()
-            while (engineReady && !_state.value.isRecording && !conversationActive) {
+            while (engineReady && !conversationActive) {
                 val next = store.notes.value.firstOrNull {
                     it.needsTranscription && it.attempts < MAX_AUTO_ATTEMPTS &&
                         it.id != _state.value.recordingNoteId && it.id !in tried
