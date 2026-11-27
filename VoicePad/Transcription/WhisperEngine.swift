@@ -20,7 +20,7 @@ final class WhisperEngine: TranscriptionEngine {
         let folder = try await WhisperKit.download(variant: model) { p in
             progress(LoadProgress(fraction: p.fractionCompleted, stage: "Downloading \(name)", determinate: true))
         }
-        progress(LoadProgress(fraction: 1, stage: "Preparing \(name) for this iPhone (the first time can take a few minutes)…",
+        progress(LoadProgress(fraction: 1, stage: "Preparing \(name) for this \(LoadProgress.device) (the first time can take a few minutes)…",
                               determinate: false))
         let config = WhisperKitConfig(
             model: model,

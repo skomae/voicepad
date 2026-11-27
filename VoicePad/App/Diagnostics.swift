@@ -4,7 +4,7 @@ import Foundation
 /// when recording starts), to tell why a recording came out silent.
 enum Diagnostics {
     static func log(_ line: String) {
-        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("diagnostics.log")
+        let url = AppPaths.data.appendingPathComponent("diagnostics.log")
         let stamp = ISO8601DateFormatter().string(from: .now)
         var text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
         text += "\(stamp) \(line)\n"
@@ -19,7 +19,7 @@ enum Diagnostics {
 /// narrow down device-only problems without a new build each time.
 enum DebugFlags {
     private static let flags: [String: Bool] = {
-        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("debug.json")
+        let url = AppPaths.data.appendingPathComponent("debug.json")
         guard let data = try? Data(contentsOf: url) else { return [:] }
         return (try? JSONSerialization.jsonObject(with: data)) as? [String: Bool] ?? [:]
     }()

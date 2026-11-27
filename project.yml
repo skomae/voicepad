@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: com.voicepad
   deploymentTarget:
     iOS: "17.0"
+    macOS: "15.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -72,6 +73,54 @@ targets:
         TARGETED_DEVICE_FAMILY: "1,2"
         GENERATE_INFOPLIST_FILE: NO
         SKIP_INSTALL: YES
+  VoicePadMac:
+    type: application
+    platform: macOS
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
+    # The iPhone app's recording, transcription, translation and note code,
+    # with a Mac interface of its own (VoicePadMac/).
+    sources:
+      - path: VoicePad
+        excludes:
+          - "Views/**"
+          - "Shared/**"
+          - "Info.plist"
+          - "App/VoicePadApp.swift"
+          - "App/LiveActivityPresenter.swift"
+          - "Conversation/ConversationController.swift"
+          - "Conversation/SpeechOutput.swift"
+      - VoicePad/Views/Theme.swift
+      - VoicePadMac
+    dependencies:
+      - package: WhisperKit
+        product: WhisperKit
+      - package: FluidAudio
+        product: FluidAudio
+    info:
+      path: VoicePadMac/Info.plist
+      properties:
+        CFBundleDisplayName: VoicePad
+        CFBundleName: VoicePad
+        LSApplicationCategoryType: public.app-category.productivity
+        LSMinimumSystemVersion: "15.0"
+        NSMicrophoneUsageDescription: VoicePad records your voice so it can turn what you say into text, right here on your Mac.
+        NSHumanReadableCopyright: ""
+    entitlements:
+      path: VoicePadMac/VoicePadMac.entitlements
+      properties:
+        # Not sandboxed: pasting into other apps needs Accessibility, which
+        # sandboxed apps can't use. Hardened runtime still applies.
+        com.apple.security.device.audio-input: true
+    settings:
+      base:
+        PRODUCT_NAME: VoicePad
+        PRODUCT_BUNDLE_IDENTIFIER: $(VOICEPAD_BUNDLE_ID).mac
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_IDENTITY: "Apple Development"
+        COMBINE_HIDPI_IMAGES: YES
   VoicePadTests:
     type: bundle.unit-test
     platform: iOS
@@ -105,3 +154,7 @@ schemes:
     test:
       targets:
         - VoicePadTests
+  VoicePadMac:
+    build:
+      targets:
+        VoicePadMac: all

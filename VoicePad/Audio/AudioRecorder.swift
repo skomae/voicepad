@@ -111,17 +111,26 @@ final class AudioRecorder: @unchecked Sendable {
     /// (background voices) uses `.measurement`, which turns off the gain and
     /// noise processing tuned for one nearby talker, so a distant voice isn't
     /// treated as noise to remove.
+    #if os(iOS)
     private static func mode(roomCapture: Bool) -> AVAudioSession.Mode { roomCapture ? .measurement : .default }
+
+    private static func activateSession(roomCapture: Bool) throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setCategory(.playAndRecord, mode: mode(roomCapture: roomCapture),
+                                options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP])
+        try session.setActive(true)
+    }
+    #else
+    /// A Mac has no audio session: the engine records from the default input.
+    private static func activateSession(roomCapture: Bool) throws {}
+    #endif
 
     func start(writingTo url: URL, roomCapture: Bool = false) throws {
         guard !isRunning else { return }
         if observers.isEmpty { observeEngine() }
         self.roomCapture = roomCapture
 
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: Self.mode(roomCapture: roomCapture),
-                                options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP])
-        try session.setActive(true)
+        try Self.activateSession(roomCapture: roomCapture)
 
         let writer = try WavWriter(url: url)
 
@@ -175,11 +184,10 @@ final class AudioRecorder: @unchecked Sendable {
         engine.reset()
         if newEngine { engine = AVAudioEngine(); observeEngine() }
         // Hand the input back to iOS and take it again, so a stuck route is rebuilt.
-        let session = AVAudioSession.sharedInstance()
-        try? session.setActive(false)
-        try session.setCategory(.playAndRecord, mode: Self.mode(roomCapture: roomCapture),
-                                options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP])
-        try session.setActive(true)
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setActive(false)
+        #endif
+        try Self.activateSession(roomCapture: roomCapture)
         lock.lock()
         signalSeen = false
         lastSignalAt = offset + samples.count
@@ -200,20 +208,29 @@ final class AudioRecorder: @unchecked Sendable {
 
     private func observeEngine() {
         observers.forEach(NotificationCenter.default.removeObserver)
+        // On a Mac this also fires when the default microphone changes.
         observers = [
             NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
                 guard let self, self.isRunning else { return }
                 self.onNeedsRestart?(false)
             },
+        ]
+        #if os(iOS)
+        observers.append(
             NotificationCenter.default.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: nil, queue: .main) { [weak self] _ in
                 guard let self, self.isRunning else { return }
                 self.onNeedsRestart?(true)
-            },
-        ]
+            })
+        #endif
     }
 
     /// One line about the audio route and format, for Documents/diagnostics.log.
     func describeInput() -> String {
+        #if os(macOS)
+        let format = engine.inputNode.outputFormat(forBus: 0)
+        return "format=\(format.sampleRate)Hz/\(format.channelCount)ch running=\(engine.isRunning) " +
+            "signal=\(hasSignal) rawBuffers=\(rawBuffers) rawPeak=\(rawPeak) samples=\(sampleCount)"
+        #else
         let s = AVAudioSession.sharedInstance()
         let inputs = s.currentRoute.inputs.map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ",")
         let outputs = s.currentRoute.outputs.map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ",")
@@ -223,6 +240,7 @@ final class AudioRecorder: @unchecked Sendable {
             "inputs=[\(inputs)] outputs=[\(outputs)] preferred=\(s.preferredInput?.portName ?? "nil") " +
             "format=\(format.sampleRate)Hz/\(format.channelCount)ch/\(format.commonFormat.rawValue) gain=\(s.inputGain) running=\(engine.isRunning) " +
             "signal=\(hasSignal) rawBuffers=\(rawBuffers) rawPeak=\(rawPeak) samples=\(sampleCount)"
+        #endif
     }
 
     /// Whether anything but exact digital silence has arrived since the
@@ -242,7 +260,9 @@ final class AudioRecorder: @unchecked Sendable {
         guard isRunning else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        #if os(iOS)
         try AVAudioSession.sharedInstance().setMode(Self.mode(roomCapture: enabled))
+        #endif
         try startCapture()
     }
 
@@ -268,7 +288,9 @@ final class AudioRecorder: @unchecked Sendable {
             lock.lock(); currentWriteError = error.localizedDescription; lock.unlock()
         }
         converter = nil
+        #if os(iOS)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        #endif
     }
 
     private func process(_ buffer: AVAudioPCMBuffer) {

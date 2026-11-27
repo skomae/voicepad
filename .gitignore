@@ -11,3 +11,6 @@ VoicePad/Info.plist
 VoicePadWidgets/Info.plist
 Config/Local.xcconfig
 build-device/
+VoicePadMac/Info.plist
+build-mac/
+build-mac-ios/

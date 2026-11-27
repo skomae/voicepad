@@ -36,6 +36,13 @@ struct LoadProgress: Equatable, Sendable {
     /// iPhone): show an indeterminate bar.
     var determinate: Bool
 
+    /// "iPhone" or "Mac", for progress messages.
+    #if os(macOS)
+    static let device = "Mac"
+    #else
+    static let device = "iPhone"
+    #endif
+
     static let starting = LoadProgress(fraction: 0, stage: "Starting…", determinate: false)
 
     /// From FluidAudio's progress reports.
@@ -48,7 +55,7 @@ struct LoadProgress: Equatable, Sendable {
             return LoadProgress(fraction: p.fractionCompleted, stage: "Downloading \(model)\(files)", determinate: true)
         case .compiling:
             return LoadProgress(fraction: p.fractionCompleted,
-                                stage: "Preparing \(model) for this iPhone (the first time can take a few minutes)…", determinate: false)
+                                stage: "Preparing \(model) for this \(LoadProgress.device) (the first time can take a few minutes)…", determinate: false)
         }
     }
 

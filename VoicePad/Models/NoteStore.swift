@@ -21,7 +21,7 @@ final class NoteStore {
     private var backupURL: URL { indexURL.appendingPathExtension("bak") }
 
     nonisolated static var defaultBaseURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        AppPaths.data
     }
 
     init(baseURL: URL = NoteStore.defaultBaseURL) {

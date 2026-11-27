@@ -3,6 +3,41 @@
 The Android app lives in [`android/`](android/README.md); this README covers
 the iOS app.
 
+## Mac app
+
+`VoicePadMac` (macOS 15+) shares the iPhone app's recording, transcription,
+translation and note code (`VoicePad/`, minus `Views/`) with a Mac interface
+in `VoicePadMac/`:
+
+- **Onboarding that runs itself**: the speech model (Parakeet v3) starts
+  downloading the moment the app opens; the microphone and Accessibility
+  steps move on by themselves as soon as macOS reports the permission (it is
+  polled, since macOS has no callback). Optional open-at-login.
+- **Floating bar**: a tiny always-on-top pill (a non-activating panel, so
+  clicking it never takes focus from the app you're typing in) with
+  pause/resume, elapsed time, level, the latest words, split, an auto-paste
+  toggle and a way back to the main window. Drag it anywhere; it remembers.
+  Pause finishes the note; resume starts a new one.
+- **Copy, or copy and paste**: each finished note (and each auto-split part)
+  is copied; with auto-paste on it is also pasted (⌘V) into the app in front
+  — only when that isn't VoicePad, never into a password field. Consecutive
+  parts into the same app are joined with a space. Needs Accessibility, so
+  the app is not sandboxed.
+- **⌃⌥V** from any app pauses and resumes; a menu bar item does the same.
+- Notes, recordings and `diagnostics.log` live in
+  `~/Library/Application Support/VoicePad`.
+
+Build and install (a fixed path and the Apple Development signature keep the
+microphone and Accessibility grants across rebuilds):
+
+```sh
+xcodegen generate
+xcodebuild -scheme VoicePadMac -configuration Release -derivedDataPath build-mac -allowProvisioningUpdates build
+cp -R build-mac/Build/Products/Release/VoicePad.app /Applications/
+```
+
+## iPhone app
+
 An iOS app that **starts recording the moment you open it** and transcribes
 your speech on-device into a chat-style bubble. Each bubble can be copied,
 edited, and keeps a full revision history.

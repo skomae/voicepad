@@ -10,6 +10,7 @@ struct InputDevice: Identifiable, Equatable {
     let isBluetooth: Bool
 }
 
+#if os(iOS)
 enum InputDeviceNaming {
     static func kind(_ type: AVAudioSession.Port) -> String {
         switch type {
@@ -92,3 +93,17 @@ final class AudioInputs {
         refresh()
     }
 }
+#else
+/// On a Mac, VoicePad records from the input chosen in System Settings →
+/// Sound, so there's nothing to pick here (yet).
+@MainActor
+@Observable
+final class AudioInputs {
+    private(set) var devices: [InputDevice] = []
+    private(set) var activeInputName: String?
+    @ObservationIgnored var onDevicesChanged: ((Set<String>) -> Void)?
+
+    func refresh() {}
+    func apply(_ id: String?) {}
+}
+#endif

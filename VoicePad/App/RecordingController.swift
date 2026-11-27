@@ -3,7 +3,9 @@ import FluidAudio
 import Foundation
 import Observation
 import SwiftUI
+#if os(iOS)
 import UIKit
+#endif
 
 /// Owns the recorder and the speech engine, and turns audio into text.
 ///
@@ -149,6 +151,7 @@ final class RecordingController {
     /// The user's dictionaries; the enabled ones correct every transcript.
     let dictionaries: DictionaryStore
     @ObservationIgnored private var vocabulary: VocabularyCorrector
+    #if os(iOS)
     @ObservationIgnored private let liveActivity = LiveActivityPresenter()
 
     /// What the Live Activity shows; nil when there's nothing to show.
@@ -163,6 +166,11 @@ final class RecordingController {
         }
         return nil
     }
+    #endif
+
+    /// Called with the text each time a finished transcript is copied (the
+    /// Mac app pastes it into the app in front).
+    @ObservationIgnored var onTranscriptCopied: ((String) -> Void)?
 
     // MARK: Private
 
@@ -262,6 +270,7 @@ final class RecordingController {
         }
         inputs.apply(selectedInputID)
 
+        #if os(iOS)
         // Stop and Split from the Lock Screen / Dynamic Island.
         RecordingActions.stop = { [weak self] in self?.stop() }
         RecordingActions.split = { [weak self] in self?.split() }
@@ -291,6 +300,7 @@ final class RecordingController {
                 }
             }
         }
+        #endif
         recorder.onNeedsRestart = { [weak self] newEngine in
             guard let self, self.isRecording else { return }
             Diagnostics.log("audio reconfigured (new engine: \(newEngine)); reopening the microphone")
@@ -464,10 +474,7 @@ final class RecordingController {
     // MARK: Stuck microphone
 
     /// For the diagnostics log: is the app really in front, and is the phone unlocked?
-    private var appState: String {
-        let state = ["active", "inactive", "background"][UIApplication.shared.applicationState.rawValue]
-        return "app=\(state) unlocked=\(UIApplication.shared.isProtectedDataAvailable)"
-    }
+    private var appState: String { Platform.appState }
 
     @ObservationIgnored private var resumeAfterInterruption = false
     @ObservationIgnored private var silenceRestarts = 0
@@ -674,9 +681,9 @@ final class RecordingController {
         // After Stop the microphone is off, so iOS may suspend the app: ask
         // for time to finish. (iOS grants seconds to minutes; anything left
         // over resumes from the queue the next time the app opens.)
-        let background = UIApplication.shared.beginBackgroundTask(withName: "Finish transcript")
+        let background = Platform.beginBackgroundTask("Finish transcript")
         defer {
-            if background != .invalid { UIApplication.shared.endBackgroundTask(background) }
+            Platform.endBackgroundTask(background)
             finishing.removeAll { $0 === s }
             freeCommittedAudio()
             processQueue()
@@ -820,8 +827,9 @@ final class RecordingController {
     private func copyWhenDone(_ noteID: Note.ID) {
         guard copyWhenDone, let text = store.note(id: noteID)?.currentText,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        UIPasteboard.general.string = text
+        Platform.copy(text)
         notice = "Transcript copied to clipboard"
+        onTranscriptCopied?(text)
     }
 
     /// Transcribes and commits every pending utterance of `s`, chunk by chunk.
