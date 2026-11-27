@@ -12,6 +12,11 @@ final class AutoPaster {
     /// Where the last paste went, so the next part of the same dictation is
     /// separated from it by a space instead of running into it.
     private var lastPaste: (pid: pid_t, at: Date)?
+    /// Notes already pasted, and the text of recent pastes: the same words
+    /// are never pasted twice (a note finished again, or a split part that
+    /// repeats the last one).
+    private var pastedNotes = Set<Note.ID>()
+    private var recentTexts: [(text: String, at: Date)] = []
 
     /// Says what happened (shown as a notice).
     var onNotice: ((String) -> Void)?
@@ -21,8 +26,14 @@ final class AutoPaster {
     }
 
     /// Called with each transcript just copied to the clipboard.
-    func transcriptCopied(_ text: String) {
+    func transcriptCopied(_ text: String, noteID: Note.ID) {
         guard settings.autoPaste else { return }
+        let key = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        recentTexts.removeAll { Date.now.timeIntervalSince($0.at) > 30 * 60 }
+        guard !pastedNotes.contains(noteID), !recentTexts.contains(where: { $0.text == key }) else {
+            onNotice?("Copied — already pasted, so not pasted again")
+            return
+        }
         guard let target = NSWorkspace.shared.frontmostApplication,
               target.processIdentifier != ProcessInfo.processInfo.processIdentifier,
               !NSApp.isActive else { return } // VoicePad is in front: copying is enough
@@ -38,6 +49,8 @@ final class AutoPaster {
         let continuing = lastPaste.map { $0.pid == target.processIdentifier && Date.now.timeIntervalSince($0.at) < 120 } ?? false
         let text = continuing && !text.hasPrefix(" ") ? " " + text : text
         lastPaste = (target.processIdentifier, .now)
+        pastedNotes.insert(noteID)
+        recentTexts.append((key, .now))
         Task { await paste(text, into: target) }
     }
 

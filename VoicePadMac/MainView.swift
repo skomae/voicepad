@@ -282,7 +282,7 @@ private struct RecordBar: View {
                 .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .help(controller.isRecording ? "Pause (⌘R)" : "Record (⌘R)")
+            .help(controller.isRecording ? "Pause (\(MacSettings.shortcutLabel))" : "Record (\(MacSettings.shortcutLabel))")
 
             HStack {
                 Spacer()

@@ -20,7 +20,9 @@ struct VoicePadMacApp: App {
                 Button(app.controller.isRecording ? "Pause Recording" : "Start Recording") {
                     Task { await app.controller.toggle() }
                 }
-                .keyboardShortcut("r")
+                // The same ⌃⌥V that works from any app (the global hot key
+                // takes it first; the menu shows it).
+                .keyboardShortcut("v", modifiers: [.control, .option])
                 Button("Split") { app.controller.split() }
                     .keyboardShortcut("s", modifiers: [.command, .shift])
                     .disabled(!app.controller.isRecording)
@@ -94,7 +96,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        controller.onTranscriptCopied = { [weak self] text in self?.paster.transcriptCopied(text) }
+        controller.onTranscriptCopied = { [weak self] noteID, text in self?.paster.transcriptCopied(text, noteID: noteID) }
         paster.onNotice = { [weak self] text in self?.controller.notice = text }
 
         panel = FloatingPanel(rootView: FloatingBar(openMain: { [weak self] in self?.showMainWindow() },

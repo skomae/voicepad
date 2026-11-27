@@ -170,7 +170,7 @@ final class RecordingController {
 
     /// Called with the text each time a finished transcript is copied (the
     /// Mac app pastes it into the app in front).
-    @ObservationIgnored var onTranscriptCopied: ((String) -> Void)?
+    @ObservationIgnored var onTranscriptCopied: ((Note.ID, String) -> Void)?
 
     // MARK: Private
 
@@ -829,7 +829,7 @@ final class RecordingController {
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         Platform.copy(text)
         notice = "Transcript copied to clipboard"
-        onTranscriptCopied?(text)
+        onTranscriptCopied?(noteID, text)
     }
 
     /// Transcribes and commits every pending utterance of `s`, chunk by chunk.
