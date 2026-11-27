@@ -184,6 +184,9 @@ final class RecordingController {
     private static let maxChunk = Int(25 * rate)
     /// With Whisper, utterances are batched until about this long before committing.
     private static let whisperBatch = Int(15 * rate)
+    /// Longest stretch kept in memory while the model loads (~38 MB), so the
+    /// note being recorded can catch up instead of waiting until it's stopped.
+    private static let maxCatchUp = Int(10 * 60 * rate)
     /// Context kept either side of detected speech.
     private static let pad = Int(0.25 * rate)
     private let tickSeconds: Double = 1.2
@@ -577,14 +580,20 @@ final class RecordingController {
                 guard let self, !Task.isCancelled else { return }
                 guard let current = self.session else { continue }
                 if self.isEngineReady, !current.recordOnly {
+                    // The model may have just become ready: this pass catches up on
+                    // everything said while it was loading.
+                    self.liveRecordOnly = false
                     _ = await self.step(current, final: false)
                 } else {
-                    // The model isn't ready (still downloading or loading): just record.
-                    // The audio goes straight to disk and nothing else touches it; the
-                    // whole note is transcribed from the file once the model is ready.
-                    current.recordOnly = true
+                    // The model isn't ready (still downloading or loading). Keep the
+                    // audio in memory so the note catches up the moment it is; only a
+                    // very long wait falls back to recording alone (the whole note is
+                    // then transcribed from its file once the model is ready).
                     self.liveRecordOnly = true
-                    self.freeCommittedAudio()
+                    if !current.recordOnly, self.recorder.sampleCount - current.committedUpTo > Self.maxCatchUp {
+                        current.recordOnly = true
+                    }
+                    if current.recordOnly { self.freeCommittedAudio() }
                 }
                 self.maybeAutoSplit(current)
                 self.checkForStuckMicrophone()
@@ -783,6 +792,9 @@ final class RecordingController {
     /// utterances and noting when speech was last heard (for auto-split).
     /// Runs even while no model is loaded, so nothing is missed.
     private func feedDetector(_ s: LiveSession, now: Int, final: Bool) async throws {
+        // The detector model may have finished loading after this note began:
+        // attach it if nothing has been fed or committed yet.
+        if s.detector == nil, s.detectedUpTo == s.origin, s.committedUpTo == s.origin { s.detector = newDetector() }
         if let vad = s.detector {
             if now > s.detectedUpTo {
                 // The detector counts from the first sample it was given: this note's origin.
@@ -985,7 +997,7 @@ final class RecordingController {
 
     /// Works through notes that still need text, oldest first. Skips ones that
     /// already failed `maxAutoAttempts` times; those wait for a manual retry.
-    /// Runs only while not recording, so live text stays responsive.
+    /// Runs while recording as well; model calls take turns with the live text.
     private func processQueue() {
         if queueRunning { return }
         queueRunning = true
@@ -994,7 +1006,10 @@ final class RecordingController {
             // Each note gets at most one attempt per pass; the next pass comes
             // with the next app launch, model load or finished recording.
             var tried = Set<Note.ID>()
-            while isEngineReady, !isRecording, !conversationActive {
+            // Runs while recording too (model calls take turns with the live
+            // text): VoicePad records from the moment it opens, so waiting for
+            // the microphone to stop left recordings without text indefinitely.
+            while isEngineReady, !conversationActive {
                 guard let next = store.notes.first(where: {
                     $0.needsTranscription && $0.attempts < Self.maxAutoAttempts &&
                         $0.id != recordingNoteID && !tried.contains($0.id)
@@ -1130,7 +1145,7 @@ private final class LiveSession {
 
     let noteID: Note.ID
     let origin: Int
-    let detector: SpeechDetector?
+    var detector: SpeechDetector?
     var committedText = ""
     var committedUpTo: Int
     /// Recording position fed to the speech detector so far.
