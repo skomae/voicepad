@@ -24,6 +24,8 @@ in `VoicePadMac/`:
   parts into the same app are joined with a space. Needs Accessibility, so
   the app is not sandboxed.
 - **⌃⌥V** from any app pauses and resumes; a menu bar item does the same.
+- App icon: `VoicePadMac/Assets.xcassets`, drawn by
+  `swift scripts/make-mac-icon.swift VoicePadMac/Assets.xcassets/AppIcon.appiconset`.
 - Notes, recordings and `diagnostics.log` live in
   `~/Library/Application Support/VoicePad`.
 
