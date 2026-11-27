@@ -376,6 +376,8 @@ final class RecordingController {
             do {
                 // Off the main thread: compiling a model can take minutes and must
                 // never hold up recording or the screen.
+                // Test switch: pretend the model takes 30 s longer to load.
+                if DebugFlags.on("delayModelLoad") { try? await Task.sleep(for: .seconds(30)) }
                 let loading = UncheckedBox(newEngine)
                 try await Task.detached(priority: .utility) { try await loading.value.load { progress in
                     Task { @MainActor in
