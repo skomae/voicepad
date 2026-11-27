@@ -18,6 +18,7 @@ class GlassesScreenTest {
         text: String,
         translation: String? = null,
         target: String = if (language == "zh") "en" else "zh",
+        romanization: String? = null,
     ) = Turn(
         id = nextId++,
         session = 1,
@@ -26,17 +27,27 @@ class GlassesScreenTest {
         text = text,
         target = target,
         translation = translation,
+        romanization = romanization,
         start = 0,
         end = 16000,
     )
 
-    private fun page(turns: List<Turn>, scope: GlassesScope = GlassesScope.THEM, listening: Boolean = true): List<String> =
+    private fun page(
+        turns: List<Turn>,
+        scope: GlassesScope = GlassesScope.THEM,
+        listening: Boolean = true,
+        // ICU isn't on the JVM test classpath, so pinyin has to be supplied.
+        dictionary: (Char) -> String? = { null },
+        myLanguage: String = "en",
+        theirLanguage: String = "zh",
+    ): List<String> =
         GlassesScreen.of(
             stage = Stage(turns.lastOrNull(), Stage.Phase.LANDED, turns.dropLast(1)),
-            myLanguage = "en",
-            theirLanguage = "zh",
+            myLanguage = myLanguage,
+            theirLanguage = theirLanguage,
             scope = scope,
             listening = listening,
+            syllable = dictionary,
         )
 
     private fun assertFits(page: List<String>) {
@@ -124,6 +135,107 @@ class GlassesScreenTest {
         assertTrue(page.none { it.contains("Sentence number 1") })
         assertTrue(page.any { it.contains("Sentence number 6") })
     }
+
+    // region Learning
+
+    @Test
+    fun `learning shows what it means, then the characters with their pinyin`() {
+        val theirs = turn("zh", "晚上好", "Good evening", romanization = "wǎn shàng hǎo")
+        val page = page(listOf(theirs), GlassesScope.LEARNING)
+        assertFits(page)
+        assertEquals("> Good evening", page[3].trim())
+        assertEquals("晚wǎn 上shàng 好hǎo", page[4].trim())
+    }
+
+    @Test
+    fun `learning translates your own words too`() {
+        val mine = turn("en", "Two coffees please", "两杯咖啡")
+        val page = page(listOf(mine), GlassesScope.LEARNING, dictionary = { c -> if (c == '两') "liǎng" else "bei" })
+        assertFits(page)
+        assertEquals("- Two coffees please", page[3].trim())
+        assertEquals("两liǎng 杯bei 咖bei 啡bei", page[4].trim())
+    }
+
+    @Test
+    fun `learning marks whose turn it is`() {
+        val mine = turn("en", "Two coffees", "两杯咖啡")
+        val theirs = turn("zh", "好的", "Sure", romanization = "hǎo de")
+        val page = page(listOf(mine, theirs), GlassesScope.LEARNING)
+        assertFits(page)
+        assertTrue(page.any { it.startsWith("- Two coffees") })
+        assertTrue(page.any { it.startsWith("> Sure") })
+    }
+
+    @Test
+    fun `learning trusts the pinyin written for the sentence`() {
+        // 银行 is yín háng here; a per-character lookup says yín xíng.
+        val theirs = turn("zh", "银行", "Bank", romanization = "yín háng")
+        val page = page(listOf(theirs), GlassesScope.LEARNING, dictionary = { "xíng" })
+        assertEquals("银yín 行háng", page.last().trim())
+    }
+
+    @Test
+    fun `learning looks each character up when the turn has no romanisation`() {
+        val theirs = turn("zh", "银行", "Bank")
+        val page = page(listOf(theirs), GlassesScope.LEARNING, dictionary = { c -> if (c == '银') "yín" else "háng" })
+        assertEquals("银yín 行háng", page.last().trim())
+    }
+
+    @Test
+    fun `learning keeps punctuation with the word before it`() {
+        val theirs = turn("zh", "晚上好！", "Good evening!", romanization = "wǎn shàng hǎo")
+        val page = page(listOf(theirs), GlassesScope.LEARNING)
+        assertEquals("晚wǎn 上shàng 好hǎo！", page.last().trim())
+    }
+
+    @Test
+    fun `learning leaves latin words and numbers alone`() {
+        val theirs = turn("zh", "去 7-Eleven 吗", "Going to 7-Eleven?", romanization = "qù ma")
+        val page = page(listOf(theirs), GlassesScope.LEARNING, dictionary = { "x" })
+        assertFits(page)
+        assertTrue(page.any { it.contains("7-Eleven") })
+        assertTrue(page.none { it.contains("7x") })
+    }
+
+    @Test
+    fun `learning shows their words when there is no pinyin to add`() {
+        val theirs = turn("es", "Buenas noches", "Good evening")
+        val page = page(listOf(theirs), GlassesScope.LEARNING)
+        assertFits(page)
+        assertEquals("> Good evening", page[3].trim())
+        assertEquals("Buenas noches", page[4].trim())
+    }
+
+    @Test
+    fun `a long learning turn still fits five lines of forty columns`() {
+        val chinese = "今天我们去看电影吧好吗".repeat(3)
+        val theirs = turn("zh", chinese, "Shall we go to the cinema today?")
+        val page = page(listOf(theirs), GlassesScope.LEARNING, dictionary = { "shi" })
+        assertFits(page)
+    }
+
+
+    @Test
+    fun `learning puts the pinyin on the chinese line when you read chinese`() {
+        // A Chinese reader, hearing English: the Chinese is the translation.
+        val pinyin = mapOf('葡' to "pú", '萄' to "tao", '酒' to "jiǔ", '吗' to "ma")
+        val theirs = turn("en", "Wine?", "葡萄酒吗？")
+        val page = page(listOf(theirs), GlassesScope.LEARNING, dictionary = { pinyin[it] }, myLanguage = "zh", theirLanguage = "en")
+        assertFits(page)
+        assertEquals("> 葡pú 萄tao 酒jiǔ 吗ma？", page[3].trim())
+        assertEquals("Wine?", page[4].trim())
+    }
+
+    @Test
+    fun `learning annotates the chinese of your own turn when you read chinese`() {
+        val mine = turn("zh", "葡萄酒", "Wine")
+        val page = page(listOf(mine), GlassesScope.LEARNING, dictionary = { mapOf('葡' to "pú", '萄' to "tao", '酒' to "jiǔ")[it] }, myLanguage = "zh")
+        assertFits(page)
+        assertEquals("- 葡pú 萄tao 酒jiǔ", page[3].trim())
+        assertEquals("Wine", page[4].trim())
+    }
+
+    // endregion
 
     @Test
     fun `chinese counts two columns, so a line holds twenty characters`() {
