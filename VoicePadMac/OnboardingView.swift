@@ -272,26 +272,27 @@ private struct FloatingBarPreview: View {
     var body: some View {
         HStack(spacing: 10) {
             ZStack {
-                Circle().fill(.red)
-                Image(systemName: "pause.fill").font(.system(size: 14, weight: .bold)).foregroundStyle(.white)
+                Circle().fill(Color.red.opacity(0.14))
+                Image(systemName: "pause.fill").font(.system(size: 13, weight: .semibold)).foregroundStyle(.red)
             }
             .frame(width: 34, height: 34)
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Circle().fill(.red).frame(width: 6, height: 6)
-                    Text("0:07").monospacedDigit()
-                    LevelBars(level: 0.6)
+            Text("…so the words show up here as you speak, two lines at a time")
+                .font(.system(size: 12)).lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .trailing, spacing: 5) {
+                Text("14 words").font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Image(systemName: "scissors")
+                    Image(systemName: "text.insert").foregroundStyle(.tint)
+                    Image(systemName: "macwindow")
                 }
-                .font(.system(size: 12, weight: .semibold))
-                Text("…and that's how it works").font(.system(size: 11)).foregroundStyle(.secondary)
+                .font(.system(size: 12)).foregroundStyle(.secondary)
             }
-            Spacer()
-            Image(systemName: "macwindow").font(.system(size: 12)).foregroundStyle(.secondary)
         }
-        .padding(.leading, 9).padding(.trailing, 14)
+        .padding(.leading, 12).padding(.trailing, 12)
         .frame(width: FloatingBar.size.width, height: FloatingBar.size.height)
-        .background(.regularMaterial, in: Capsule())
-        .overlay { Capsule().strokeBorder(Color.red.opacity(0.55), lineWidth: 1.5) }
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Color.red.opacity(0.22)) }
         .shadow(color: .black.opacity(0.15), radius: 10, y: 4)
         .allowsHitTesting(false)
     }

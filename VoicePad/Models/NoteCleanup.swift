@@ -26,6 +26,8 @@ enum NoteCleanup {
         case off
         /// As soon as the note has its text (any age).
         case now
+        /// The Mac's default for recordings: kept briefly, in case the text needs redoing.
+        case minutes3
         case hours1, hours3, hours24, days7, days30
 
         var id: String { rawValue }
@@ -34,6 +36,7 @@ enum NoteCleanup {
             switch self {
             case .off: return "Off"
             case .now: return "Immediately"
+            case .minutes3: return "3 minutes"
             case .hours1: return "1 hour"
             case .hours3: return "3 hours"
             case .hours24: return "24 hours"
@@ -47,6 +50,7 @@ enum NoteCleanup {
             switch self {
             case .off: return nil
             case .now: return 0
+            case .minutes3: return 3 * 60
             case .hours1: return 60 * 60
             case .hours3: return 3 * 60 * 60
             case .hours24: return NoteCleanup.day

@@ -244,7 +244,7 @@ final class RecordingController {
         copyWhenDone = UserDefaults.standard.object(forKey: Self.copyWhenDoneKey) as? Bool ?? true
         autoSplit = UserDefaults.standard.string(forKey: Self.autoSplitKey).flatMap(AutoSplit.init(rawValue:)) ?? .default
         autoDeleteEmpty = UserDefaults.standard.string(forKey: Self.autoDeleteEmptyKey).flatMap(NoteCleanup.AutoAge.init(rawValue:)) ?? .off
-        autoDeleteAudio = UserDefaults.standard.string(forKey: Self.autoDeleteAudioKey).flatMap(NoteCleanup.AutoAge.init(rawValue:)) ?? .off
+        autoDeleteAudio = UserDefaults.standard.string(forKey: Self.autoDeleteAudioKey).flatMap(NoteCleanup.AutoAge.init(rawValue:)) ?? Self.defaultAutoDeleteAudio
         autoCompress = UserDefaults.standard.string(forKey: Self.autoCompressKey).flatMap(NoteCleanup.AutoAge.init(rawValue:)) ?? .off
         // People already using the app (mic allowed, notes saved) skip the walkthrough.
         onboardingDone = UserDefaults.standard.object(forKey: Self.onboardingKey) as? Bool
@@ -994,6 +994,15 @@ final class RecordingController {
     /// Works through notes that still need text, oldest first. Skips ones that
     /// already failed `maxAutoAttempts` times; those wait for a manual retry.
     /// Runs only while not recording, so live text stays responsive.
+    /// On a Mac VoicePad is nearly always recording, so waiting recordings
+    /// are transcribed alongside it (model calls take turns); on iPhone they
+    /// wait for the microphone to stop.
+    #if os(macOS)
+    private static let backlogWhileRecording = true
+    #else
+    private static let backlogWhileRecording = false
+    #endif
+
     private func processQueue() {
         if queueRunning { return }
         queueRunning = true
@@ -1002,7 +1011,7 @@ final class RecordingController {
             // Each note gets at most one attempt per pass; the next pass comes
             // with the next app launch, model load or finished recording.
             var tried = Set<Note.ID>()
-            while isEngineReady, !isRecording, !conversationActive {
+            while isEngineReady, !isRecording || Self.backlogWhileRecording, !conversationActive {
                 guard let next = store.notes.first(where: {
                     $0.needsTranscription && $0.attempts < Self.maxAutoAttempts &&
                         $0.id != recordingNoteID && !tried.contains($0.id)
@@ -1328,7 +1337,21 @@ extension RecordingController {
 
     /// "Delete audio: immediately" — a note that just got its text loses its
     /// recording now, rather than at the next sweep. Pinned notes keep theirs.
+    /// On a Mac recordings are only kept a few minutes by default: the text is what's wanted.
+    #if os(macOS)
+    private static let defaultAutoDeleteAudio = NoteCleanup.AutoAge.minutes3
+    #else
+    private static let defaultAutoDeleteAudio = NoteCleanup.AutoAge.off
+    #endif
+
     private func dropAudioIfImmediate(_ noteID: Note.ID) {
+        // Ages shorter than the regular sweep get a sweep of their own, just after.
+        if let age = autoDeleteAudio.interval, age > 0, age < Double(Self.autoCleanupInterval.components.seconds) {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(age + 5))
+                self?.runAutoCleanup()
+            }
+        }
         guard autoDeleteAudio == .now, let note = store.note(id: noteID) else { return }
         // Only once there are words to keep. A note with no text keeps its audio
         // so the second opinion can still be given, and so "no speech" stays

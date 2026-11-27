@@ -1,4 +1,5 @@
 import AppKit
+import NaturalLanguage
 import SwiftUI
 
 /// The tiny always-on-top bar. It never becomes the active window, so
@@ -53,7 +54,7 @@ private final class FirstClickHostingView<Content: View>: NSHostingView<Content>
 }
 
 struct FloatingBar: View {
-    static let size = NSSize(width: 326, height: 52)
+    static let size = NSSize(width: 340, height: 64)
 
     @Environment(RecordingController.self) private var controller
     @Environment(MacSettings.self) private var settings
@@ -63,26 +64,26 @@ struct FloatingBar: View {
     var body: some View {
         HStack(spacing: 10) {
             recordButton
-            VStack(alignment: .leading, spacing: 1) {
-                statusLine
-                detailLine
+            words
+                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .trailing, spacing: 5) {
+                countLabel
+                HStack(spacing: 4) {
+                    SplitMenu()
+                    pasteToggle
+                    barButton("macwindow", help: "Open VoicePad", action: openMain)
+                }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            if controller.isRecording {
-                barButton("scissors", help: "Split — finish this note and keep recording into a new one") { controller.split() }
-            }
-            pasteToggle
-            barButton("macwindow", help: "Open VoicePad", action: openMain)
         }
-        .padding(.leading, 9)
-        .padding(.trailing, 12)
+        .padding(.leading, 12)
+        .padding(.trailing, 10)
         .frame(width: Self.size.width, height: Self.size.height)
-        .background(.regularMaterial, in: Capsule())
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
-            Capsule().strokeBorder(controller.isRecording ? Color.red.opacity(0.55) : Color.primary.opacity(0.12),
-                                   lineWidth: controller.isRecording ? 1.5 : 1)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(controller.isRecording ? Color.red.opacity(0.22) : Color.primary.opacity(0.12))
         }
-        .clipShape(Capsule())
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .background { TranslationHost(translator: controller.translator) }
         .contextMenu {
             Button(controller.isRecording ? "Pause" : "Resume") { Task { await controller.toggle() } }
@@ -96,73 +97,75 @@ struct FloatingBar: View {
         .preferredColorScheme(controller.themeMode.colorScheme)
     }
 
+    /// Calm on purpose: VoicePad is nearly always listening, so nothing
+    /// pulses or counts — a soft red pause button while recording, grey
+    /// microphone while paused.
     private var recordButton: some View {
         Button {
             Task { await controller.toggle() }
         } label: {
             ZStack {
                 Circle()
-                    .fill(controller.isRecording ? Color.red : Color.red.opacity(0.12))
-                // A ring that breathes with the voice.
-                Circle()
-                    .strokeBorder(Color.red.opacity(0.35), lineWidth: 3)
-                    .scaleEffect(1 + CGFloat(controller.level) * 0.25)
-                    .opacity(controller.isRecording ? 1 : 0)
+                    .fill(controller.isRecording ? Color.red.opacity(0.14) : Color.primary.opacity(0.07))
                 Image(systemName: controller.isRecording ? "pause.fill" : "mic.fill")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(controller.isRecording ? .white : .red)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(controller.isRecording ? AnyShapeStyle(Color.red) : AnyShapeStyle(.secondary))
             }
             .frame(width: 34, height: 34)
             .contentShape(Circle())
-            .animation(.easeOut(duration: 0.08), value: controller.level)
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(controller.isRecording ? "Pause" : "Resume")
         .help(controller.isRecording
               ? "Pause (\(MacSettings.shortcutLabel)) — finishes this note\(settings.autoPaste ? " and pastes it" : "")"
               : "Resume recording (\(MacSettings.shortcutLabel))")
     }
 
-    @ViewBuilder private var statusLine: some View {
-        HStack(spacing: 6) {
-            if controller.isRecording, let started = controller.startedAt {
-                Circle().fill(.red).frame(width: 6, height: 6)
-                TimelineView(.periodic(from: started, by: 1)) { context in
-                    Text(Self.elapsed(from: started, to: context.date))
-                        .monospacedDigit()
-                }
-                LevelBars(level: controller.level)
-            } else if controller.finishingCount > 0 {
-                ProgressView().controlSize(.mini)
-                Text("Transcribing…")
-            } else {
-                Text("Paused")
-            }
-        }
-        .font(.system(size: 12, weight: .semibold))
-        .lineLimit(1)
-    }
-
-    @ViewBuilder private var detailLine: some View {
+    /// Two rows: the latest words while recording, otherwise what's going on.
+    @ViewBuilder private var words: some View {
         Group {
             if let notice = controller.notice {
                 Text(notice).foregroundStyle(.secondary)
             } else if case .loading(let progress) = controller.engineStatus {
-                Text(progress.determinate ? "Downloading model \(Int(progress.fraction * 100))%" : "Getting the model ready…")
+                Text(progress.determinate ? "Downloading the speech model — \(Int(progress.fraction * 100))%" : "Getting the speech model ready…")
                     .foregroundStyle(.secondary)
             } else if case .failed = controller.engineStatus {
-                Text("Model failed to load — open VoicePad").foregroundStyle(.orange)
+                Text("The speech model failed to load — open VoicePad").foregroundStyle(.orange)
             } else if controller.noSoundWarning {
-                Text("No sound from the microphone").foregroundStyle(.orange)
+                Text("No sound is reaching VoicePad — check the microphone").foregroundStyle(.orange)
             } else if controller.isRecording {
-                Text(controller.liveText.isEmpty ? "Listening…" : controller.liveText)
-                    .truncationMode(.head)
-                    .foregroundStyle(.secondary)
+                if controller.liveText.isEmpty {
+                    Text("Listening…").foregroundStyle(.tertiary)
+                } else {
+                    LatestWords(text: controller.liveText)
+                }
+            } else if controller.finishingCount > 0 {
+                Text("Transcribing…").foregroundStyle(.secondary)
             } else {
-                Text("\(MacSettings.shortcutLabel) or click to resume").foregroundStyle(.tertiary)
+                Text("Paused — click or press \(MacSettings.shortcutLabel) to resume").foregroundStyle(.secondary)
             }
         }
-        .font(.system(size: 11))
-        .lineLimit(1)
+        .font(.system(size: 12))
+        .lineLimit(2)
+        .multilineTextAlignment(.leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// The note's word count while recording.
+    @ViewBuilder private var countLabel: some View {
+        if controller.isRecording {
+            let count = WordCount.of(controller.liveText)
+            Text("\(count) \(count == 1 ? "word" : "words")")
+                .font(.system(size: 10, weight: .medium))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .contentTransition(.numericText())
+                .animation(.default, value: count)
+        } else {
+            Text(controller.finishingCount > 0 ? "…" : "Paused")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.tertiary)
+        }
     }
 
     /// Auto-paste on/off, right on the bar: lit when finished text will be
@@ -206,29 +209,91 @@ struct FloatingBar: View {
         .accessibilityLabel(help)
         .help(help)
     }
+}
 
-    static func elapsed(from start: Date, to now: Date) -> String {
-        let seconds = max(0, Int(now.timeIntervalSince(start)))
-        return seconds >= 3600
-            ? String(format: "%d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60)
-            : String(format: "%d:%02d", seconds / 60, seconds % 60)
+/// Words in a transcript. Uses the system's word breaker, so Chinese and
+/// Japanese (written without spaces) are counted by word too.
+enum WordCount {
+    static func of(_ text: String) -> Int {
+        guard !text.isEmpty else { return 0 }
+        let tokenizer = NLTokenizer(unit: .word)
+        tokenizer.string = text
+        return tokenizer.tokens(for: text.startIndex..<text.endIndex).count
     }
 }
 
-/// Five little bars that follow the input level.
-struct LevelBars: View {
-    let level: Float
+/// Scissors: click to split now; the arrow picks when to split by itself
+/// (after a pause, or every few minutes).
+struct SplitMenu: View {
+    @Environment(RecordingController.self) private var controller
 
     var body: some View {
-        HStack(alignment: .center, spacing: 2) {
-            ForEach(0..<5, id: \.self) { i in
-                let weights: [Float] = [0.55, 0.85, 1, 0.75, 0.5]
-                Capsule()
-                    .fill(Color.red.opacity(0.8))
-                    .frame(width: 2.5, height: 3 + CGFloat(min(1, level * weights[i] * 1.3)) * 9)
+        @Bindable var controller = controller
+        Menu {
+            Button("Split Now") { controller.split() }
+                .disabled(!controller.isRecording)
+            Divider()
+            Picker("Split Automatically", selection: $controller.autoSplit) {
+                ForEach(AutoSplit.allCases, id: \.self) { Text($0.label).tag($0) }
             }
+            .pickerStyle(.inline)
+        } label: {
+            Image(systemName: "scissors")
+                .font(.system(size: 12, weight: .medium))
+        } primaryAction: {
+            controller.split()
         }
-        .frame(height: 12)
-        .animation(.easeOut(duration: 0.08), value: level)
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .foregroundStyle(controller.autoSplit == .off ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+        .accessibilityLabel("Split")
+        .help(controller.autoSplit == .off
+              ? "Split — click to start a new note now; the arrow sets automatic splitting"
+              : "Split — click to start a new note now. Splitting by itself: \(controller.autoSplit.label.lowercased())")
+    }
+}
+
+/// The newest words of a transcript filling exactly two lines: earlier words
+/// are dropped from the front (with "…") until the rest fits the width.
+private struct LatestWords: View {
+    let text: String
+    private static let font = NSFont.systemFont(ofSize: 12)
+
+    var body: some View {
+        GeometryReader { geo in
+            Text(Self.fit(text, width: geo.size.width))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        }
+        .frame(height: ceil(Self.lineHeight * 2) + 1)
+    }
+
+    private static var lineHeight: CGFloat {
+        let layout = NSLayoutManager()
+        return layout.defaultLineHeight(for: font)
+    }
+
+    private static func height(_ string: String, width: CGFloat) -> CGFloat {
+        NSAttributedString(string: string, attributes: [.font: font])
+            .boundingRect(with: NSSize(width: width, height: .greatestFiniteMagnitude),
+                          options: [.usesLineFragmentOrigin, .usesFontLeading]).height
+    }
+
+    static func fit(_ text: String, width: CGFloat) -> String {
+        guard width > 20 else { return text }
+        let limit = lineHeight * 2 + 1
+        if height(text, width: width) <= limit { return text }
+        // Words for Latin text; single characters for text without spaces (Chinese, Japanese).
+        let pieces: [Substring] = text.contains(" ")
+            ? text.split(separator: " ", omittingEmptySubsequences: false)
+            : text.map { Substring(String($0)) }
+        let joiner = text.contains(" ") ? " " : ""
+        // Binary search for the most pieces from the end that still fit.
+        var low = 1, high = pieces.count
+        while low < high {
+            let mid = (low + high + 1) / 2
+            let candidate = "…" + pieces.suffix(mid).joined(separator: joiner)
+            if height(candidate, width: width) <= limit { low = mid } else { high = mid - 1 }
+        }
+        return "…" + pieces.suffix(low).joined(separator: joiner)
     }
 }

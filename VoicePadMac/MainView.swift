@@ -215,8 +215,8 @@ private struct LiveBubble: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Circle().fill(.red).frame(width: 7, height: 7)
-                Text(controller.partNumber > 1 ? "Recording · part \(controller.partNumber)" : "Recording")
+                Circle().fill(.red.opacity(0.7)).frame(width: 6, height: 6)
+                Text("Recording")
                 if controller.liveRecordOnly {
                     Text("· text comes when the model is ready")
                 }
@@ -253,14 +253,11 @@ private struct RecordBar: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                if controller.isRecording, let started = controller.startedAt {
-                    HStack(spacing: 6) {
-                        TimelineView(.periodic(from: started, by: 1)) { context in
-                            Text(FloatingBar.elapsed(from: started, to: context.date)).monospacedDigit()
-                        }
-                        LevelBars(level: controller.level)
-                    }
-                    .font(.headline)
+                if controller.isRecording {
+                    let count = WordCount.of(controller.liveText)
+                    Text("\(count) \(count == 1 ? "word" : "words")")
+                        .font(.headline).monospacedDigit()
+                        .contentTransition(.numericText()).animation(.default, value: count)
                     Text("Recording — \(MacSettings.shortcutLabel) to pause").font(.caption).foregroundStyle(.secondary)
                 } else if controller.finishingCount > 0 {
                     Label("Transcribing…", systemImage: "text.bubble").font(.headline)
@@ -276,12 +273,10 @@ private struct RecordBar: View {
                 Task { await controller.toggle() }
             } label: {
                 ZStack {
-                    Circle().strokeBorder(Color.red.opacity(0.35), lineWidth: 3)
-                    if controller.isRecording {
-                        RoundedRectangle(cornerRadius: 5).fill(.red).frame(width: 20, height: 20)
-                    } else {
-                        Circle().fill(.red).padding(7)
-                    }
+                    Circle().fill(controller.isRecording ? Color.red.opacity(0.14) : Color.primary.opacity(0.07))
+                    Image(systemName: controller.isRecording ? "pause.fill" : "mic.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(controller.isRecording ? AnyShapeStyle(Color.red) : AnyShapeStyle(.secondary))
                 }
                 .frame(width: 50, height: 50)
                 .contentShape(Circle())
@@ -291,24 +286,7 @@ private struct RecordBar: View {
 
             HStack {
                 Spacer()
-                Button {
-                    controller.split()
-                } label: {
-                    Label("Split", systemImage: "scissors")
-                }
-                .disabled(!controller.isRecording)
-                .help("Finish this note and keep recording into a new one")
-                Menu {
-                    Picker("Auto-split", selection: Bindable(controller).autoSplit) {
-                        ForEach(AutoSplit.allCases, id: \.self) { Text($0.label).tag($0) }
-                    }
-                    .pickerStyle(.inline)
-                } label: {
-                    Image(systemName: controller.autoSplit == .off ? "timer" : "timer.circle.fill")
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("Auto-split: \(controller.autoSplit.label)")
+                SplitMenu()
             }
             .frame(maxWidth: .infinity)
         }
